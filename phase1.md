@@ -7,49 +7,126 @@ This document outlines all tasks for Phase 1, their testing criteria, and defini
 ### 1. Project Structure
 
 - **File Summary**: Set up the basic directory structure that will organize all project files.
-- [ ] Create main directory structure (src, test, config)
-- [ ] Set up src subdirectories (main, core, api, graph, modules, nlu, utils, renderer)
-- [ ] Initialize git repository with .gitignore
-- [ ] Create README.md with project overview
+- [x] Create main directory structure (src, test, config)
+- [x] Set up src subdirectories (main, core, api, graph, modules, nlu, utils, renderer)
+- [x] Initialize git repository with .gitignore
+- [x] Create README.md with project overview
 - **Test**: Verify directory structure matches specification
 - **Success Criteria**: All directories exist and follow the specified pattern
 - **Memory Update**: Document directory structure and purpose of each folder
 
+### Directory Structure & Purpose
+- `src/` - Application source code
+  - `main/` - Electron main process
+  - `core/` - Core services (auth, cache, error, monitoring, storage, etc.)
+  - `api/` - Local API server (Express)
+  - `graph/` - Microsoft Graph integration
+  - `modules/` - Functional modules (mail, calendar, files)
+  - `nlu/` - Natural language understanding
+  - `utils/` - Utilities and validation schemas
+  - `renderer/` - Electron renderer (UI)
+- `test/` - Unit, integration, and E2E tests
+- `config/` - Build and tooling configuration
+
 ### 2. Package Configuration
 
 - **File Summary**: `package.json` - Defines project dependencies, scripts, and metadata.
-- [ ] Create package.json with project details
-- [ ] Configure build scripts
-- [ ] Add development dependencies
-- [ ] Configure electron-builder
-- [ ] Set up ESLint and Prettier
+- [x] Create package.json with project details
+- [x] Configure build scripts
+- [x] Add development dependencies
+- [x] Configure electron-builder
+- [x] Set up minimal electron-builder configuration
+- [x] Set up ESLint and Prettier
 - **Test**: Run `npm install` and verify all dependencies install correctly
 - **Success Criteria**: All scripts run without errors
 - **Memory Update**: Document available npm scripts and their purposes
 
+### Linting & Formatting
+- `standard` is used for linting and formatting JavaScript code.
+- The `lint` script (`npm run lint`) runs Standard, which checks and auto-formats code style.
+- No separate Prettier config is needed for Phase 1 as Standard covers formatting.
+
+### Electron Builder Config
+- `appId`: com.microsoft.mcpdesktop
+- `productName`: MCP Desktop
+- `directories.buildResources`: build assets directory
+- `directories.output`: build output directory (dist)
+- `files`: includes src and package.json
+- `mac`, `win`, `linux`: platform targets for packaging
+
+This config allows packaging for all major platforms as required.
+
+### DevDependencies & Purpose
+- `electron`: Electron runtime for desktop app
+- `electron-builder`: Packaging/building Electron apps
+- `standard`: JavaScript linter/formatter
+- `jest`: Test framework for unit/integration tests
+- `nodemon`: Auto-reloads Electron for development
+
+All required build, dev, test, and lint scripts are present in package.json and match the project architecture requirements.
+
+### NPM Scripts & Purpose
+- `start`: Launches the Electron app
+- `dev`: Runs Electron with nodemon, watching src for changes (development mode)
+- `test`: Runs Jest test suite
+- `lint`: Runs StandardJS linter
+- `build`: Builds the Electron app using electron-builder
+
 ### 3. Configuration System
 
 - **File Summary**: `src/config/index.js` - Manages application configuration from multiple sources.
-- [ ] Create configuration schema
-- [ ] Implement environment variable loading
-- [ ] Add defaults for all configuration values
-- [ ] Create config validation
-- [ ] Implement secure storage for sensitive config
+- [x] Create configuration schema
+- [x] Implement environment variable loading
+- [x] Add defaults for all configuration values
+- [x] Create config validation
+- [x] Implement secure storage for sensitive config
 - **Test**: Load app with different environment configurations
 - **Success Criteria**: Config loads correctly, validates inputs, and merges sources
 - **Memory Update**: Document configuration options and how to modify them
+
+### Configuration System
+- Config is loaded asynchronously from environment variables, `.env` file (if present), and secure storage (keytar).
+- Validation and defaults are enforced using Joi schemas.
+- Sensitive secrets (e.g., MICROSOFT_CLIENT_SECRET) are stored/retrieved via keytar.
+- To modify config, set environment variables, edit `.env`, or update secrets in keytar.
+- Use the exported async `getConfig()` from `src/config/index.js` to access validated config in your modules.
+- All config operations are async and non-blocking, following project rules.
+
+#### Example usage:
+```js
+const { getConfig } = require('../config');
+(async () => {
+  const config = await getConfig();
+  // use config.PORT, config.MICROSOFT_CLIENT_ID, etc.
+})();
+```
+
+#### Supported config options:
+- `PORT` (number, default: 3000)
+- `NODE_ENV` (development/production/test, default: development)
+- `LOG_LEVEL` (info/warn/error/debug, default: info)
+- `CACHE_TTL` (seconds, default: 3600)
+- `MICROSOFT_CLIENT_ID` (required)
+- `MICROSOFT_TENANT_ID` (required)
+- `MICROSOFT_REDIRECT_URI` (default: http://localhost:3000/auth/callback)
+- `MICROSOFT_CLIENT_SECRET` (from keytar, optional)
 
 ## Core Services
 
 ### 4. Error Service
 
 - **File Summary**: `src/core/error-service.js` - Provides standardized error creation and handling.
-- [ ] Define error categories and severity levels
+- [x] Define error categories and severity levels
 - [ ] Implement createError function
 - [ ] Add context sanitization to remove sensitive data
 - [ ] Create API-friendly error responses
 - [ ] Implement error logging integration
 - **Test**: Create errors of different types and verify format
+
+#### Error Categories & Severities
+- Categories: `auth`, `graph`, `api`, `database`, `module`, `nlu`, `system`
+- Severities: `info`, `warning`, `error`, `critical`
+- Exported as constants from `src/core/error-service.js` for use throughout the application.
 
 ```javascript
 // Test: Error Creation
