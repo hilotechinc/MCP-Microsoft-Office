@@ -4,6 +4,13 @@
  */
 
 const { v4: uuidv4 } = require('uuid');
+let MonitoringService;
+try {
+  MonitoringService = require('./monitoring-service');
+} catch (e) {
+  // In test environments or if not available, skip logging
+  MonitoringService = null;
+}
 
 /**
  * Error categories for classification.
@@ -47,7 +54,7 @@ function sanitizeContext(context) {
 }
 
 /**
- * Creates a standardized error object for MCP.
+ * Creates a standardized error object for MCP and logs it.
  * @param {string} category - One of CATEGORIES
  * @param {string} message - User-friendly error message
  * @param {string} severity - One of SEVERITIES
@@ -55,7 +62,7 @@ function sanitizeContext(context) {
  * @returns {Object} Standardized error object
  */
 function createError(category, message, severity, context = {}) {
-  return {
+  const errorObj = {
     id: uuidv4(),
     category,
     message,
@@ -63,10 +70,39 @@ function createError(category, message, severity, context = {}) {
     context: sanitizeContext(context),
     timestamp: new Date().toISOString()
   };
+  // Log error asynchronously if MonitoringService is available
+  if (MonitoringService && typeof MonitoringService.logError === 'function') {
+    setImmediate(() => {
+      try {
+        MonitoringService.logError(errorObj);
+      } catch (e) {
+        // Fail silently if logging fails
+      }
+    });
+  }
+  return errorObj;
+}
+
+/**
+ * Creates an API-friendly error response object.
+ * Only exposes safe fields, never internal details or stack traces.
+ * @param {Object} error - Standardized error object (from createError)
+ * @returns {Object} API-safe error response
+ */
+function createApiError(error) {
+  return {
+    id: error.id,
+    category: error.category,
+    message: error.message,
+    severity: error.severity,
+    context: error.context,
+    timestamp: error.timestamp
+  };
 }
 
 module.exports = {
   CATEGORIES,
   SEVERITIES,
-  createError
+  createError,
+  createApiError
 };

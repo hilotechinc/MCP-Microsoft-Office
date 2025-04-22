@@ -1,0 +1,115 @@
+/**
+ * @fileoverview GraphClientFactory creates authenticated Microsoft Graph API clients.
+ * Uses user-provided access tokens from AuthService. No secrets, fully async, testable.
+ */
+
+const authService = require('../core/auth-service');
+const fetch = require('node-fetch');
+
+/**
+ * Creates an authenticated Graph client.
+ * @returns {Promise<GraphClient>}
+ */
+async function createClient() {
+    const token = await authService.getToken();
+    if (!token) throw new Error('No access token available');
+    return new GraphClient(token);
+}
+
+class GraphClient {
+    constructor(token) {
+        this.token = token;
+    }
+
+    /**
+     * Returns a request builder for a Graph API endpoint.
+     * @param {string} path - The Graph API path (e.g., '/me')
+     */
+    api(path) {
+        const self = this;
+        return {
+            async get(options = {}) {
+                return await _fetchWithRetry(path, self.token, 'GET', null, options);
+            }
+            // Could add .post, .patch, etc. here as needed
+        };
+    }
+
+    /**
+     * Batch multiple Graph API requests.
+     * @param {Array<{method: string, url: string, body?: any}>} requests
+     * @returns {Promise<Array<any>>}
+     */
+    async batch(requests) {
+        const response = await _fetchWithRetry('/$batch', this.token, 'POST', { requests }, {});
+        return (response.responses || []).map(r => r.body);
+    }
+}
+
+/**
+ * Helper to fetch with retry logic.
+ */
+/**
+ * Helper to fetch with retry logic and respect for Microsoft Graph rate limiting.
+ * Retries on 429 (Too Many Requests) using the retry-after header if present.
+ * @param {string} path
+ * @param {string} token
+ * @param {string} method
+ * @param {object|null} body
+ * @param {object} options
+ * @param {number} retries
+ */
+async function _fetchWithRetry(path, token, method, body, options, retries = 2) {
+    const url = (path.startsWith('http') ? path : `https://graph.microsoft.com/v1.0${path}`);
+    const headers = Object.assign({
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+    }, options.headers || {});
+    for (let attempt = 0; attempt <= retries; attempt++) {
+        const res = await fetch(url, {
+            method,
+            headers,
+            body: body ? JSON.stringify(body) : undefined
+        });
+        if (res.ok) return await res.json();
+        if (res.status === 429) {
+            const retryAfter = Number(res.headers.get('retry-after')) || 1;
+            if (attempt === retries) throw new Error(`Graph API throttled (429) after ${retries+1} attempts`);
+            await new Promise(r => setTimeout(r, retryAfter * 1000));
+            continue;
+        }
+        if (attempt === retries) throw new Error(`Graph API request failed: ${res.status}`);
+    }
+}
+
+/**
+ * Enhanced batch method: retries only failed requests (429) after retry-after delay.
+ */
+GraphClient.prototype.batch = async function(requests, retries = 2) {
+    let pending = requests.map((req, i) => ({ ...req, _idx: i }));
+    let results = new Array(requests.length);
+    let attempts = 0;
+    while (pending.length && attempts <= retries) {
+        const response = await _fetchWithRetry('/$batch', this.token, 'POST', { requests: pending }, {});
+        const retryRequests = [];
+        let maxRetryAfter = 0;
+        (response.responses || []).forEach((r, idx) => {
+            const origIdx = pending[idx]._idx;
+            if (r.status === 429) {
+                const retryAfter = Number((r.headers && r.headers['retry-after']) || 1);
+                maxRetryAfter = Math.max(maxRetryAfter, retryAfter);
+                retryRequests.push(pending[idx]);
+            } else {
+                results[origIdx] = r.body;
+            }
+        });
+        if (!retryRequests.length) break;
+        if (attempts === retries) throw new Error('Graph API batch throttled (429) after max retries');
+        await new Promise(r => setTimeout(r, maxRetryAfter * 1000));
+        pending = retryRequests;
+        attempts++;
+    }
+    return results;
+};
+
+module.exports = { createClient, GraphClient };
