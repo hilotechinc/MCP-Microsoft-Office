@@ -402,6 +402,9 @@ expect(Array.isArray(results)).toBe(true);
 - [x] Add attachment handling
 - **Test**: All core operations unit tested (see mail-service.test.js)
 
+**Summary:**
+All mail service features (inbox, search, send, flag, attachments) are implemented, robust, and fully tested. All results are normalized and conform to MCP and Microsoft Graph standards. The implementation follows all async, modular, and error-handling rules in phase1_architecture.md. API and module contracts are validated. All tests pass.
+
 ```javascript
 // Test: Email Retrieval
 const emails = await mailService.getInbox({ top: 10 });
@@ -459,6 +462,9 @@ await expect(mailService.getInbox({ top: 1 })).rejects.toThrow(/429/);
 - [x] Implement availability checking
 - [x] Add recurring event support
 - **Test**: All core operations unit tested (see calendar-service.test.js)
+
+**Summary:**
+All calendar service features (event retrieval, create, update, scheduling, availability, recurrence) are implemented, robust, and fully tested. All results are normalized and comply with MCP, Microsoft Graph, and phase1_architecture.md rules. API and module contracts are validated. All tests pass.
 
 ```javascript
 // Test: Event Retrieval
@@ -611,12 +617,14 @@ expect(Array.isArray(searchResults)).toBe(true);
 ### 14. Data Normalizers
 
 - **File Summary**: `src/graph/normalizers.js` - Contains functions for normalizing Graph API responses.
-- [ ] Create email normalization
-- [ ] Implement event normalization
-- [ ] Add file normalization
-- [ ] Create user profile normalization
-- [ ] Implement consistent object patterns
-- **Test**: Normalize raw API data and verify structure
+- [x] Create email normalization
+- [x] Implement event normalization
+- [x] Add file normalization
+- [x] Create user profile normalization
+- [x] Implement consistent object patterns
+- **Test**: Normalize raw API data and verify structure ✅
+
+All normalizer tests (email, file, event) are robust, modular, and passing. Normalization is fully aligned with Microsoft Graph documentation and project rules.
 
 ```javascript
 // Test: Email Normalization
@@ -637,11 +645,26 @@ expect(normalized).not.toHaveProperty('body'); // Should be excluded
 ### 15. Module Registry
 
 - **File Summary**: `src/modules/module-registry.js` - Manages the discovery and lifecycle of modules.
-- [ ] Create module registration mechanism
-- [ ] Implement capability registration
-- [ ] Add dynamic module discovery
-- [ ] Create intent routing logic
-- [ ] Implement module initialization with dependencies
+- [x] Create module registration mechanism
+
+**Summary:**
+Implemented `src/modules/module-registry.js` with `registerModule`, `getModule`, and `listModules`. Enforces unique id, explicit interface, and is modular/testable. Aligned with phase1_architecture.md.
+- [x] Implement capability registration
+
+**Summary:**
+Extended `module-registry.js` to track and expose module capabilities. Added `findModulesForIntent`, `getAllModules`, and `listCapabilities`. All behaviors are robustly tested and compliant with phase1_architecture.md.
+- [x] Add dynamic module discovery
+
+**Summary:**
+Implemented `src/modules/discover-modules.js` for async module discovery and registration. Thoroughly tested with mock modules; only valid modules are registered. Fully aligned with phase1_architecture.md and project rules.
+- [x] Create intent routing logic
+
+**Summary:**
+Implemented `src/modules/intent-router.js` for async, modular intent routing based on module capabilities. Robustly tested with multiple scenarios. Fully aligned with phase1_architecture.md and project rules.
+- [x] Implement module initialization with dependencies
+
+**Summary:**
+Implemented `src/modules/init-modules.js` for async, dependency-injected module initialization. Robustly tested with service injection and registry update. Fully aligned with phase1_architecture.md and project rules.
 - **Test**: Register test modules and verify discovery
 
 ```javascript
@@ -669,12 +692,15 @@ expect(capableModules).toContainEqual(testModule);
 ### 16. Mail Module
 
 - **File Summary**: `src/modules/mail/index.js` - Implements mail-related functionality and intent handling.
-- [ ] Define module interface and capabilities
-- [ ] Implement handlers for mail-related intents
-- [ ] Create mail actions (send, read, search)
-- [ ] Add normalized response formatting
-- [ ] Implement caching strategy
+- [x] Define module interface and capabilities
+- [x] Implement handlers for mail-related intents
+- [x] Create mail actions (send, read, search)
+- [x] Add normalized response formatting
+- [x] Implement caching strategy
 - **Test**: Process mail-related intents and verify responses
+
+**Summary:**
+Implemented `src/modules/mail/index.js` with full MCP-compliant interface, async intent handlers, normalized responses, and caching. All mail actions (read, search, send, flag, attachments) are robustly tested and pass. Fully aligned with phase1_architecture.md and project rules.
 
 ```javascript
 // Test: Intent Handling
@@ -699,12 +725,15 @@ expect(Array.isArray(response.data.emails)).toBe(true);
 ### 17. Calendar Module
 
 - **File Summary**: `src/modules/calendar/index.js` - Implements calendar-related functionality and intent handling.
-- [ ] Define module interface and capabilities
-- [ ] Implement handlers for calendar-related intents
-- [ ] Create calendar actions (create, find, update)
-- [ ] Add scheduling intelligence
-- [ ] Implement caching strategy
+- [x] Define module interface and capabilities
+- [x] Implement handlers for calendar-related intents
+- [x] Create calendar actions (create, find, update)
+- [x] Add scheduling intelligence
+- [x] Implement caching strategy
 - **Test**: Process calendar-related intents and verify responses
+
+**Summary:**
+Implemented `src/modules/calendar/index.js` with full MCP-compliant interface, async intent handlers, normalized responses, scheduling intelligence, and caching. All calendar actions (get, create, update, availability, schedule) are robustly tested and pass. Fully aligned with phase1_architecture.md and project rules.
 
 ```javascript
 // Test: Intent Handling
@@ -729,12 +758,15 @@ expect(Array.isArray(response.data.events)).toBe(true);
 ### 18. Files Module
 
 - **File Summary**: `src/modules/files/index.js` - Implements file-related functionality and intent handling.
-- [ ] Define module interface and capabilities
-- [ ] Implement handlers for file-related intents
-- [ ] Create file actions (find, open, share)
-- [ ] Add document organization
-- [ ] Implement caching strategy
+- [x] Define module interface and capabilities
+- [x] Implement handlers for file-related intents
+- [x] Create file actions (find, open, share)
+- [x] Add document organization
+- [x] Implement caching strategy
 - **Test**: Process file-related intents and verify responses
+
+**Summary:**
+Implemented `src/modules/files/index.js` with full MCP-compliant interface, async intent handlers, normalized responses, document organization, and caching. All file actions (list, search, download, upload, metadata, sharing, permissions, content ops) are robustly tested and pass. Fully aligned with phase1_architecture.md and project rules.
 
 ```javascript
 // Test: Intent Handling
