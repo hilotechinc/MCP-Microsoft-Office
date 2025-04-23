@@ -1,18 +1,18 @@
-# MCP Project
+# Microsoft Cloud Platform (MCP)
 
-The Microsoft Cloud Platform (MCP) Server is a cross-platform desktop application that enables natural language interaction with Microsoft 365 services (Mail, Calendar, OneDrive) via Large Language Models (LLMs). MCP unifies the Microsoft 365 experience, letting users chat with an AI assistant to manage emails, meetings, and documents—all with contextual insights and automation.
+MCP is a cross-platform desktop application that enables natural language interaction with Microsoft 365 services through Large Language Models (LLMs). It creates a unified conversational interface for all your Microsoft data - emails, calendar, documents, contacts, and more.
 
----
+With MCP, you can chat naturally with an AI assistant about your Microsoft 365 content, receive contextual insights, and take actions across services - all through simple conversation.
 
 ## Vision & Value Proposition
+
 - **Conversational Productivity:** Natural language is the interface for all Microsoft 365 data and actions.
-- **Unified Context:** Brings together mail, calendar, and files with cross-app insights.
-- **Privacy by Design:** Data is processed locally where possible.
-- **Test-Driven, Modular, and Async:** Every component is independently testable, non-blocking, and replaceable.
+- **Contextual Intelligence:** Get insights that connect information across services (e.g., "What do I need to prepare for tomorrow's meeting?").
+- **Unified Experience:** Access all Microsoft services through a single, coherent interface.
+- **Privacy by Design:** Processes data locally on your device when possible.
+- **Productivity Enhancement:** Automates common tasks through natural language requests.
 
----
-
-## Architecture Overview
+## Core Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -37,82 +37,221 @@ The Microsoft Cloud Platform (MCP) Server is a cross-platform desktop applicatio
 └─────────────────────────────┘    └─────────────────┘  └────────────────┘
 ```
 
----
-
 ## How MCP Works
+
 1. **User Query:** User enters a natural language request in the UI.
 2. **NLU & Intent Routing:** Hybrid NLU (pattern matching + LLM) extracts intent and entities.
 3. **Module Handling:** Intent is routed to the appropriate module (Mail, Calendar, Files).
-4. **Graph API Access:** Module uses async, dependency-injected GraphClient for secure Microsoft 365 access.
-5. **Normalization:** Data is normalized for consistency and privacy before returning to the UI.
-6. **Response:** UI displays results and possible next actions.
+4. **Graph API Access:** Module uses Microsoft Graph API to access Microsoft 365 services.
+5. **Context Integration:** Information from multiple services is combined for richer insights.
+6. **Response Generation:** Results are formatted into natural language and displayed with possible actions.
 
----
+## Implementation Phases
 
-## Design Principles
-- **Modular:** Each service (mail, calendar, files) is an independent, injectable module. Modules expose only normalized, well-defined APIs.
-- **Async/Non-blocking:** All operations are async/await, never blocking the event loop. Promises are always handled.
-- **Test-Driven:** Every module and function has comprehensive unit tests. Tests cover core logic, error, and throttling scenarios.
-- **Error Handling:** Centralized, standardized error creation and logging. All errors are caught and reported with context.
-- **Validation:** Joi schemas validate all API inputs and outputs.
-- **Caching:** In-memory cache for Graph API calls, with TTL and invalidation.
-- **Security:** MSAL public client flow for authentication, no secrets in code, tokens stored securely.
+The MCP project is being implemented in three strategic phases:
 
----
+### Phase 1: Minimum Viable Product (MVP)
+- **Core Features:** Mail, Calendar, and OneDrive modules
+- **Architecture:** Desktop app with local API server
+- **Technology:** Node.js, Electron, Express
+- **Authentication:** MSAL public client flow
+- **Data Storage:** SQLite for local persistence
+- **Caching:** In-memory caching for performance
+- **NLU:** Basic intent extraction and entity recognition
 
-## Directory Structure
-- `src/`
-  - `main/` — Electron main process
-  - `core/` — Core services (auth, cache, error, monitoring, storage)
-  - `api/` — Local API server (Express)
-  - `graph/` — Microsoft Graph integration (modular, test-driven)
-  - `modules/` — Functional modules (mail, calendar, files)
-  - `nlu/` — Natural language understanding
-  - `utils/` — Utilities and validation schemas
-  - `renderer/` — Electron renderer (UI)
-- `test/` — Unit, integration, and E2E tests (Jest)
-- `config/` — Build and tooling configuration
+### Phase 2: Enhanced Experience
+- **New Modules:** People/Contacts and SharePoint integration
+- **Enhanced Context:** Cross-service awareness for deeper insights
+- **Improved Caching:** Optional Redis support
+- **Rich UI:** Enhanced message formatting and visualization
+- **Advanced NLU:** More sophisticated prompting and context handling
+- **Relationship Discovery:** Entity connections across services
 
----
+### Phase 3: Advanced Capabilities
+- **Teams Integration:** Complete Microsoft Teams support
+- **Proactive Intelligence:** Notifications and smart suggestions
+- **Cross-Device Sync:** Seamless experience across multiple devices
+- **Enterprise Features:** Deployment, security, and compliance controls
+- **Advanced Analytics:** Usage patterns and productivity insights
+- **Intelligent Assistants:** Specialized helpers for deadlines, meetings, etc.
+
+## Core Design Principles
+
+- **Asynchronous Operations ONLY:** All operations use async/await with proper Promise handling.
+- **Comprehensive Error Handling:** Standardized error creation, logging, and recovery paths.
+- **Modular Architecture:** Independent modules with clear interfaces and dependency injection.
+- **Test-Driven Development:** Every component has comprehensive tests for all functionality.
+- **Data Validation:** Joi schemas validate all inputs and outputs throughout the application.
+- **Privacy-First:** Data is normalized and minimized before processing or storage.
+- **Event-Driven Communication:** Components communicate through a decoupled event system.
+
+## Example: Mail Module
+
+```javascript
+module.exports = {
+  id: 'mail',
+  name: 'Outlook Mail',
+  
+  capabilities: ['readMail', 'sendMail', 'searchMail'],
+  
+  // Initialize module with services
+  init(services) {
+    this.mailService = services.mailService;
+    this.cacheService = services.cacheService;
+    return this;
+  },
+  
+  // Handle mail-related intents
+  async handleIntent(intent, entities, context) {
+    switch (intent) {
+      case 'readMail':
+        return await this.handlers.readMail(entities, context);
+      case 'sendMail':
+        return await this.handlers.sendMail(entities, context);
+      case 'searchMail':
+        return await this.handlers.searchMail(entities, context);
+    }
+  },
+  
+  handlers: require('./handlers')
+};
+```
+
+## Key User Stories
+
+### Contextual Meeting Intelligence
+"As a busy professional, I want to quickly understand the context of my upcoming meetings so I can be better prepared."
+
+### Smart Email Management
+"As someone who receives dozens of emails daily, I want help identifying and responding to important messages."
+
+### Intelligent Document Discovery
+"As a team member working across multiple projects, I want to quickly find relevant documents without searching through folders."
+
+### Seamless Calendar Management
+"As a manager coordinating with multiple teams, I want to schedule meetings efficiently without back-and-forth emails."
+
+### Cross-Application Insights
+"As a knowledge worker, I want insights that connect information across different applications."
+
+## Project Structure
+
+```
+mcp-desktop/
+├── src/
+│   ├── main/                   # Electron main process
+│   ├── core/                   # Core services
+│   │   ├── auth-service.js     # Microsoft authentication
+│   │   ├── cache-service.js    # Caching layer
+│   │   ├── error-service.js    # Error handling
+│   │   ├── event-service.js    # Event management
+│   │   └── storage-service.js  # Local storage
+│   │
+│   ├── api/                    # API endpoints
+│   │   ├── routes.js           # Route definitions
+│   │   └── controllers/        # Request handlers
+│   │
+│   ├── graph/                  # Microsoft Graph integration
+│   │   ├── graph-client.js     # Graph client factory
+│   │   ├── mail-service.js     # Mail API operations
+│   │   ├── calendar-service.js # Calendar API operations
+│   │   └── files-service.js    # Files API operations
+│   │
+│   ├── modules/                # Functional modules
+│   │   ├── module-registry.js  # Module management
+│   │   ├── mail/               # Mail module
+│   │   ├── calendar/           # Calendar module
+│   │   └── files/              # Files module
+│   │
+│   ├── nlu/                    # Natural language understanding
+│   │   ├── nlu-agent.js        # NLU coordination
+│   │   └── llm-service.js      # External LLM integration
+│   │
+│   └── renderer/               # Electron renderer (UI)
+│       ├── index.html          # Main HTML file
+│       └── components/         # UI components
+│
+└── test/                       # Tests
+    ├── unit/                   # Unit tests
+    ├── integration/            # Integration tests
+    └── e2e/                    # End-to-end tests
+```
 
 ## Getting Started
-1. Clone the repository
-2. Install dependencies: `npm install`
-3. Start the app: `npm run dev`
 
----
+### Prerequisites
+- Node.js (v16+)
+- npm or yarn
+- Microsoft 365 account
+- Microsoft Azure App Registration (for Graph API)
+- LLM API key (Claude or OpenAI)
 
-## Example: Test-Driven, Modular, Async Code
-```js
-// src/graph/mail-service.js (excerpt)
-/**
- * Retrieves inbox emails (normalized, async, robust to throttling).
- */
-async function getInbox(options = {}) {
-  const client = await graphClientFactory.createClient();
-  const res = await client.api('/me/mailFolders/inbox/messages?$top=10').get();
-  return (res.value || []).map(normalizeEmail);
-}
-```
-```js
-// test/unit/graph/mail-service.test.js (excerpt)
-it('should retrieve inbox emails', async () => {
-  const emails = await mailService.getInbox({ top: 1 });
-  expect(Array.isArray(emails)).toBe(true);
-  expect(emails[0]).toHaveProperty('id');
-});
+### Installation
+
+1. Clone the repository:
+```bash
+git clone https://github.com/yourusername/mcp.git
+cd mcp
 ```
 
----
+2. Install dependencies:
+```bash
+npm install
+```
 
-## Success Criteria
-- All modules are async, modular, and test-driven
-- UI responds to natural language queries with Microsoft 365 data
-- Data is normalized and privacy-preserving
-- Error handling and validation are robust and standardized
-- System is easily extensible for future modules (e.g., People, Teams)
+3. Create a `.env` file with your configuration:
+```
+MICROSOFT_CLIENT_ID=your_client_id
+LLM_PROVIDER=claude  # or openai
+CLAUDE_API_KEY=your_claude_api_key
+# OPENAI_API_KEY=your_openai_api_key  # if using OpenAI
+```
 
----
+4. Start the application in development mode:
+```bash
+npm run dev
+```
+
+## Testing
+
+```bash
+# Run all tests
+npm test
+
+# Run unit tests
+npm run test:unit
+
+# Run integration tests
+npm run test:integration
+
+# Run end-to-end tests
+npm run test:e2e
+```
+
+## Building for Production
+
+```bash
+# Build for current platform
+npm run build
+
+# Build for specific platforms
+npm run build:win
+npm run build:mac
+npm run build:linux
+```
+
+## Contributing
+
+We welcome contributions! Please see our [Contribution Guidelines](CONTRIBUTING.md) for more information.
+
+## Documentation
+
+- [Architecture Documentation](docs/ARCHITECTURE.md)
+- [Implementation Guidelines](docs/IMPLEMENTATION.md)
+- [Phase 1 Checklist](docs/PHASE1.md)
+- [Phase 2 Checklist](docs/PHASE2.md)
+- [Phase 3 Checklist](docs/PHASE3.md)
 
 ## License
-TBD
+
+[MIT](LICENSE)
