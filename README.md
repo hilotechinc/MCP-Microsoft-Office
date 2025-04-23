@@ -202,6 +202,7 @@ npm install
 3. Create a `.env` file with your configuration:
 ```
 MICROSOFT_CLIENT_ID=your_client_id
+MICROSOFT_TENANT_ID=your_tenant_id
 LLM_PROVIDER=claude  # or openai
 CLAUDE_API_KEY=your_claude_api_key
 # OPENAI_API_KEY=your_openai_api_key  # if using OpenAI
@@ -214,19 +215,29 @@ npm run dev
 
 ## Testing
 
+MCP uses Jest for all testing. There are three main types of tests:
+
+- **Unit Tests:** Test isolated modules and functions.
+- **Integration Tests:** Test API endpoints and backend module interactions using Jest + supertest.
+- **End-to-End (E2E) Tests:** Simulate real user workflows across the backend API, chaining endpoints as a user would (e.g., query → mail → calendar). Electron UI E2E is skipped for now.
+
+### Running Tests
+
 ```bash
 # Run all tests
 npm test
 
-# Run unit tests
+# Run unit tests only
 npm run test:unit
 
-# Run integration tests
+# Run integration tests (API/module)
 npm run test:integration
 
-# Run end-to-end tests
+# Run backend E2E tests (API workflows)
 npm run test:e2e
 ```
+
+> **Note:** Electron/Spectron E2E tests are skipped due to maintenance issues. All E2E testing is currently focused on backend API workflows using Jest + supertest. Example scenarios include chaining a query, mail, and calendar API call to simulate a real user session.
 
 ## Building for Production
 
