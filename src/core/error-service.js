@@ -3,14 +3,12 @@
  * Defines error categories, severity levels, and error creation for use across the application.
  */
 
-const { v4: uuidv4 } = require('uuid');
-let MonitoringService;
-try {
-  MonitoringService = require('./monitoring-service');
-} catch (e) {
-  // In test environments or if not available, skip logging
-  MonitoringService = null;
-}
+// This file is a stub. Use '../core/error-service.cjs' for all real error handling logic.
+module.exports = {
+  createError: () => { throw new Error('Use error-service.cjs instead of error-service.js'); },
+  CATEGORIES: {},
+  SEVERITIES: {}
+};
 
 /**
  * Error categories for classification.

@@ -1,0 +1,32 @@
+# MCP Desktop electron-builder configuration
+# Follows modular, cross-platform, and secure packaging best practices
+
+appId: com.microsoft.mcpdesktop
+productName: MCP Desktop
+copyright: "Copyright © 2025 MCP Contributors"
+directories:
+  buildResources: build
+  output: dist
+files:
+  - src/**/*
+  - package.json
+  - node_modules/**/*
+mac:
+  target:
+    - dmg
+    - zip
+  category: public.app-category.productivity
+win:
+  target:
+    - nsis
+    - zip
+linux:
+  target:
+    - AppImage
+    - deb
+    - rpm
+    - tar.gz
+  category: Utility
+publish:
+  provider: generic
+  url: "https://your-download-server.example.com/releases/"
