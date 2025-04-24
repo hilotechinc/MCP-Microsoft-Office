@@ -2,6 +2,42 @@
 
 MCP is a cross-platform desktop application that enables natural language interaction with Microsoft 365 services through Large Language Models (LLMs). It creates a unified conversational interface for all your Microsoft data - emails, calendar, documents, contacts, and more.
 
+## Quick Start
+
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/yourusername/mcp-microsoft-office.git
+   cd mcp-microsoft-office
+   ```
+
+2. **Install dependencies**
+   ```bash
+   npm install
+   ```
+
+3. **Set up Microsoft Authentication**
+   - Register a new app in the [Azure Portal](https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade)
+   - Set the redirect URI to `http://localhost:3000/api/auth/callback`
+   - Grant the following API permissions: `User.Read`, `Mail.Read`, `Calendars.Read`, `Files.Read`
+   - Create a `.env` file with your app registration details:
+     ```
+     MICROSOFT_CLIENT_ID=your-client-id
+     MICROSOFT_TENANT_ID=your-tenant-id
+     MICROSOFT_REDIRECT_URI=http://localhost:3000/api/auth/callback
+     LLM_PROVIDER=openai
+     OPENAI_API_KEY=your-openai-key
+     # CLAUDE_API_KEY=your-claude-key
+     ```
+
+4. **Start the server**
+   ```bash
+   npm run dev:web
+   ```
+
+5. **Open in browser and authenticate**
+   - Visit `http://localhost:3000`
+   - Click "Login with Microsoft" and complete the authentication flow
+
 With MCP, you can chat naturally with an AI assistant about your Microsoft 365 content, receive contextual insights, and take actions across services - all through simple conversation.
 
 ## Vision & Value Proposition
@@ -74,6 +110,65 @@ The MCP project is being implemented in three strategic phases:
 - **Enterprise Features:** Deployment, security, and compliance controls
 - **Advanced Analytics:** Usage patterns and productivity insights
 - **Intelligent Assistants:** Specialized helpers for deadlines, meetings, etc.
+
+## Claude Integration via MCP Adapter
+
+MCP includes a Model Context Protocol (MCP) adapter that enables Claude to directly access your Microsoft 365 data. This creates a powerful integration where Claude can read your emails, check your calendar, and access your files with proper authentication.
+
+### How the MCP Adapter Works
+
+1. **JSON-RPC Bridge**: The `mcp-adapter.cjs` script implements the MCP JSON-RPC protocol over stdio, acting as a bridge between Claude and the MCP HTTP API.
+
+2. **Available Tools**: Claude gains access to these Microsoft 365 capabilities:
+   - `query` - Natural language queries to your Microsoft data
+   - `getMail` - Read emails from your inbox
+   - `sendMail` - Send emails on your behalf
+   - `getCalendar` - Check your calendar events
+   - `createEvent` - Create new calendar events
+   - `listFiles` - Browse your OneDrive/SharePoint files
+   - `uploadFile` - Upload files to your storage
+
+3. **Authentication Flow**: The adapter connects to your authenticated MCP server, which handles Microsoft Graph API authentication with the proper permission scopes.
+
+### Setting Up Claude Integration
+
+1. **Configure Claude Desktop**:
+   - Edit your Claude Desktop configuration file (typically at `~/Library/Application Support/Claude/claude_desktop_config.json`)
+   - Add the MCP server configuration:
+     ```json
+     {
+       "mcpServers": {
+         "m365": {
+           "command": "node",
+           "args": [
+             "/path/to/mcp-adapter.cjs"
+           ],
+           "restrictions": {}
+         }
+       }
+     }
+     ```
+   - Replace `/path/to/mcp-adapter.cjs` with the absolute path to your adapter file
+
+2. **Start Your MCP Server**:
+   - Ensure your MCP server is running (`npm run dev:web`)
+   - Authenticate with Microsoft in your browser
+
+3. **Use with Claude**:
+   - Open Claude Desktop
+   - Claude will automatically connect to your MCP server
+   - Ask questions about your Microsoft 365 data like:
+     - "What emails did I receive yesterday?"
+     - "When is my next meeting?"
+     - "Show me my recent documents"
+
+### Extending the Adapter
+
+The MCP adapter is designed to be modular and extensible. You can add support for additional Microsoft 365 services by:
+
+1. Adding new tool definitions in the `getManifest` method
+2. Implementing the corresponding HTTP request handlers
+3. Updating the tool invocation logic in the `handleRequest` method
 
 ## Core Design Principles
 

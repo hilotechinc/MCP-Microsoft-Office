@@ -1,21 +1,28 @@
-// @fileoverview System tray setup for MCP Electron app (CommonJS)
-const { Tray, Menu } = require('electron');
+/**
+ * @fileoverview Modular Electron system tray integration.
+ * Exports setupTray function for use in main process and for unit testing.
+ */
 const path = require('path');
 
-function setupTray(app, mainWindow) {
-    const trayIcon = path.join(__dirname, '../build/icon.png');
-    const tray = new Tray(trayIcon);
+function setupTray(app, mainWindow, Tray, Menu) {
+    const iconPath = path.join(__dirname, '../assets/tray-icon.png');
+    const tray = new Tray(iconPath);
     const contextMenu = Menu.buildFromTemplate([
         {
-            label: 'Show App',
+            label: 'Show/Hide',
             click: () => {
-                if (mainWindow) mainWindow.show();
+                if (mainWindow.isVisible()) {
+                    mainWindow.hide();
+                } else {
+                    mainWindow.show();
+                }
             }
         },
+        { type: 'separator' },
         {
             label: 'Quit',
-            click: () => {
-                app.quit();
+            click: async () => {
+                await app.quit();
             }
         }
     ]);

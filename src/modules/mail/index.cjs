@@ -3,7 +3,7 @@
  * Exposes: id, name, capabilities, init, handleIntent. Aligned with MCP module system and phase1_architecture.md.
  */
 
-const { normalizeEmail } = require('../../graph/normalizers');
+const { normalizeEmail } = require('../../graph/normalizers.cjs');
 
 const MAIL_CAPABILITIES = [
     'readMail',
@@ -14,6 +14,18 @@ const MAIL_CAPABILITIES = [
 ];
 
 const MailModule = {
+    /**
+     * Fetch raw inbox data from Graph for debugging (no normalization)
+     * @param {object} options
+     * @returns {Promise<object[]>}
+     */
+    async getInboxRaw(options = {}) {
+        const { graphService } = this.services || {};
+        if (!graphService || typeof graphService.getInboxRaw !== 'function') {
+            throw new Error('GraphService.getInboxRaw not implemented');
+        }
+        return await graphService.getInboxRaw(options);
+    },
     id: 'mail',
     name: 'Outlook Mail',
     capabilities: MAIL_CAPABILITIES,
@@ -42,8 +54,9 @@ const MailModule = {
                 const cacheKey = `mail:inbox:${count}`;
                 let mailList = cacheService && await cacheService.get(cacheKey);
                 if (!mailList) {
-                    const raw = await graphService.getInbox(count);
+                    const raw = await graphService.getInbox({ top: count });
                     mailList = Array.isArray(raw) ? raw.map(normalizeEmail) : [];
+
                     if (cacheService) await cacheService.set(cacheKey, mailList, 60);
                 }
                 return { type: 'mailList', items: mailList };

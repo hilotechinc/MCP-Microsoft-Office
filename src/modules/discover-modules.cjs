@@ -18,7 +18,7 @@ async function discoverModules(modulesDir) {
     const files = await fs.readdir(modulesDir);
     const registered = [];
     for (const file of files) {
-        if (!file.endsWith('.js') || file === 'module-registry.js' || file === 'discover-modules.js') continue;
+        if (!file.endsWith('.cjs') || file === 'module-registry.cjs' || file === 'discover-modules.cjs') continue;
         const modPath = path.join(modulesDir, file);
         const mod = require(modPath);
         // Must have id, name, capabilities, init, handleIntent

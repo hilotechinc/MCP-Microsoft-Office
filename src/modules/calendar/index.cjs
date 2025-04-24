@@ -3,7 +3,7 @@
  * Exposes: id, name, capabilities, init, handleIntent. Aligned with MCP module system and phase1_architecture.md.
  */
 
-const { normalizeEvent } = require('../../graph/normalizers');
+const { normalizeEvent } = require('../../graph/normalizers.cjs');
 
 const CALENDAR_CAPABILITIES = [
     'getEvents',
@@ -14,6 +14,32 @@ const CALENDAR_CAPABILITIES = [
 ];
 
 const CalendarModule = {
+    /**
+     * Fetch raw calendar events from Graph for debugging (no normalization)
+     * @param {object} options
+     * @returns {Promise<object[]>}
+     */
+    async getEventsRaw(options = {}) {
+        const { graphService } = this.services || {};
+        if (!graphService || typeof graphService.getEventsRaw !== 'function') {
+            throw new Error('GraphService.getEventsRaw not implemented');
+        }
+        return await graphService.getEventsRaw(options);
+    },
+    
+    /**
+     * Fetch calendar events from Graph and normalize them
+     * @param {object} options
+     * @returns {Promise<object[]>}
+     */
+    async getEvents(options = {}) {
+        const { graphService } = this.services || {};
+        if (!graphService || typeof graphService.getEvents !== 'function') {
+            throw new Error('GraphService.getEvents not implemented');
+        }
+        // Pass through all options including req to the graph service
+        return await graphService.getEvents(options);
+    },
     id: 'calendar',
     name: 'Outlook Calendar',
     capabilities: CALENDAR_CAPABILITIES,

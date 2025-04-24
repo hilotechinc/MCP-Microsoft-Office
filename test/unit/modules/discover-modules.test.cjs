@@ -9,8 +9,8 @@ describe('discoverModules', () => {
     const modB = `module.exports = { id: 'b', name: 'B', capabilities: ['capB'], init: () => {}, handleIntent: () => {} };`;
     beforeAll(() => {
         fs.mkdirSync(TEST_DIR, { recursive: true });
-        fs.writeFileSync(path.join(TEST_DIR, 'a.js'), modA);
-        fs.writeFileSync(path.join(TEST_DIR, 'b.js'), modB);
+        fs.writeFileSync(path.join(TEST_DIR, 'a.cjs'), modA);
+        fs.writeFileSync(path.join(TEST_DIR, 'b.cjs'), modB);
         fs.writeFileSync(path.join(TEST_DIR, 'notamodule.txt'), 'not a js module');
     });
     afterAll(() => {

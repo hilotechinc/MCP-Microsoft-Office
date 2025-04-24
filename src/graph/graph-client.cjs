@@ -3,17 +3,25 @@
  * Uses user-provided access tokens from AuthService. No secrets, fully async, testable.
  */
 
-const authService = require('../core/auth-service');
+const graphNormalizer = require('./normalizers.cjs');
+const msalService = require('../auth/msal-service.cjs');
+const cacheService = require('../core/cache-service.cjs');
 const fetch = require('node-fetch');
 
 /**
  * Creates an authenticated Graph client.
+ * @param {Object} req - Express request object (optional)
  * @returns {Promise<GraphClient>}
  */
-async function createClient() {
-    const token = await authService.getToken();
-    if (!token) throw new Error('No access token available');
-    return new GraphClient(token);
+async function createClient(req) {
+    try {
+        const token = await msalService.getAccessToken(req);
+        if (!token) throw new Error('No access token available');
+        return new GraphClient(token);
+    } catch (error) {
+        console.error('Failed to create Graph client:', error);
+        throw error;
+    }
 }
 
 class GraphClient {
@@ -30,8 +38,16 @@ class GraphClient {
         return {
             async get(options = {}) {
                 return await _fetchWithRetry(path, self.token, 'GET', null, options);
+            },
+            async post(body, options = {}) {
+                return await _fetchWithRetry(path, self.token, 'POST', body, options);
+            },
+            async patch(body, options = {}) {
+                return await _fetchWithRetry(path, self.token, 'PATCH', body, options);
+            },
+            async delete(options = {}) {
+                return await _fetchWithRetry(path, self.token, 'DELETE', null, options);
             }
-            // Could add .post, .patch, etc. here as needed
         };
     }
 

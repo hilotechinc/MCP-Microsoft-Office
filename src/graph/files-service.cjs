@@ -4,7 +4,7 @@
  * Follows project error handling, validation, and normalization rules.
  */
 
-const graphClientFactory = require('./graph-client');
+const graphClientFactory = require('./graph-client.cjs');
 
 function normalizeFile(graphFile) {
   return {

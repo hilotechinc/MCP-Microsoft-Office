@@ -9,6 +9,7 @@ class ContextService {
      * @param {object} storageService - Optional persistent storage
      */
     constructor(storageService) {
+        const storageService = require('./storage-service.cjs');
         this.storageService = storageService;
         this._context = {
             conversationHistory: [],

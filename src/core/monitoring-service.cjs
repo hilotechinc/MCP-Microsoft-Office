@@ -7,6 +7,7 @@
 const winston = require('winston');
 const path = require('path');
 const os = require('os');
+const storageService = require('./storage-service.cjs');
 const fs = require('fs');
 
 // Allow dynamic log file path for testability
@@ -40,18 +41,114 @@ function initLogger(logFilePath, logLevel = 'info') {
     });
 }
 
-function info(msg) {
-    if (!logger) initLogger();
-    logger.info(msg);
+// Initialize logger at startup
+initLogger();
+
+// For test: allow resetting logger with new path
+function _resetLoggerForTest(logFilePath, logLevel = 'info') {
+    if (logger) {
+        for (const t of logger.transports) logger.remove(t);
+    }
+    initLogger(logFilePath, logLevel);
 }
 
+/**
+ * Logs an error event.
+ * @param {Object} error - Error object (from ErrorService)
+ */
 function logError(error) {
     if (!logger) initLogger();
-    logger.error(error);
+    logger.error({
+        id: error.id,
+        category: error.category,
+        message: error.message,
+        severity: error.severity,
+        context: error.context,
+        timestamp: error.timestamp,
+        pid: process.pid,
+        hostname: os.hostname(),
+        version: appVersion
+    });
+}
+
+/**
+ * Logs an info event.
+ * @param {string} message
+ * @param {Object} [context]
+ */
+function info(message, context = {}) {
+    if (!logger) initLogger();
+    logger.info({
+        message,
+        context,
+        timestamp: new Date().toISOString(),
+        pid: process.pid,
+        hostname: os.hostname(),
+        version: appVersion
+    });
+}
+
+/**
+ * Logs a warning event.
+ * @param {string} message
+ * @param {Object} [context]
+ */
+function warn(message, context = {}) {
+    if (!logger) initLogger();
+    logger.warn({
+        message,
+        context,
+        timestamp: new Date().toISOString(),
+        pid: process.pid,
+        hostname: os.hostname(),
+        version: appVersion
+    });
+}
+
+/**
+ * Logs a debug event.
+ * @param {string} message
+ * @param {Object} [context]
+ */
+function debug(message, context = {}) {
+    if (!logger) initLogger();
+    logger.debug({
+        message,
+        context,
+        timestamp: new Date().toISOString(),
+        pid: process.pid,
+        hostname: os.hostname(),
+        version: appVersion
+    });
+}
+
+/**
+ * Tracks a performance metric.
+ * @param {string} name - Metric name
+ * @param {number} value - Metric value
+ * @param {Object} [context] - Additional context
+ */
+function trackMetric(name, value, context = {}) {
+    if (!logger) initLogger();
+    logger.info({
+        type: 'metric',
+        metric: name,
+        value,
+        context,
+        timestamp: new Date().toISOString(),
+        pid: process.pid,
+        hostname: os.hostname(),
+        version: appVersion
+    });
 }
 
 module.exports = {
-    initLogger,
+    logError,
     info,
-    logError
+    warn,
+    debug,
+    trackMetric,
+    LOG_FILE_PATH,
+    _resetLoggerForTest,
+    initLogger
 };

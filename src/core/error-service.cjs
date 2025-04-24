@@ -3,14 +3,12 @@
  * Defines error categories, severity levels, and error creation for use across the application.
  */
 
-const { v4: uuidv4 } = require('uuid');
-let MonitoringService;
-try {
-  MonitoringService = require('./monitoring-service');
-} catch (e) {
-  // In test environments or if not available, skip logging
-  MonitoringService = null;
-}
+// This file is a stub. Use '../core/error-service.cjs' for all real error handling logic.
+module.exports = {
+  createError: () => { throw new Error('Use error-service.cjs instead of error-service.js'); },
+  CATEGORIES: {},
+  SEVERITIES: {}
+};
 
 /**
  * Error categories for classification.
@@ -39,41 +37,71 @@ const SEVERITIES = Object.freeze({
 
 /**
  * Removes sensitive fields from context (e.g., password, token, secret).
+ * @param {Object} context
+ * @returns {Object} sanitized context
  */
 function sanitizeContext(context) {
-  if (!context) return context;
-  const clone = { ...context };
-  ['password', 'token', 'secret', 'apiKey'].forEach((key) => {
-    if (clone[key]) clone[key] = '[REDACTED]';
-  });
-  return clone;
+  if (!context || typeof context !== 'object') return context;
+  const SENSITIVE = ['password', 'token', 'secret', 'accessToken', 'refreshToken', 'clientSecret'];
+  const sanitized = {};
+  for (const key of Object.keys(context)) {
+    if (SENSITIVE.includes(key.toLowerCase())) continue;
+    sanitized[key] = context[key];
+  }
+  return sanitized;
 }
 
 /**
- * Creates a standardized error object for logging and reporting.
- * @param {string} category
- * @param {string} message
- * @param {string} severity
- * @param {object} [context]
- * @returns {object}
+ * Creates a standardized error object for MCP and logs it.
+ * @param {string} category - One of CATEGORIES
+ * @param {string} message - User-friendly error message
+ * @param {string} severity - One of SEVERITIES
+ * @param {Object} [context] - Additional error context (sanitized)
+ * @returns {Object} Standardized error object
  */
-function createError(category, message, severity, context) {
-  const error = {
+function createError(category, message, severity, context = {}) {
+  const errorObj = {
     id: uuidv4(),
-    timestamp: new Date().toISOString(),
     category,
     message,
     severity,
-    context: sanitizeContext(context)
+    context: sanitizeContext(context),
+    timestamp: new Date().toISOString()
   };
-  if (MonitoringService && typeof MonitoringService.logError === 'function') {
-    MonitoringService.logError(error);
+  // Log error asynchronously if MonitoringService is available
+  const storageService = require('./storage-service.cjs');
+  if (storageService.logError === 'function') {
+    setImmediate(() => {
+      try {
+        storageService.logError(errorObj);
+      } catch (e) {
+        // Fail silently if logging fails
+      }
+    });
   }
-  return error;
+  return errorObj;
+}
+
+/**
+ * Creates an API-friendly error response object.
+ * Only exposes safe fields, never internal details or stack traces.
+ * @param {Object} error - Standardized error object (from createError)
+ * @returns {Object} API-safe error response
+ */
+function createApiError(error) {
+  return {
+    id: error.id,
+    category: error.category,
+    message: error.message,
+    severity: error.severity,
+    context: error.context,
+    timestamp: error.timestamp
+  };
 }
 
 module.exports = {
-  createError,
   CATEGORIES,
-  SEVERITIES
+  SEVERITIES,
+  createError,
+  createApiError
 };

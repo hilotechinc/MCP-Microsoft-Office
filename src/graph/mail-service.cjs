@@ -4,7 +4,7 @@
  * Follows project error handling, validation, and normalization rules.
  */
 
-const graphClientFactory = require('./graph-client');
+const graphClientFactory = require('./graph-client.cjs');
 
 /**
  * Normalizes a Graph email object to MCP schema.
@@ -93,10 +93,18 @@ async function getAttachments(id) {
   return res.value || [];
 }
 
+async function getInboxRaw(options = {}) {
+  const client = await graphClientFactory.createClient();
+  const top = options.top || 10;
+  const res = await client.api(`/me/mailFolders/inbox/messages?$top=${top}`).get();
+  return res.value || [];
+}
+
 module.exports = {
   getInbox,
   searchEmails,
   sendEmail,
   flagEmail,
-  getAttachments
+  getAttachments,
+  getInboxRaw
 };

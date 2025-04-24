@@ -5,7 +5,7 @@
  * All methods are async and testable.
  */
 
-const storageService = require('./storage-service');
+const storageService = require('./storage-service.cjs');
 
 const TOKEN_KEY = 'auth-token';
 

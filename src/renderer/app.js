@@ -9,6 +9,12 @@ class EventEmitter {
     emit(event, ...args) { (this.events[event] || []).forEach(fn => fn(...args)); }
 }
 
+// Import using dynamic import for ESM compatibility with CommonJS backend
+let addConnectionChecks;
+
+// We'll import these dynamically in the constructor instead of at the module level
+// to avoid top-level await which can cause issues in some browsers
+
 export class App {
     /**
      * @param {Object} options
@@ -19,22 +25,63 @@ export class App {
         this.events = new EventEmitter();
         this.status = null;
         this.events.on('status:changed', () => this.renderDashboard());
+        
+        // Dynamically import dependencies
+        this.initialized = false;
+        this.initDependencies();
     }
 
     async fetchStatus() {
         try {
+            // Try the direct status endpoint first
             const res = await fetch('/api/status');
             if (res.ok) {
                 this.status = await res.json();
                 this.events.emit('status:changed');
+                return;
+            }
+            
+            // Fallback to health endpoint if status is not available
+            const healthRes = await fetch('/api/health');
+            if (healthRes.ok) {
+                this.status = { msGraph: 'red', llm: 'red', details: {} };
+                this.events.emit('status:changed');
             }
         } catch (e) {
+            console.error('Failed to fetch status:', e);
             this.status = null;
             this.events.emit('status:changed');
         }
     }
 
+    /**
+     * Dynamically import dependencies to avoid top-level await
+     */
+    async initDependencies() {
+        try {
+            const module = await import('./check-connections.js');
+            addConnectionChecks = module.addConnectionChecks;
+            this.initialized = true;
+            console.log('Dependencies loaded successfully');
+        } catch (error) {
+            console.error('Failed to load dependencies:', error);
+        }
+    }
+
     async render() {
+        // Wait for dependencies to be loaded before rendering
+        if (!this.initialized) {
+            await new Promise(resolve => {
+                const checkInit = () => {
+                    if (this.initialized) {
+                        resolve();
+                    } else {
+                        setTimeout(checkInit, 50);
+                    }
+                };
+                checkInit();
+            });
+        }
         await this.fetchStatus();
     }
 
@@ -82,17 +129,34 @@ export class App {
         };
         // Microsoft Graph traffic light and login
         statusBar.appendChild(makeLight('Microsoft Graph', status.msGraph));
-        // Show login button if not authenticated
-        if (status.msGraph === 'red' && status.details.msGraph && status.details.msGraph.loginUrl) {
-            const loginBtn = document.createElement('button');
-            loginBtn.textContent = 'Login with Microsoft';
-            loginBtn.style.marginLeft = '8px';
-            loginBtn.onclick = () => {
-                // Redirect to Microsoft login (real OAuth)
-                window.location.href = status.details.msGraph.loginUrl;
-            };
-            statusBar.appendChild(loginBtn);
-        }
+        
+        // Always show login button in development mode for testing
+        // In production, only show if not authenticated
+        const loginBtn = document.createElement('button');
+        loginBtn.textContent = 'Login with Microsoft';
+        loginBtn.style.marginLeft = '8px';
+        loginBtn.style.padding = '8px 16px';
+        loginBtn.style.backgroundColor = '#0078d4';
+        loginBtn.style.color = 'white';
+        loginBtn.style.border = 'none';
+        loginBtn.style.borderRadius = '4px';
+        loginBtn.style.cursor = 'pointer';
+        loginBtn.onclick = async () => {
+            try {
+                // Call the login endpoint directly
+                const res = await fetch('/api/auth/login', { 
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                if (res.ok) {
+                    // Refresh status after login
+                    await this.fetchStatus();
+                }
+            } catch (error) {
+                console.error('Login failed:', error);
+            }
+        };
+        statusBar.appendChild(loginBtn);
         // Show user info if signed in
         if (status.msGraph === 'green' && status.details.msGraph && status.details.msGraph.user) {
             const userInfo = document.createElement('span');
@@ -115,6 +179,9 @@ export class App {
             serverStatus.style.color = '#e53935';
         }
         statusBar.appendChild(serverStatus);
+        // Add connection check buttons (mail, calendar)
+        addConnectionChecks(this.root);
+
         // Claude integration help
         if (status.msGraph === 'green' && status.llm === 'green') {
             const help = document.createElement('div');

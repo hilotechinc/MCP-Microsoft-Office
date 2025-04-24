@@ -1,11 +1,11 @@
 {
-    "type": "module",
+    "type": "commonjs",
     "name": "mcp-desktop",
     "version": "0.1.0",
     "description": "Microsoft Cloud Platform Desktop Client",
     "main": "src/main/index.cjs",
     "scripts": {
-        "dev:web": "npm run dev:api",
+        "dev:web": "node dev-server.cjs",
         "dev:api": "node src/main/server.cjs",
         "start": "electron .",
         "dev": "nodemon --exec electron . --watch src",

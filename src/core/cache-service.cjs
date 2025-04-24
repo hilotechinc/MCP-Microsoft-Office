@@ -19,6 +19,7 @@ class CacheService {
      */
     async get(key) {
         const entry = this._cache.get(key);
+        const storageService = require('./storage-service.cjs');
         if (!entry) {
             this._stats.misses++;
             return null;

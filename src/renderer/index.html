@@ -14,7 +14,26 @@
     </style>
 </head>
 <body>
+    <div style="position:absolute;top:24px;left:24px;z-index:10;display:flex;flex-direction:column;gap:8px;">
+        <button id="debug-calendar-btn">Debug Calendar</button>
+        <button id="debug-mail-btn">Debug Mail</button>
+    </div>
     <div id="app"></div>
-    <script type="module" src="./index.js"></script>
+    <!-- Polyfill for potential ESM/CommonJS compatibility issues -->
+    <script>
+        window.process = window.process || { env: {} };
+    </script>
+    
+    <!-- First load a simple script to ensure the app div exists -->
+    <script>
+        if (!document.getElementById('app')) {
+            const appDiv = document.createElement('div');
+            appDiv.id = 'app';
+            document.body.appendChild(appDiv);
+        }
+    </script>
+    
+    <!-- Then load the application code -->
+    <script src="./app-bundle.js" defer></script>
 </body>
 </html>

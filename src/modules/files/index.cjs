@@ -3,7 +3,7 @@
  * Exposes: id, name, capabilities, init, handleIntent. Aligned with MCP module system and phase1_architecture.md.
  */
 
-const { normalizeFile } = require('../../graph/normalizers');
+const { normalizeFile } = require('../../graph/normalizers.cjs');
 
 const FILES_CAPABILITIES = [
     'listFiles',

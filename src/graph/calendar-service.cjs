@@ -4,7 +4,7 @@
  * Follows project error handling, validation, and normalization rules.
  */
 
-const graphClientFactory = require('./graph-client');
+const graphClientFactory = require('./graph-client.cjs');
 
 function normalizeEvent(graphEvent) {
   return {
@@ -28,12 +28,12 @@ function normalizeEvent(graphEvent) {
 
 /**
  * Retrieves calendar events within a date range.
- * @param {object} options { start, end }
+ * @param {object} options { start, end, req }
  * @returns {Promise<Array<object>>}
  */
 async function getEvents(options = {}) {
-  const client = await graphClientFactory.createClient();
-  const { start, end } = options;
+  const { start, end, req } = options;
+  const client = await graphClientFactory.createClient(req);
   const filter = start && end ? `?$filter=start/dateTime ge '${start}T00:00:00' and end/dateTime le '${end}T23:59:59'` : '';
   const res = await client.api(`/me/events${filter}`).get();
   return (res.value || []).map(normalizeEvent);
@@ -86,9 +86,23 @@ async function getAvailability(emails, start, end) {
   return res.value || [];
 }
 
+async function getEventsRaw(options = {}) {
+  const { start, end, top, req } = options;
+  const client = await graphClientFactory.createClient(req);
+  let filter = '';
+  if (start && end) {
+    filter = `?$filter=start/dateTime ge '${start}T00:00:00' and end/dateTime le '${end}T23:59:59'`;
+  } else if (top) {
+    filter = `?$top=${top}`;
+  }
+  const res = await client.api(`/me/events${filter}`).get();
+  return res.value || [];
+}
+
 module.exports = {
   getEvents,
   createEvent,
   updateEvent,
-  getAvailability
+  getAvailability,
+  getEventsRaw
 };

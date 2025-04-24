@@ -13,7 +13,7 @@ function createMainWindow() {
         webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
-            preload: path.join(__dirname, 'preload.js')
+            preload: path.join(__dirname, 'preload.cjs')
         },
         show: false // Show after ready-to-show
     });
@@ -31,16 +31,40 @@ function createMainWindow() {
 
 const { ipcMain } = require('electron');
 
-const { setApplicationMenu } = require('./menu.cjs');
+const { setApplicationMenu } = require('./menu');
 
-const { setupTray } = require('./tray.cjs');
+const { setupTray } = require('./tray');
 let tray;
 
 app.on('ready', () => {
     createMainWindow();
     const { Menu, dialog, Tray } = require('electron');
-    setApplicationMenu();
-    tray = setupTray(app, mainWindow);
+    setApplicationMenu(Menu, dialog);
+    tray = setupTray(app, mainWindow, Tray, Menu);
+});
+
+
+/**
+ * Handle ping from renderer.
+ */
+ipcMain.handle('ping', async () => {
+    return 'pong';
+});
+
+/**
+ * Handle sendQuery from renderer (stub for now)
+ * @param {Electron.IpcMainInvokeEvent} event
+ * @param {string} query
+ * @returns {Promise<any>}
+ */
+ipcMain.handle('send-query', async (event, query) => {
+    // TODO: Implement actual query processing logic
+    try {
+        // For now, just echo the query
+        return { ok: true, echo: query };
+    } catch (error) {
+        return { ok: false, error: error.message };
+    }
 });
 
 app.on('window-all-closed', () => {
