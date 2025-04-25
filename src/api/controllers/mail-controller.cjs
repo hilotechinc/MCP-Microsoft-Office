@@ -25,7 +25,7 @@ module.exports = ({ mailModule }) => ({
             if (typeof mailModule.getInboxRaw === 'function' && debug) {
                 try {
                     // If raw fetch is exposed, use it for debug
-                    rawMessages = await mailModule.getInboxRaw({ top, filter });
+                    rawMessages = await mailModule.getInboxRaw({ top, filter }, req);
                 } catch (fetchError) {
                     console.error('Error fetching raw messages:', fetchError);
                     // Continue even if raw fetch fails
@@ -36,10 +36,10 @@ module.exports = ({ mailModule }) => ({
             let messages = [];
             try {
                 if (typeof mailModule.getInbox === 'function') {
-                    messages = await mailModule.getInbox({ top, filter });
+                    messages = await mailModule.getInbox({ top, filter }, req);
                 } else if (typeof mailModule.handleIntent === 'function') {
                     // Try using the module's handleIntent method instead
-                    const result = await mailModule.handleIntent('readMail', { count: top, filter });
+                    const result = await mailModule.handleIntent('readMail', { count: top, filter }, { req });
                     messages = result && result.items ? result.items : [];
                 }
             } catch (moduleError) {

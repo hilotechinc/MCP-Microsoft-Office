@@ -14,10 +14,7 @@
     </style>
 </head>
 <body>
-    <div style="position:absolute;top:24px;left:24px;z-index:10;display:flex;flex-direction:column;gap:8px;">
-        <button id="debug-calendar-btn">Debug Calendar</button>
-        <button id="debug-mail-btn">Debug Mail</button>
-    </div>
+    <!-- Test panel will be inserted dynamically after the status bar -->
     <div id="app"></div>
     <!-- Polyfill for potential ESM/CommonJS compatibility issues -->
     <script>
@@ -35,5 +32,208 @@
     
     <!-- Then load the application code -->
     <script src="./app-bundle.js" defer></script>
+    
+    <!-- Test button functionality -->
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            // Create a function to check status and show test panel if authenticated
+            async function checkStatusAndShowTestPanel() {
+                try {
+                    const response = await fetch('/api/status');
+                    if (response.ok) {
+                        const status = await response.json();
+                        // Only show test panel if Microsoft Graph is connected (green)
+                        if (status.msGraph === 'green') {
+                            // Wait for the app to render the status bar
+                            setTimeout(() => {
+                                createTestPanel();
+                            }, 500);
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error checking status:', error);
+                }
+            }
+            
+            // Create and insert the test panel after the status bar
+            function createTestPanel() {
+                // Check if the panel already exists
+                if (document.getElementById('test-panel')) return;
+                
+                // Create the test panel
+                const testPanel = document.createElement('div');
+                testPanel.id = 'test-panel';
+                testPanel.style.margin = '24px auto';
+                testPanel.style.padding = '16px';
+                testPanel.style.backgroundColor = '#f0f4f8';
+                testPanel.style.borderRadius = '8px';
+                testPanel.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
+                testPanel.style.maxWidth = '800px';
+                testPanel.style.display = 'block';
+                testPanel.style.clear = 'both';
+                
+                // Add panel content
+                testPanel.innerHTML = `
+                    <h3 style="margin-top:0;margin-bottom:12px;color:#333;">Test Microsoft 365 Integration</h3>
+                    <div style="display:flex;flex-direction:row;gap:12px;margin-bottom:16px;">
+                        <button id="debug-calendar-btn" style="padding:8px 16px;background-color:#5c2d91;color:white;border:none;border-radius:4px;cursor:pointer;">Test Calendar API</button>
+                        <button id="debug-mail-btn" style="padding:8px 16px;background-color:#0078d4;color:white;border:none;border-radius:4px;cursor:pointer;">Test Mail API</button>
+                        <button id="debug-files-btn" style="padding:8px 16px;background-color:#107c41;color:white;border:none;border-radius:4px;cursor:pointer;">Test Files API</button>
+                    </div>
+                    <div id="test-results" style="margin-top:12px;background-color:white;padding:12px;border-radius:4px;max-height:300px;overflow:auto;display:none;font-family:monospace;white-space:pre-wrap;"></div>
+                    
+                    <h3 style="margin-top:24px;margin-bottom:12px;color:#333;">MCP Query Log</h3>
+                    <div style="display:flex;flex-direction:row;gap:12px;margin-bottom:16px;">
+                        <button id="clear-log-btn" style="padding:8px 16px;background-color:#d83b01;color:white;border:none;border-radius:4px;cursor:pointer;">Clear Log</button>
+                        <label style="display:flex;align-items:center;">
+                            <input type="checkbox" id="auto-scroll" checked style="margin-right:8px;">
+                            Auto-scroll to bottom
+                        </label>
+                    </div>
+                    <div id="mcp-log" style="background-color:white;padding:12px;border-radius:4px;height:300px;overflow:auto;font-family:monospace;white-space:pre-wrap;font-size:12px;">MCP Query Log initialized. Waiting for queries...</div>
+                `;
+                
+                // Insert after the app div
+                const appDiv = document.getElementById('app');
+                if (appDiv) {
+                    // Insert the test panel after the app div content
+                    appDiv.appendChild(testPanel);
+                    
+                    // Add event listeners to the buttons
+                    const resultsDiv = document.getElementById('test-results');
+                    const mcpLogDiv = document.getElementById('mcp-log');
+                    const autoScrollCheckbox = document.getElementById('auto-scroll');
+                    
+                    // Clear log button
+                    document.getElementById('clear-log-btn').addEventListener('click', () => {
+                        mcpLogDiv.innerHTML = 'MCP Query Log cleared. Waiting for queries...';
+                    });
+                    
+                    // Function to log MCP queries
+                    function logMcpQuery(direction, endpoint, data) {
+                        const timestamp = new Date().toISOString();
+                        const logEntry = `[${timestamp}] ${direction} ${endpoint}
+${JSON.stringify(data, null, 2)}
+
+`;
+                        mcpLogDiv.innerHTML += logEntry;
+                        
+                        // Auto-scroll to bottom if enabled
+                        if (autoScrollCheckbox.checked) {
+                            mcpLogDiv.scrollTop = mcpLogDiv.scrollHeight;
+                        }
+                    }
+                    
+                    // Calendar test button
+                    document.getElementById('debug-calendar-btn').addEventListener('click', async () => {
+                        try {
+                            showResults('Fetching calendar events...');
+                            logMcpQuery('→ OUT', '/api/v1/calendar', { limit: 5, debug: true });
+                            
+                            const response = await fetch('/api/v1/calendar?limit=5&debug=true');
+                            const data = await response.json();
+                            showResults(JSON.stringify(data, null, 2));
+                            
+                            logMcpQuery('← IN', '/api/v1/calendar', data);
+                        } catch (error) {
+                            showResults(`Calendar API error: ${error.message}`);
+                            logMcpQuery('✕ ERROR', '/api/v1/calendar', { error: error.message });
+                        }
+                    });
+                    
+                    // Mail test button
+                    document.getElementById('debug-mail-btn').addEventListener('click', async () => {
+                        try {
+                            showResults('Fetching emails...');
+                            logMcpQuery('→ OUT', '/api/v1/mail', { limit: 5, debug: true });
+                            
+                            const response = await fetch('/api/v1/mail?limit=5&debug=true');
+                            const data = await response.json();
+                            showResults(JSON.stringify(data, null, 2));
+                            
+                            logMcpQuery('← IN', '/api/v1/mail', data);
+                        } catch (error) {
+                            showResults(`Mail API error: ${error.message}`);
+                            logMcpQuery('✕ ERROR', '/api/v1/mail', { error: error.message });
+                        }
+                    });
+                    
+                    // Files test button
+                    document.getElementById('debug-files-btn').addEventListener('click', async () => {
+                        try {
+                            showResults('Fetching files...');
+                            logMcpQuery('→ OUT', '/api/v1/files', { debug: true });
+                            
+                            const response = await fetch('/api/v1/files?debug=true');
+                            const data = await response.json();
+                            showResults(JSON.stringify(data, null, 2));
+                            
+                            logMcpQuery('← IN', '/api/v1/files', data);
+                        } catch (error) {
+                            showResults(`Files API error: ${error.message}`);
+                            logMcpQuery('✕ ERROR', '/api/v1/files', { error: error.message });
+                        }
+                    });
+                }
+            }
+            
+            function showResults(content) {
+                const resultsDiv = document.getElementById('test-results');
+                if (resultsDiv) {
+                    resultsDiv.style.display = 'block';
+                    
+                    // Format the content nicely
+                    if (typeof content === 'string') {
+                        // Check if it's already JSON formatted
+                        if (content.trim().startsWith('{') || content.trim().startsWith('[')) {
+                            try {
+                                const parsed = JSON.parse(content);
+                                resultsDiv.innerHTML = JSON.stringify(parsed, null, 2);
+                            } catch (e) {
+                                // Not valid JSON, just show as is
+                                resultsDiv.innerHTML = content;
+                            }
+                        } else {
+                            resultsDiv.innerHTML = content;
+                        }
+                    } else {
+                        resultsDiv.innerHTML = JSON.stringify(content, null, 2);
+                    }
+                }
+            }
+            
+            // Check status initially
+            checkStatusAndShowTestPanel();
+            
+            // Also check when the login button in the status bar is clicked
+            // We'll use a MutationObserver to detect when the status bar is created
+            const observer = new MutationObserver((mutations) => {
+                mutations.forEach((mutation) => {
+                    if (mutation.type === 'childList' && mutation.addedNodes.length) {
+                        const statusBar = document.getElementById('status-bar');
+                        if (statusBar) {
+                            // Find the login button in the status bar
+                            const loginButtons = Array.from(statusBar.querySelectorAll('button')).filter(
+                                button => button.textContent.includes('Login')
+                            );
+                            
+                            if (loginButtons.length > 0) {
+                                loginButtons[0].addEventListener('click', () => {
+                                    // Check status again after a delay to allow login to complete
+                                    setTimeout(checkStatusAndShowTestPanel, 2000);
+                                });
+                            }
+                            
+                            // We found what we needed, disconnect the observer
+                            observer.disconnect();
+                        }
+                    }
+                });
+            });
+            
+            // Start observing the document body for changes
+            observer.observe(document.body, { childList: true, subtree: true });
+        });
+    </script>
 </body>
 </html>

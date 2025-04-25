@@ -47,7 +47,7 @@ const FilesModule = {
                 const cacheKey = `files:list:${folderId || 'root'}`;
                 let files = cacheService && await cacheService.get(cacheKey);
                 if (!files) {
-                    const raw = await graphService.listFiles(folderId);
+                    const raw = await graphService.listFiles(folderId, context.req);
                     files = Array.isArray(raw) ? raw.map(normalizeFile) : [];
                     if (cacheService) await cacheService.set(cacheKey, files, 60);
                 }

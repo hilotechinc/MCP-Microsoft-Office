@@ -20,10 +20,11 @@ function normalizeFile(graphFile) {
 /**
  * Lists files and folders in a directory (defaults to root).
  * @param {string} [parentId]
+ * @param {object} req - Express request object
  * @returns {Promise<Array<object>>}
  */
-async function listFiles(parentId) {
-  const client = await graphClientFactory.createClient();
+async function listFiles(parentId, req) {
+  const client = await graphClientFactory.createClient(req);
   const path = parentId ? `/me/drive/items/${parentId}/children` : '/me/drive/root/children';
   const res = await client.api(path).get();
   return (res.value || []).map(normalizeFile);
@@ -32,10 +33,11 @@ async function listFiles(parentId) {
 /**
  * Searches files by name.
  * @param {string} query
+ * @param {object} req - Express request object
  * @returns {Promise<Array<object>>}
  */
-async function searchFiles(query) {
-  const client = await graphClientFactory.createClient();
+async function searchFiles(query, req) {
+  const client = await graphClientFactory.createClient(req);
   const res = await client.api(`/me/drive/root/search(q='${encodeURIComponent(query)}')`).get();
   return (res.value || []).map(normalizeFile);
 }
@@ -43,10 +45,11 @@ async function searchFiles(query) {
 /**
  * Downloads a file by ID.
  * @param {string} id
+ * @param {object} req - Express request object
  * @returns {Promise<Buffer>}
  */
-async function downloadFile(id) {
-  const client = await graphClientFactory.createClient();
+async function downloadFile(id, req) {
+  const client = await graphClientFactory.createClient(req);
   // For download, Graph API returns a redirect URL. Here we just simulate.
   return await client.api(`/me/drive/items/${id}/content`).get();
 }

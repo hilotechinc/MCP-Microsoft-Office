@@ -54,7 +54,7 @@ const MailModule = {
                 const cacheKey = `mail:inbox:${count}`;
                 let mailList = cacheService && await cacheService.get(cacheKey);
                 if (!mailList) {
-                    const raw = await graphService.getInbox({ top: count });
+                    const raw = await graphService.getInbox({ top: count }, context.req);
                     mailList = Array.isArray(raw) ? raw.map(normalizeEmail) : [];
 
                     if (cacheService) await cacheService.set(cacheKey, mailList, 60);
@@ -66,7 +66,7 @@ const MailModule = {
                 const cacheKey = `mail:search:${query}`;
                 let results = cacheService && await cacheService.get(cacheKey);
                 if (!results) {
-                    const raw = await graphService.searchEmails(query);
+                    const raw = await graphService.searchEmails(query, {}, context.req);
                     results = Array.isArray(raw) ? raw.map(normalizeEmail) : [];
                     if (cacheService) await cacheService.set(cacheKey, results, 60);
                 }
@@ -74,17 +74,17 @@ const MailModule = {
             }
             case 'sendMail': {
                 const { to, subject, body } = entities;
-                const sent = await graphService.sendEmail({ to, subject, body });
+                const sent = await graphService.sendEmail({ to, subject, body }, context.req);
                 return { type: 'mailSendResult', sent };
             }
             case 'flagMail': {
                 const { mailId, flag } = entities;
-                const flagged = await graphService.flagEmail(mailId, flag);
+                const flagged = await graphService.flagEmail(mailId, flag, context.req);
                 return { type: 'mailFlagResult', flagged };
             }
             case 'getMailAttachments': {
                 const { mailId } = entities;
-                const attachments = await graphService.getAttachments(mailId);
+                const attachments = await graphService.getAttachments(mailId, context.req);
                 return { type: 'mailAttachments', attachments };
             }
             default:

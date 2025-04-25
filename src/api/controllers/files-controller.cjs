@@ -21,10 +21,10 @@ module.exports = ({ filesModule }) => ({
                 if (typeof filesModule.listFiles === 'function') {
                     files = await filesModule.listFiles({
                         parentId: req.query.parentId
-                    });
+                    }, req);
                 } else if (typeof filesModule.handleIntent === 'function') {
                     // Try using the module's handleIntent method instead
-                    const result = await filesModule.handleIntent('listFiles', { parentId: req.query.parentId });
+                    const result = await filesModule.handleIntent('listFiles', { parentId: req.query.parentId }, { req });
                     files = result && result.items ? result.items : [];
                 }
             } catch (moduleError) {

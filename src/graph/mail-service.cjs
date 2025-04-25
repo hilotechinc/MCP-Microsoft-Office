@@ -28,10 +28,11 @@ function normalizeEmail(graphEmail) {
 /**
  * Retrieves inbox emails.
  * @param {object} options
+ * @param {object} req - Express request object
  * @returns {Promise<Array<object>>}
  */
-async function getInbox(options = {}) {
-  const client = await graphClientFactory.createClient();
+async function getInbox(options = {}, req) {
+  const client = await graphClientFactory.createClient(req);
   const top = options.top || 10;
   const res = await client.api(`/me/mailFolders/inbox/messages?$top=${top}`).get();
   return (res.value || []).map(normalizeEmail);
@@ -41,10 +42,11 @@ async function getInbox(options = {}) {
  * Searches emails by query string.
  * @param {string} query
  * @param {object} options
+ * @param {object} req - Express request object
  * @returns {Promise<Array<object>>}
  */
-async function searchEmails(query, options = {}) {
-  const client = await graphClientFactory.createClient();
+async function searchEmails(query, options = {}, req) {
+  const client = await graphClientFactory.createClient(req);
   const top = options.top || 10;
   const res = await client.api(`/me/messages?$search="${encodeURIComponent(query)}"&$top=${top}`).get();
   return (res.value || []).map(normalizeEmail);
@@ -53,48 +55,61 @@ async function searchEmails(query, options = {}) {
 /**
  * Sends an email.
  * @param {object} emailData
- * @returns {Promise<object>}
+ * @param {object} req - Express request object
+ * @returns {Promise<boolean>}
  */
-async function sendEmail(emailData) {
-  const client = await graphClientFactory.createClient();
+async function sendEmail(emailData, req) {
+  const client = await graphClientFactory.createClient(req);
+  const { to, subject, body } = emailData;
+  
   const message = {
-    message: {
-      subject: emailData.subject,
-      body: {
-        contentType: 'Text',
-        content: emailData.body
-      },
-      toRecipients: [{ emailAddress: { address: emailData.to } }]
+    subject,
+    body: {
+      contentType: 'HTML',
+      content: body
     },
-    saveToSentItems: true
+    toRecipients: [
+      {
+        emailAddress: {
+          address: to
+        }
+      }
+    ]
   };
-  return await client.api('/me/sendMail').post(message);
+
+  await client.api('/me/sendMail').post({ message });
+  return true;
 }
 
 /**
- * Flags or categorizes an email.
- * @param {string} id
- * @param {object} flagData
- * @returns {Promise<object>}
+ * Flags/unflag an email.
+ * @param {string} id - Email ID
+ * @param {boolean} flag - Flag state
+ * @param {object} req - Express request object
+ * @returns {Promise<boolean>}
  */
-async function flagEmail(id, flagData) {
-  const client = await graphClientFactory.createClient();
-  return await client.api(`/me/messages/${id}`).patch({ flag: flagData });
+async function flagEmail(id, flag = true, req) {
+  const client = await graphClientFactory.createClient(req);
+  await client.api(`/me/messages/${id}`).patch({
+    flag: { flagStatus: flag ? 'flagged' : 'notFlagged' }
+  });
+  return true;
 }
 
 /**
  * Retrieves attachments for an email.
  * @param {string} id
+ * @param {object} req - Express request object
  * @returns {Promise<Array<object>>}
  */
-async function getAttachments(id) {
-  const client = await graphClientFactory.createClient();
+async function getAttachments(id, req) {
+  const client = await graphClientFactory.createClient(req);
   const res = await client.api(`/me/messages/${id}/attachments`).get();
   return res.value || [];
 }
 
-async function getInboxRaw(options = {}) {
-  const client = await graphClientFactory.createClient();
+async function getInboxRaw(options = {}, req) {
+  const client = await graphClientFactory.createClient(req);
   const top = options.top || 10;
   const res = await client.api(`/me/mailFolders/inbox/messages?$top=${top}`).get();
   return res.value || [];
