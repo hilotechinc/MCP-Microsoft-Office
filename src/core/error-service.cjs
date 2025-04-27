@@ -3,6 +3,8 @@
  * Defines error categories, severity levels, and error creation for use across the application.
  */
 
+const { v4: uuidv4 } = require('uuid');
+
 // This file is a stub. Use '../core/error-service.cjs' for all real error handling logic.
 module.exports = {
   createError: () => { throw new Error('Use error-service.cjs instead of error-service.js'); },
@@ -70,7 +72,7 @@ function createError(category, message, severity, context = {}) {
   };
   // Log error asynchronously if MonitoringService is available
   const storageService = require('./storage-service.cjs');
-  if (storageService.logError === 'function') {
+  if (typeof storageService.logError === 'function') {
     setImmediate(() => {
       try {
         storageService.logError(errorObj);

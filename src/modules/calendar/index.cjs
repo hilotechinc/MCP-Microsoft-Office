@@ -40,6 +40,20 @@ const CalendarModule = {
         // Pass through all options including req to the graph service
         return await graphService.getEvents(options);
     },
+    
+    /**
+     * Create a calendar event
+     * @param {object} eventData - Event data including subject, start, end
+     * @param {object} req - Express request object (optional)
+     * @returns {Promise<object>} Created event
+     */
+    async createEvent(eventData, req) {
+        const { graphService } = this.services || {};
+        if (!graphService || typeof graphService.createEvent !== 'function') {
+            throw new Error('GraphService.createEvent not implemented');
+        }
+        return await graphService.createEvent(eventData, req);
+    },
     id: 'calendar',
     name: 'Outlook Calendar',
     capabilities: CALENDAR_CAPABILITIES,
