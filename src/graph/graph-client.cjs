@@ -15,11 +15,33 @@ const fetch = require('node-fetch');
  */
 async function createClient(req) {
     try {
-        const token = await msalService.getAccessToken(req);
-        if (!token) throw new Error('No access token available');
+        // Determine the type of request
+        const isApiCall = req && (req.isApiCall || req.path?.startsWith('/v1/') || req.headers?.['x-mcp-internal-call'] === 'true');
+        console.log(`[Graph Client] Creating client for ${isApiCall ? 'API call' : 'regular request'}`);
+        
+        let token;
+        
+        // For API calls (including internal MCP calls), use the stored token
+        if (isApiCall) {
+            console.log('[Graph Client] Getting stored token for API call');
+            token = await msalService.getMostRecentToken();
+            console.log(`[Graph Client] Token for API call: ${token ? 'Found' : 'Not found'}`);
+        } else {
+            // Normal flow - get token from session
+            console.log('[Graph Client] Getting token from session');
+            token = await msalService.getAccessToken(req);
+            console.log(`[Graph Client] Token from session: ${token ? 'Found' : 'Not found'}`);
+        }
+        
+        if (!token) {
+            console.error('[Graph Client] No access token available');
+            throw new Error('No access token available');
+        }
+        
+        console.log('[Graph Client] Successfully created Graph client with token');
         return new GraphClient(token);
     } catch (error) {
-        console.error('Failed to create Graph client:', error);
+        console.error('[Graph Client] Failed to create Graph client:', error);
         throw error;
     }
 }

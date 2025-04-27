@@ -6,6 +6,7 @@
 const msal = require('@azure/msal-node');
 const url = require('url');
 const crypto = require('crypto');
+const storageService = require('../core/storage-service.cjs');
 
 // Load environment variables
 const CLIENT_ID = process.env.MICROSOFT_CLIENT_ID;
@@ -29,6 +30,9 @@ console.log('[MSAL] CLIENT_ID:', CLIENT_ID ? 'Set' : 'Not set');
 console.log('[MSAL] TENANT_ID:', TENANT_ID);
 console.log('[MSAL] REDIRECT_URI:', REDIRECT_URI);
 
+// Initialize storage service
+storageService.init().catch(err => console.error('[MSAL] Error initializing storage service:', err));
+
 // Session storage for tokens and accounts
 let currentSession = null;
 
@@ -38,7 +42,7 @@ const msalConfig = {
         authority: `https://login.microsoftonline.com/${TENANT_ID}`,
         // NO clientSecret for public client
     },
-    system: { loggerOptions: { loggerCallback(level, message) { console.log(`MSAL (${level}): ${message}`); } } }
+    system: { loggerOptions: { loggerCallback(level, message) { console.error(`MSAL (${level}): ${message}`); } } }
 };
 
 // Verify MSAL config
@@ -138,7 +142,7 @@ async function handleAuthCallback(req, res) {
     try {
         const response = await pca.acquireTokenByCode(tokenRequest);
         
-        // Store user info in session or memory
+        // Store user info in session, memory, and SQLite database
         const userInfo = {
             username: response.account.username,
             name: response.account.name,
@@ -148,13 +152,31 @@ async function handleAuthCallback(req, res) {
             account: response.account
         };
         
+        // Store in session if available
         if (req.session) {
             req.session.msUser = userInfo;
             delete req.session.pkceCodeVerifier;
-        } else {
-            currentSession = {
-                msUser: userInfo
-            };
+        }
+        
+        // Always store in memory
+        currentSession = {
+            msUser: userInfo
+        };
+        
+        // Also store in SQLite database for persistence across restarts
+        try {
+            console.log('[MSAL] Storing token in SQLite database');
+            await storageService.setSecure('ms-access-token', userInfo.accessToken);
+            await storageService.setSetting('ms-user-info', {
+                username: userInfo.username,
+                name: userInfo.name,
+                homeAccountId: userInfo.homeAccountId,
+                expiresOn: userInfo.expiresOn
+            });
+            console.log('[MSAL] Token stored in SQLite database');
+        } catch (dbError) {
+            console.error('[MSAL] Error storing token in database:', dbError);
+            // Continue even if database storage fails
         }
         
         res.redirect('/');
@@ -200,6 +222,27 @@ async function getAccessToken(req) {
             // TODO: Check token expiration and refresh if needed
             console.log('[MSAL] Using access token from in-memory session');
             return currentSession.msUser.accessToken;
+        }
+        
+        // If not in memory, try to get from SQLite database
+        try {
+            const storedToken = await storageService.getSecure('ms-access-token');
+            if (storedToken) {
+                console.log('[MSAL] Using access token from SQLite database');
+                
+                // Also load it into memory for future use
+                const userInfo = await storageService.getSetting('ms-user-info') || {};
+                currentSession = {
+                    msUser: {
+                        ...userInfo,
+                        accessToken: storedToken
+                    }
+                };
+                
+                return storedToken;
+            }
+        } catch (dbError) {
+            console.error('[MSAL] Error getting token from database:', dbError);
         }
         
         // If we have an account, try to get a token silently
@@ -270,6 +313,16 @@ async function logout(req, res) {
         // Clear memory storage
         currentSession = null;
         
+        // Clear SQLite database storage
+        try {
+            console.log('[MSAL] Clearing token from SQLite database');
+            await storageService.setSecure('ms-access-token', '');
+            await storageService.setSetting('ms-user-info', null);
+            console.log('[MSAL] Token cleared from SQLite database');
+        } catch (dbError) {
+            console.error('[MSAL] Error clearing token from database:', dbError);
+        }
+        
         // Redirect to home page
         res.redirect('/');
     } catch (error) {
@@ -278,4 +331,58 @@ async function logout(req, res) {
     }
 }
 
-module.exports = { isAuthenticated, statusDetails, login, handleAuthCallback, logout, getAccessToken };
+/**
+ * Get the most recently used access token for internal MCP adapter calls.
+ * This allows the MCP adapter to leverage existing authentication without handling it directly.
+ * @returns {Promise<string|null>} The most recent access token, or null if none available
+ */
+async function getMostRecentToken() {
+    try {
+        console.log('[MSAL] Attempting to get most recent token for internal MCP call');
+        
+        // First try to get token from in-memory session
+        if (currentSession && currentSession.msUser && currentSession.msUser.accessToken) {
+            console.log('[MSAL] Found valid token in in-memory session');
+            return currentSession.msUser.accessToken;
+        }
+        
+        // If not in memory, try to get from SQLite database
+        console.log('[MSAL] Trying to get token from SQLite database');
+        try {
+            const storedToken = await storageService.getSecure('ms-access-token');
+            if (storedToken) {
+                console.log('[MSAL] Found valid token in SQLite database');
+                
+                // Also load it into memory for future use
+                const userInfo = await storageService.getSetting('ms-user-info') || {};
+                currentSession = {
+                    msUser: {
+                        ...userInfo,
+                        accessToken: storedToken
+                    }
+                };
+                
+                return storedToken;
+            }
+        } catch (dbError) {
+            console.error('[MSAL] Error getting token from database:', dbError);
+        }
+        
+        // If no token found, we have no authenticated user
+        console.warn('[MSAL] No authenticated user found for internal MCP call');
+        return null;
+    } catch (error) {
+        console.error('[MSAL] Error getting most recent token:', error);
+        return null;
+    }
+}
+
+module.exports = { 
+    isAuthenticated, 
+    statusDetails, 
+    login, 
+    handleAuthCallback, 
+    logout, 
+    getAccessToken,
+    getMostRecentToken
+};

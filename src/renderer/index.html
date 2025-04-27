@@ -85,9 +85,14 @@
                     <h3 style="margin-top:24px;margin-bottom:12px;color:#333;">MCP Query Log</h3>
                     <div style="display:flex;flex-direction:row;gap:12px;margin-bottom:16px;">
                         <button id="clear-log-btn" style="padding:8px 16px;background-color:#d83b01;color:white;border:none;border-radius:4px;cursor:pointer;">Clear Log</button>
+                        <button id="refresh-log-btn" style="padding:8px 16px;background-color:#0078d4;color:white;border:none;border-radius:4px;cursor:pointer;">Refresh Log</button>
                         <label style="display:flex;align-items:center;">
                             <input type="checkbox" id="auto-scroll" checked style="margin-right:8px;">
                             Auto-scroll to bottom
+                        </label>
+                        <label style="display:flex;align-items:center;">
+                            <input type="checkbox" id="auto-refresh" checked style="margin-right:8px;">
+                            Auto-refresh (5s)
                         </label>
                     </div>
                     <div id="mcp-log" style="background-color:white;padding:12px;border-radius:4px;height:300px;overflow:auto;font-family:monospace;white-space:pre-wrap;font-size:12px;">MCP Query Log initialized. Waiting for queries...</div>
@@ -105,9 +110,39 @@
                     const autoScrollCheckbox = document.getElementById('auto-scroll');
                     
                     // Clear log button
-                    document.getElementById('clear-log-btn').addEventListener('click', () => {
-                        mcpLogDiv.innerHTML = 'MCP Query Log cleared. Waiting for queries...';
+                    document.getElementById('clear-log-btn').addEventListener('click', async () => {
+                        try {
+                            // Clear logs on the server
+                            await fetch('/api/v1/logs/clear', { method: 'POST' });
+                            mcpLogDiv.innerHTML = 'MCP Query Log cleared. Waiting for queries...';
+                        } catch (error) {
+                            console.error('Error clearing logs:', error);
+                            mcpLogDiv.innerHTML = 'Error clearing logs: ' + error.message;
+                        }
                     });
+                    
+                    // Refresh log button
+                    document.getElementById('refresh-log-btn').addEventListener('click', () => {
+                        fetchLogs();
+                    });
+                    
+                    // Auto-refresh functionality
+                    const autoRefreshCheckbox = document.getElementById('auto-refresh');
+                    let refreshInterval;
+                    
+                    function setupAutoRefresh() {
+                        if (autoRefreshCheckbox.checked) {
+                            refreshInterval = setInterval(fetchLogs, 5000);
+                        } else {
+                            clearInterval(refreshInterval);
+                        }
+                    }
+                    
+                    autoRefreshCheckbox.addEventListener('change', setupAutoRefresh);
+                    setupAutoRefresh(); // Initial setup
+                    
+                    // Initial fetch of logs
+                    fetchLogs();
                     
                     // Function to log MCP queries
                     function logMcpQuery(direction, endpoint, data) {
@@ -121,6 +156,44 @@ ${JSON.stringify(data, null, 2)}
                         // Auto-scroll to bottom if enabled
                         if (autoScrollCheckbox.checked) {
                             mcpLogDiv.scrollTop = mcpLogDiv.scrollHeight;
+                        }
+                    }
+                    
+                    // Function to fetch logs from the server
+                    async function fetchLogs() {
+                        try {
+                            const response = await fetch('/api/v1/logs');
+                            if (response.ok) {
+                                const logs = await response.json();
+                                
+                                // Clear the log div
+                                mcpLogDiv.innerHTML = '';
+                                
+                                // Add each log entry
+                                if (logs.length === 0) {
+                                    mcpLogDiv.innerHTML = 'No log entries found.';
+                                } else {
+                                    logs.forEach(log => {
+                                        const timestamp = log.timestamp;
+                                        const direction = log.direction || '🔄';
+                                        const endpoint = log.endpoint || 'unknown';
+                                        const data = log.data || {};
+                                        
+                                        const logEntry = `[${timestamp}] ${direction} ${endpoint}
+${JSON.stringify(data, null, 2)}
+
+`;
+                                        mcpLogDiv.innerHTML += logEntry;
+                                    });
+                                    
+                                    // Auto-scroll to bottom if enabled
+                                    if (autoScrollCheckbox.checked) {
+                                        mcpLogDiv.scrollTop = mcpLogDiv.scrollHeight;
+                                    }
+                                }
+                            }
+                        } catch (error) {
+                            console.error('Error fetching logs:', error);
                         }
                     }
                     

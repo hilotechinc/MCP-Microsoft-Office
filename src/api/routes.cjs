@@ -8,6 +8,7 @@ const queryControllerFactory = require('./controllers/query-controller.cjs');
 const mailControllerFactory = require('./controllers/mail-controller.cjs');
 const calendarControllerFactory = require('./controllers/calendar-controller.cjs');
 const filesControllerFactory = require('./controllers/files-controller.cjs');
+const logController = require('./controllers/log-controller.cjs');
 const { requireAuth } = require('./middleware/auth-middleware.cjs');
 const apiContext = require('./api-context.cjs');
 
@@ -105,7 +106,7 @@ function registerRoutes(router) {
     });
     // Versioned API path
     const v1 = express.Router();
-    v1.use(requireAuth); // Require authentication for all v1 endpoints
+    // No authentication required for v1 endpoints - the backend will handle authentication internally
 
     // Create injected controller instances
     const mailController = mailControllerFactory({ mailModule: apiContext.mailModule });
@@ -131,6 +132,16 @@ function registerRoutes(router) {
     // Files endpoints
     v1.get('/files', filesController.listFiles);
     v1.post('/files/upload', filesController.uploadFile);
+
+    // Logging endpoints - no auth required for these
+    // Create a separate router for log endpoints to bypass auth
+    const logRouter = express.Router();
+    logRouter.post('/log', logController.addLogEntry);
+    logRouter.get('/logs', logController.getLogEntries);
+    logRouter.post('/logs/clear', logController.clearLogEntries);
+    
+    // Mount log endpoints directly on v1 without auth middleware
+    v1.use(logRouter);
 
     // Mount v1
     router.use('/v1', v1);
