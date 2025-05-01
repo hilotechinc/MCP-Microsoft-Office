@@ -116,7 +116,23 @@ async function _fetchWithRetry(path, token, method, body, options, retries = 2) 
             await new Promise(r => setTimeout(r, retryAfter * 1000));
             continue;
         }
-        if (attempt === retries) throw new Error(`Graph API request failed: ${res.status}`);
+        
+        // For the last attempt, get detailed error information
+        if (attempt === retries) {
+            try {
+                const errorData = await res.json();
+                console.error('Graph API error details:', JSON.stringify(errorData, null, 2));
+                const errorMessage = errorData.error ? 
+                    `Graph API request failed: ${res.status} - ${errorData.error.code}: ${errorData.error.message}` :
+                    `Graph API request failed: ${res.status}`;
+                throw new Error(errorMessage);
+            } catch (parseError) {
+                // If we can't parse the error response as JSON
+                const errorText = await res.text().catch(() => 'Unable to read error response');
+                console.error('Graph API error text:', errorText);
+                throw new Error(`Graph API request failed: ${res.status} - ${errorText.substring(0, 200)}`);
+            }
+        }
     }
 }
 

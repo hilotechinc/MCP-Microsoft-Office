@@ -8,142 +8,138 @@ const queryControllerFactory = require('./controllers/query-controller.cjs');
 const mailControllerFactory = require('./controllers/mail-controller.cjs');
 const calendarControllerFactory = require('./controllers/calendar-controller.cjs');
 const filesControllerFactory = require('./controllers/files-controller.cjs');
+const peopleControllerFactory = require('./controllers/people-controller.cjs');
 const logController = require('./controllers/log-controller.cjs');
 const { requireAuth } = require('./middleware/auth-middleware.cjs');
 const apiContext = require('./api-context.cjs');
+const statusRouter = require('./status.cjs');
+
+/**
+ * TODO: [Rate Limiting] Implement and configure rate limiting middleware
+ * const rateLimiter = require('express-rate-limit');
+ * const postLimiter = rateLimiter({ windowMs: 15 * 60 * 1000, max: 100 }); // Example: 100 requests per 15 mins
+ */
+const placeholderRateLimit = (req, res, next) => next(); // Placeholder
 
 /**
  * Registers all API routes on the provided router.
  * @param {express.Router} router
  */
-const statusRouter = require('./status.cjs');
-
 function registerRoutes(router) {
     // MCP Tool Manifest for Claude Desktop
     router.get('/tools', (req, res) => {
-        res.json({
-            tools: [
-                {
-                    name: 'query',
-                    description: 'Submit a natural language query to Microsoft 365 (mail, calendar, files)',
-                    endpoint: '/api/v1/query',
-                    method: 'POST',
-                    parameters: {
-                        query: { type: 'string', description: 'The user\'s natural language question' },
-                        context: { type: 'object', description: 'Conversation context', optional: true }
-                    }
-                },
-                {
-                    name: 'getMail',
-                    description: 'Fetch mail from Microsoft 365 inbox',
-                    endpoint: '/api/v1/mail',
-                    method: 'GET',
-                    parameters: {
-                        limit: { type: 'number', description: 'Number of messages to fetch', optional: true },
-                        filter: { type: 'string', description: 'Filter string', optional: true }
-                    }
-                },
-                {
-                    name: 'sendMail',
-                    description: 'Send an email via Microsoft 365',
-                    endpoint: '/api/v1/mail/send',
-                    method: 'POST',
-                    parameters: {
-                        to: { type: 'string|array', description: 'Recipient email(s)' },
-                        subject: { type: 'string', description: 'Email subject' },
-                        body: { type: 'string', description: 'Email body' }
-                    }
-                },
-                {
-                    name: 'getCalendar',
-                    description: 'Fetch calendar events from Microsoft 365',
-                    endpoint: '/api/v1/calendar',
-                    method: 'GET',
-                    parameters: {
-                        limit: { type: 'number', description: 'Number of events to fetch', optional: true },
-                        filter: { type: 'string', description: 'Filter string', optional: true }
-                    }
-                },
-                {
-                    name: 'createEvent',
-                    description: 'Create a calendar event in Microsoft 365',
-                    endpoint: '/api/v1/calendar/create',
-                    method: 'POST',
-                    parameters: {
-                        subject: { type: 'string', description: 'Event subject' },
-                        start: { type: 'object', description: 'Start time (ISO 8601, with timeZone)' },
-                        end: { type: 'object', description: 'End time (ISO 8601, with timeZone)' }
-                    }
-                },
-                {
-                    name: 'listFiles',
-                    description: 'List files in OneDrive/SharePoint',
-                    endpoint: '/api/v1/files',
-                    method: 'GET',
-                    parameters: {
-                        parentId: { type: 'string', description: 'Parent folder ID', optional: true }
-                    }
-                },
-                {
-                    name: 'uploadFile',
-                    description: 'Upload a file to OneDrive/SharePoint',
-                    endpoint: '/api/v1/files/upload',
-                    method: 'POST',
-                    parameters: {
-                        name: { type: 'string', description: 'File name' },
-                        content: { type: 'string', description: 'File content (base64 or plain text)' }
-                    }
-                }
-            ]
-        });
+        // Get tools dynamically from the tools service
+        const tools = apiContext.toolsService.getAllTools();
+        res.json({ tools });
     });
-    // Status endpoint (unauthenticated)
-    router.use('/status', statusRouter);
 
-    // Health check endpoint
+    // Health check endpoint (on main router before v1 to avoid potential v1 middleware)
     router.get('/health', (req, res) => {
         res.json({ status: 'ok' });
     });
+
     // Versioned API path
     const v1 = express.Router();
     // No authentication required for v1 endpoints - the backend will handle authentication internally
 
     // Create injected controller instances
+    // TODO: Consider moving controller instantiation closer to where their routers are defined/used.
     const mailController = mailControllerFactory({ mailModule: apiContext.mailModule });
     const calendarController = calendarControllerFactory({ calendarModule: apiContext.calendarModule });
     const filesController = filesControllerFactory({ filesModule: apiContext.filesModule });
+    const peopleController = peopleControllerFactory({ peopleModule: apiContext.peopleModule });
     const queryController = queryControllerFactory({
         nluAgent: apiContext.nluAgent,
         contextService: apiContext.contextService,
         errorService: apiContext.errorService
     });
 
-    // Query endpoint
-    v1.post('/query', queryController.handleQuery);
+    // --- Query Router --- 
+    const queryRouter = express.Router();
+    // TODO: Apply rate limiting
+    queryRouter.post('/', placeholderRateLimit, queryController.handleQuery);
+    v1.use('/query', queryRouter);
 
-    // Mail endpoints
-    v1.get('/mail', mailController.getMail);
-    v1.post('/mail/send', mailController.sendMail);
+    // --- Mail Router --- 
+    const mailRouter = express.Router();
+    mailRouter.get('/', mailController.getMail); // Corresponds to /v1/mail
+    // TODO: Apply rate limiting
+    mailRouter.post('/send', placeholderRateLimit, mailController.sendMail); // Corresponds to /v1/mail/send
+    mailRouter.get('/search', mailController.searchMail); // Corresponds to /v1/mail/search
+    mailRouter.get('/attachments', mailController.getMailAttachments); // Corresponds to /v1/mail/attachments
+    // IMPORTANT: Route order matters! Put specific routes before parametrized routes
+    // Route order problem fixed: Specific routes now come before the :id pattern
+    mailRouter.patch('/:id/read', placeholderRateLimit, mailController.markAsRead); // Corresponds to /v1/mail/:id/read
+    // Flag/unflag email route
+    mailRouter.post('/flag', placeholderRateLimit, mailController.flagMail); // Corresponds to /v1/mail/flag
+    mailRouter.get('/:id', mailController.getEmailDetails); // Corresponds to /v1/mail/:id
+    v1.use('/mail', mailRouter);
 
-    // Calendar endpoints
-    v1.get('/calendar', calendarController.getEvents);
-    v1.post('/calendar/create', calendarController.createEvent);
+    // --- Calendar Router --- 
+    const calendarRouter = express.Router();
+    calendarRouter.get('/', calendarController.getEvents); // /v1/calendar
+    // TODO: Apply rate limiting
+    calendarRouter.post('/events', placeholderRateLimit, calendarController.createEvent); // /v1/calendar/events
+    calendarRouter.put('/events/:id', calendarController.updateEvent); // /v1/calendar/events/:id 
+    // TODO: Apply rate limiting
+    calendarRouter.post('/availability', placeholderRateLimit, calendarController.getAvailability); // /v1/calendar/availability
+    // TODO: Apply rate limiting
+    calendarRouter.post('/schedule', placeholderRateLimit, calendarController.scheduleMeeting); // /v1/calendar/schedule
+    // TODO: Apply rate limiting
+    calendarRouter.post('/events/:id/accept', placeholderRateLimit, calendarController.acceptEvent);
+    // TODO: Apply rate limiting
+    calendarRouter.post('/events/:id/tentativelyAccept', placeholderRateLimit, calendarController.tentativelyAcceptEvent);
+    // TODO: Apply rate limiting
+    calendarRouter.post('/events/:id/decline', placeholderRateLimit, calendarController.declineEvent);
+    // TODO: Apply rate limiting
+    calendarRouter.post('/events/:id/cancel', placeholderRateLimit, calendarController.cancelEvent);
+    // TODO: Apply rate limiting
+    calendarRouter.post('/findMeetingTimes', placeholderRateLimit, calendarController.findMeetingTimes);
+    calendarRouter.get('/rooms', calendarController.getRooms);
+    calendarRouter.get('/calendars', calendarController.getCalendars);
+    // TODO: Apply rate limiting
+    calendarRouter.post('/events/:id/attachments', placeholderRateLimit, calendarController.addAttachment);
+    calendarRouter.delete('/events/:id/attachments/:attachmentId', calendarController.removeAttachment);
+    v1.use('/calendar', calendarRouter);
 
-    // Files endpoints
-    v1.get('/files', filesController.listFiles);
-    v1.post('/files/upload', filesController.uploadFile);
+    // --- Files Router --- 
+    const filesRouter = express.Router();
+    filesRouter.get('/', filesController.listFiles); // /v1/files
+    // TODO: Apply rate limiting
+    filesRouter.post('/upload', placeholderRateLimit, filesController.uploadFile); // /v1/files/upload
+    filesRouter.get('/search', filesController.searchFiles);
+    filesRouter.get('/metadata', filesController.getFileMetadata);
+    filesRouter.get('/content', filesController.getFileContent);
+    // TODO: Apply rate limiting
+    filesRouter.post('/content', placeholderRateLimit, filesController.setFileContent);
+    // TODO: Apply rate limiting
+    filesRouter.post('/content/update', placeholderRateLimit, filesController.updateFileContent);
+    filesRouter.get('/download', filesController.downloadFile);
+    // TODO: Apply rate limiting
+    filesRouter.post('/share', placeholderRateLimit, filesController.createSharingLink);
+    filesRouter.get('/sharing', filesController.getSharingLinks);
+    // TODO: Apply rate limiting
+    filesRouter.post('/sharing/remove', placeholderRateLimit, filesController.removeSharingPermission);
+    v1.use('/files', filesRouter);
 
-    // Logging endpoints - no auth required for these
-    // Create a separate router for log endpoints to bypass auth
+    // --- People Router --- 
+    const peopleRouter = express.Router();
+    peopleRouter.get('/', peopleController.getRelevantPeople); // /v1/people
+    peopleRouter.get('/search', peopleController.searchPeople);
+    peopleRouter.get('/find', peopleController.findPeople);
+    peopleRouter.get('/:id', peopleController.getPersonById); // /v1/people/:id
+    v1.use('/people', peopleRouter);
+
+    // --- Log Router --- (No Auth required for logs)
     const logRouter = express.Router();
-    logRouter.post('/log', logController.addLogEntry);
-    logRouter.get('/logs', logController.getLogEntries);
-    logRouter.post('/logs/clear', logController.clearLogEntries);
-    
-    // Mount log endpoints directly on v1 without auth middleware
-    v1.use(logRouter);
+    // TODO: Apply rate limiting
+    logRouter.post('/', placeholderRateLimit, logController.addLogEntry); // /v1/logs
+    logRouter.get('/', logController.getLogEntries); // /v1/logs
+    // TODO: Apply rate limiting
+    logRouter.post('/clear', placeholderRateLimit, logController.clearLogEntries); // /v1/logs/clear
+    v1.use('/logs', logRouter); // Mounted at /v1/logs
 
-    // Mount v1
+    // Mount v1 under /v1 path
     router.use('/v1', v1);
 }
 

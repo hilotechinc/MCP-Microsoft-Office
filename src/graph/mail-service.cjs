@@ -59,26 +59,42 @@ async function searchEmails(query, options = {}, req) {
  * @returns {Promise<boolean>}
  */
 async function sendEmail(emailData, req) {
-  const client = await graphClientFactory.createClient(req);
-  const { to, subject, body } = emailData;
-  
-  const message = {
-    subject,
-    body: {
-      contentType: 'HTML',
-      content: body
-    },
-    toRecipients: [
-      {
-        emailAddress: {
-          address: to
-        }
-      }
-    ]
-  };
+  try {
+    const client = await graphClientFactory.createClient(req);
+    const { to, subject, body, cc, bcc } = emailData;
+    
+    // Handle recipients in various formats (string or array)
+    function formatRecipients(recipients) {
+      if (!recipients) return [];
+      
+      // Convert string to array if needed
+      const recipientArray = Array.isArray(recipients) ? recipients : [recipients];
+      
+      // Format each recipient
+      return recipientArray.map(recipient => ({
+        emailAddress: { address: recipient }
+      }));
+    }
+    
+    const message = {
+      subject,
+      body: {
+        contentType: 'HTML',
+        content: body
+      },
+      toRecipients: formatRecipients(to),
+      ccRecipients: formatRecipients(cc),
+      bccRecipients: formatRecipients(bcc)
+    };
 
-  await client.api('/me/sendMail').post({ message });
-  return true;
+    console.log('[MailService] Sending email with message:', JSON.stringify(message));
+    await client.api('/me/sendMail').post({ message });
+    console.log('[MailService] Email sent successfully');
+    return true;
+  } catch (error) {
+    console.error(`[MailService] Error sending email: ${error.message}`);
+    throw error;
+  }
 }
 
 /**
@@ -108,11 +124,83 @@ async function getAttachments(id, req) {
   return res.value || [];
 }
 
+/**
+ * Retrieves raw inbox data (no normalization).
+ * @param {object} options
+ * @param {object} req - Express request object
+ * @returns {Promise<Array<object>>}
+ */
 async function getInboxRaw(options = {}, req) {
   const client = await graphClientFactory.createClient(req);
   const top = options.top || 10;
   const res = await client.api(`/me/mailFolders/inbox/messages?$top=${top}`).get();
   return res.value || [];
+}
+
+/**
+ * Retrieves detailed information for a specific email by ID.
+ * @param {string} id - Email ID
+ * @param {object} req - Express request object
+ * @returns {Promise<object>}
+ */
+async function getEmailDetails(id, req) {
+  try {
+    const client = await graphClientFactory.createClient(req);
+    const message = await client.api(`/me/messages/${id}`).get();
+    
+    if (!message) {
+      console.error(`[MailService] No message found with ID: ${id}`);
+      return null;
+    }
+    
+    return {
+      id: message.id,
+      subject: message.subject,
+      from: {
+        name: message.from?.emailAddress?.name,
+        email: message.from?.emailAddress?.address
+      },
+      to: message.toRecipients?.map(r => ({
+        name: r.emailAddress?.name,
+        email: r.emailAddress?.address
+      })) || [],
+      cc: message.ccRecipients?.map(r => ({
+        name: r.emailAddress?.name,
+        email: r.emailAddress?.address
+      })) || [],
+      bcc: message.bccRecipients?.map(r => ({
+        name: r.emailAddress?.name,
+        email: r.emailAddress?.address
+      })) || [],
+      body: message.body?.content,
+      contentType: message.body?.contentType,
+      received: message.receivedDateTime,
+      sent: message.sentDateTime,
+      isRead: message.isRead,
+      importance: message.importance,
+      hasAttachments: message.hasAttachments,
+      categories: message.categories || []
+    };
+  } catch (error) {
+    console.error(`[MailService] Error getting email details for ID ${id}: ${error.message}`);
+    // Re-throw to allow proper error handling up the chain
+    throw error;
+  }
+}
+
+/**
+ * Marks an email as read.
+ * @param {string} id - Email ID
+ * @param {boolean} isRead - Read status to set
+ * @param {object} req - Express request object
+ * @returns {Promise<boolean>}
+ */
+async function markAsRead(id, isRead = true, req) {
+  const client = await graphClientFactory.createClient(req);
+  await client.api(`/me/messages/${id}`).patch({
+    isRead
+  });
+  return true;
 }
 
 module.exports = {
@@ -121,5 +209,7 @@ module.exports = {
   sendEmail,
   flagEmail,
   getAttachments,
-  getInboxRaw
+  getInboxRaw,
+  getEmailDetails,
+  markAsRead
 };

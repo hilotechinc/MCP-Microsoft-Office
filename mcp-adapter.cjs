@@ -18,6 +18,13 @@ const os = require('os');
 
 // HTTP client for API communication
 const http = require('http');
+const https = require('https');
+const { URLSearchParams } = require('url');
+const Joi = require('joi'); // For parameter validation
+
+// Import monitoring and error services
+const monitoringService = require('./src/core/monitoring-service.cjs');
+const errorService = require('./src/core/error-service.cjs');
 
 // API configuration
 const API_HOST = process.env.API_HOST || 'localhost';
@@ -26,7 +33,82 @@ const API_BASE_PATH = process.env.API_BASE_PATH || '/api';
 const API_TIMEOUT = process.env.API_TIMEOUT || 30000; // 30 seconds
 
 // Configuration
-const LOG_FILE = 'mcp-adapter.log';
+const LOG_DIR = process.env.MCP_LOG_DIR || path.join(os.tmpdir(), 'mcp-logs');
+const LOG_FILE = process.env.MCP_LOG_PATH || path.join(LOG_DIR, 'mcp-adapter.log');
+
+// Create log directory if it doesn't exist
+try {
+    if (!fs.existsSync(LOG_DIR)) {
+        fs.mkdirSync(LOG_DIR, { recursive: true });
+    }
+} catch (err) {
+    // Use process.stderr directly to avoid circular dependencies with logging functions
+    process.stderr.write(`[ERROR] Failed to create log directory: ${err.message}\n`);
+}
+
+// Monkey-patch console methods to prevent JSON-RPC stream pollution
+// Store original console methods
+const originalConsole = {
+    log: console.log,
+    debug: console.debug,
+    info: console.info,
+    warn: console.warn,
+    error: console.error
+};
+
+// Helper: Write to the appropriate log file based on level
+function writeToLogFile(level, ...args) {
+    try {
+        const timestamp = new Date().toISOString();
+        const prefix = `[MCP ADAPTER ${level.toUpperCase()}]`;
+        const formattedArgs = args.map(arg => {
+            if (typeof arg === 'object') {
+                try {
+                    return JSON.stringify(arg);
+                } catch (e) {
+                    return `[Object: ${Object.prototype.toString.call(arg)}]`;
+                }
+            }
+            return String(arg);
+        }).join(' ');
+        
+        // CRITICAL: NEVER write to stdout in an MCP adapter - it corrupts the JSON-RPC stream
+        // Only write to stderr or use monitoring service
+        
+        // In Claude Desktop environment, we can't write to files, so use stderr and monitoring
+        process.stderr.write(`${prefix} ${formattedArgs}\n`);
+        
+        // Try to use monitoring service asynchronously
+        try {
+            setImmediate(() => {
+                if (level === 'error') {
+                    monitoringService.error(`${prefix} ${formattedArgs}`, {});
+                } else if (level === 'warn') {
+                    monitoringService.warn(`${prefix} ${formattedArgs}`, {});
+                } else if (level === 'debug') {
+                    monitoringService.debug(`${prefix} ${formattedArgs}`, {});
+                } else {
+                    monitoringService.info(`${prefix} ${formattedArgs}`, {});
+                }
+            });
+        } catch (monitoringErr) {
+            // Silently ignore monitoring errors - we already logged to stderr
+        }
+    } catch (err) {
+        // Last resort fallback - write directly to stderr
+        process.stderr.write(`[ERROR LOGGING] Failed to log message: ${err.message}\n`);
+    }
+}
+
+// Replace console methods with our safe versions that NEVER write to stdout
+console.log = (...args) => {
+    // NEVER use originalConsole.log as it writes to stdout
+    writeToLogFile('info', ...args);
+};
+console.debug = (...args) => writeToLogFile('debug', ...args);
+console.info = (...args) => writeToLogFile('info', ...args);
+console.warn = (...args) => writeToLogFile('warn', ...args);
+console.error = (...args) => writeToLogFile('error', ...args);
 
 // Adapter state
 let adapterState = {
@@ -35,126 +117,334 @@ let adapterState = {
     backendAvailable: false
 };
 
+// Helper: Initialize the adapter and check backend availability
+let healthCheckInterval = null; // Keep track of the interval timer
+const HEALTH_CHECK_INTERVAL_MS = 60 * 1000; // Check every 60 seconds
+
 /**
  * Call the API server
- * @param {string} method - HTTP method (GET, POST)
+ * @param {string} method - HTTP method (GET, POST, PUT, PATCH, DELETE)
  * @param {string} path - API path (e.g., '/v1/mail')
  * @param {object} data - Request data for POST requests
  * @returns {Promise<object>} - API response
  */
+// TODO: [callApi] Implement circuit breaker pattern (e.g., using 'opossum') (HIGH)
+// TODO: [callApi] Refine retry logic (e.g., exponential backoff, specific status codes) (MEDIUM)
+// TODO: [callApi] Support PATCH/PUT; add retry + circuit breaker (HIGH) - Partially Implemented (PUT/PATCH support + Basic Retry added)
 async function callApi(method, path, data = null) {
-    return new Promise((resolve, reject) => {
-        const options = {
-            hostname: API_HOST,
-            port: API_PORT,
-            path: `${API_BASE_PATH}${path}`,
-            method: method,
-            headers: {
-                'Content-Type': 'application/json',
-                'Accept': 'application/json',
-                // Include a header to indicate this is an internal API call
-                // This allows the backend to recognize it's from the MCP adapter
-                'X-MCP-Internal-Call': 'true'
-            },
-            timeout: API_TIMEOUT
-        };
-        
-        if (data && method === 'POST') {
-            options.headers['Content-Length'] = Buffer.byteLength(JSON.stringify(data));
-        }
-        
-        const req = http.request(options, (res) => {
-            let responseData = '';
-            
-            res.on('data', (chunk) => {
-                responseData += chunk;
-            });
-            
-            res.on('end', () => {
-                try {
-                    // Handle empty response
-                    if (!responseData) {
-                        return resolve({});
-                    }
-                    
-                    const parsedData = JSON.parse(responseData);
-                    
-                    if (res.statusCode >= 400) {
-                        reject(new Error(`API error: ${res.statusCode} ${parsedData.error || 'Unknown error'}`));
-                    } else {
-                        resolve(parsedData);
-                    }
-                } catch (error) {
-                    reject(new Error(`Failed to parse API response: ${error.message}`));
+    const MAX_RETRIES = 3;
+    const RETRY_DELAY_MS = 100;
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+            return await new Promise((resolve, reject) => {
+                const options = {
+                    hostname: API_HOST,
+                    port: API_PORT,
+                    path: `${API_BASE_PATH}${path}`,
+                    method: method,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'X-MCP-Internal-Call': 'true'
+                    },
+                    timeout: API_TIMEOUT
+                };
+
+                const requestBody = data ? JSON.stringify(data) : null;
+
+                if (requestBody && ['POST', 'PUT', 'PATCH'].includes(method.toUpperCase())) {
+                    options.headers['Content-Length'] = Buffer.byteLength(requestBody);
                 }
+
+                const req = http.request(options, (res) => {
+                    let responseData = '';
+                    res.on('data', (chunk) => { responseData += chunk; });
+                    res.on('end', () => {
+                        try {
+                            if (!responseData) {
+                                if (res.statusCode >= 200 && res.statusCode < 300) {
+                                    return resolve({});
+                                } else {
+                                    // Treat 5xx errors as potentially retryable
+                                    const err = new Error(`API error: ${res.statusCode} with empty response`);
+                                    if (res.statusCode >= 500) err.isRetryable = true;
+                                    return reject(err);
+                                }
+                            }
+
+                            const parsedData = JSON.parse(responseData);
+                            if (res.statusCode >= 400) {
+                                const err = new Error(`API error: ${res.statusCode} ${parsedData.error || responseData}`);
+                                // Treat 5xx errors as potentially retryable
+                                if (res.statusCode >= 500) err.isRetryable = true;
+                                reject(err);
+                            } else {
+                                resolve(parsedData);
+                            }
+                        } catch (parseError) {
+                            reject(new Error(`Failed to parse API response: ${parseError.message}. Raw: ${responseData.slice(0, 100)}...`));
+                        }
+                    });
+                });
+
+                req.on('error', (error) => {
+                    // Network errors are retryable
+                    error.isRetryable = true;
+                    reject(new Error(`API request network error: ${error.message}`));
+                });
+
+                req.on('timeout', () => {
+                    req.destroy();
+                    const timeoutError = new Error(`API request timed out after ${API_TIMEOUT}ms`);
+                    timeoutError.isRetryable = true; // Timeouts are retryable
+                    reject(timeoutError);
+                });
+
+                if (requestBody && ['POST', 'PUT', 'PATCH'].includes(method.toUpperCase())) {
+                    req.write(requestBody);
+                }
+                req.end();
             });
-        });
-        
-        req.on('error', (error) => {
-            reject(new Error(`API request failed: ${error.message}`));
-        });
-        
-        req.on('timeout', () => {
-            req.destroy();
-            reject(new Error(`API request timed out after ${API_TIMEOUT}ms`));
-        });
-        
-        if (data && method === 'POST') {
-            req.write(JSON.stringify(data));
+        } catch (error) {
+            lastError = error;
+            if (error.isRetryable && attempt < MAX_RETRIES) {
+                logDebug(`[callApi] Attempt ${attempt} failed (${error.message}), retrying in ${RETRY_DELAY_MS * attempt}ms...`);
+                await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * attempt)); // Simple increasing delay
+            } else {
+                logDebug(`[callApi] Failed after ${attempt} attempts: ${error.message}`);
+                throw lastError; // Throw the last encountered error
+            }
         }
-        
-        req.end();
-    });
+    }
+    // This line should technically not be reached if MAX_RETRIES >= 1
+    throw lastError || new Error('callApi failed after all retries.');
 }
 
-// Helper: log to stderr and file
+// Helper: log debug messages safely (never to stdout)
 function logDebug(message, ...args) {
-    const ts = new Date().toISOString();
-    if (args.length === 0) {
-        process.stderr.write(`[${ts}] ${message}\n`);
-    } else {
-        const safeArgs = args.map(arg => (typeof arg === 'string' ? arg : JSON.stringify(arg)));
-        process.stderr.write(`[${ts}] ${message} ${safeArgs.join(' ')}\n`);
+    // CRITICAL: NEVER write to stdout in an MCP adapter - it corrupts the JSON-RPC stream
+    try {
+        // Format args for better readability
+        const context = args.length > 0 ? { args: args.map(arg => {
+            if (typeof arg === 'object') {
+                try {
+                    return JSON.stringify(arg);
+                } catch (e) {
+                    return `[Object: ${Object.prototype.toString.call(arg)}]`;
+                }
+            }
+            return String(arg);
+        })} : {};
+        
+        // Only write directly to stderr, never to stdout
+        process.stderr.write(`[DEBUG] ${message}\n`);
+        
+        // Attempt to log to monitoring service, but catch any errors
+        try {
+            // Use setImmediate to ensure this doesn't block the main thread
+            // and wrap in try/catch to prevent any errors from bubbling up
+            setImmediate(() => {
+                try {
+                    monitoringService.debug(`[MCP ADAPTER] ${message}`, context);
+                } catch (innerErr) {
+                    // Prevent any errors from escaping setImmediate
+                    process.stderr.write(`[MONITORING ERROR] ${innerErr.message}\n`);
+                }
+            });
+        } catch (monitoringErr) {
+            // Silently ignore monitoring errors - we already logged to stderr
+        }
+    } catch (err) {
+        // Last resort fallback - write directly to stderr
+        process.stderr.write(`[ERROR LOGGING] Failed to log debug message: ${err.message}\n`);
     }
 }
 
-// Helper: log to file and stderr only (no HTTP/UI log)
+// Helper: log to separate file only (never to stdout)
+// Uses MonitoringService for centralized logging
 function logToFile(prefix, method, data) {
-    const timestamp = new Date().toISOString();
-    const logEntry = `[${timestamp}] ${prefix} ${method} ${JSON.stringify(data)}\n`;
-    // Try to write to file, but don't fail if we can't
     try {
-        const logDir = path.dirname(LOG_FILE);
-        try {
-            fs.accessSync(logDir, fs.constants.W_OK);
-            fs.appendFileSync(LOG_FILE, logEntry);
-        } catch (accessErr) {
-            // If we can't access the log directory, try the temp directory
-            const tempLogFile = path.join(os.tmpdir(), 'mcp-adapter.log');
-            fs.appendFileSync(tempLogFile, logEntry);
-            if (!global.logLocationWarned) {
-                logDebug(`[MCP Adapter] Cannot write to ${LOG_FILE}, using ${tempLogFile} instead`);
-                global.logLocationWarned = true;
+        // Format data for better readability
+        const context = {
+            prefix,
+            method,
+            data: data ? (typeof data === 'object' ? data : { value: data }) : null
+        };
+        
+        // CRITICAL: Use setImmediate to ensure this doesn't block the main thread
+        // and wrap in try/catch to prevent any errors from bubbling up
+        setImmediate(() => {
+            try {
+                // Send to monitoring service as info level (can be filtered in logs)
+                monitoringService.info(`[MCP ADAPTER] ${prefix} ${method}`, context);
+            } catch (innerErr) {
+                // Prevent any errors from escaping setImmediate
+                process.stderr.write(`[MONITORING ERROR] ${innerErr.message}\n`);
+                
+                // Try to create an error record using the error service
+                try {
+                    errorService.createError(
+                        errorService.CATEGORIES.SYSTEM,
+                        `Failed to log MCP adapter message: ${innerErr.message}`,
+                        errorService.SEVERITIES.WARNING,
+                        { prefix, method }
+                    );
+                } catch (e) {
+                    // If even that fails, last resort is stderr
+                    process.stderr.write(`[CRITICAL] Error service failure: ${e.message}\n`);
+                }
             }
-        }
-    } catch (fileErr) {
-        if (!global.logFileDisabled) {
-            logDebug('[MCP Adapter] File logging disabled due to errors');
-            global.logFileDisabled = true;
-        }
+        });
+    } catch (err) {
+        // Last resort fallback - write directly to stderr
+        process.stderr.write(`[ERROR LOGGING] Failed to log to monitoring service: ${err.message}\n`);
     }
 }
 
 // Helper: send JSON-RPC response
 function sendResponse(id, result, error) {
-    // Only include 'result' on success, 'error' on failure, never both
+    // CRITICAL: This function must ONLY write valid JSON-RPC to stdout
+    // All logging must go to stderr or monitoring service
+    
+    // Create a valid JSON-RPC 2.0 response
     const msg = { jsonrpc: '2.0', id };
+    
+    // Sanitize and validate the response
     if (error) {
+        // Ensure error has required fields according to JSON-RPC 2.0 spec
+        if (typeof error === 'object') {
+            // Ensure error code is present and is a number
+            if (!('code' in error) || typeof error.code !== 'number') {
+                error.code = -32603; // Internal error
+            }
+            
+            // Ensure error message is present and is a string
+            if (!('message' in error) || typeof error.message !== 'string') {
+                error.message = 'Unknown error';
+            }
+            
+            // Sanitize large error data if present
+            if (error.data) {
+                try {
+                    const errorDataStr = JSON.stringify(error.data);
+                    if (errorDataStr.length > 1000) {
+                        // Truncate large error data
+                        error.data = {
+                            truncated: true,
+                            message: 'Error data too large, truncated',
+                            preview: errorDataStr.substring(0, 500) + '...'
+                        };
+                    }
+                } catch (dataErr) {
+                    // If error data can't be serialized, replace it
+                    error.data = {
+                        error: 'Error data could not be serialized',
+                        message: dataErr.message
+                    };
+                }
+            }
+        } else {
+            // Convert non-object errors to standard format
+            error = {
+                code: -32603,
+                message: String(error)
+            };
+        }
+        
         msg.error = error;
+        
+        // Log error to monitoring service (but not to stdout)
+        setImmediate(() => {
+            try {
+                errorService.createError(
+                    errorService.CATEGORIES.API,
+                    `JSON-RPC error response: ${error.message}`,
+                    errorService.SEVERITIES.WARNING,
+                    { id, error }
+                );
+            } catch (e) {
+                // Silently ignore - we'll still send the response
+                process.stderr.write(`[ERROR SERVICE] Failed to log error: ${e.message}\n`);
+            }
+        });
+    } else if (result !== undefined) {
+        // Sanitize large result payloads
+        try {
+            const resultStr = JSON.stringify(result);
+            // Check if result is too large (over 10MB)
+            if (resultStr.length > 10 * 1024 * 1024) {
+                // Log the issue but don't modify the result
+                // This avoids breaking functionality while still providing a warning
+                process.stderr.write(`[WARNING] Large result payload detected: ${resultStr.length} bytes\n`);
+                
+                // Log asynchronously to avoid blocking
+                setImmediate(() => {
+                    try {
+                        monitoringService.warn('[MCP Adapter] Large result payload', { size: resultStr.length, id });
+                    } catch (e) {
+                        // Silently ignore monitoring errors
+                    }
+                });
+            }
+            msg.result = result;
+        } catch (err) {
+            // Handle case where result can't be serialized
+            process.stderr.write(`[ERROR] Error serializing result: ${err.message}\n`);
+            
+            // Create proper error response
+            msg.error = {
+                code: -32603,
+                message: 'Internal error: Could not serialize result',
+                data: { error: err.message }
+            };
+            delete msg.result; // Ensure we don't have both result and error
+        }
     } else {
-        msg.result = result;
+        // Ensure result is always present when no error
+        msg.result = null;
     }
-    process.stdout.write(JSON.stringify(msg) + '\n');
+    
+    // Send the response as a single line of JSON
+    try {
+        const responseStr = JSON.stringify(msg);
+        
+        // CRITICAL: This is the ONLY place in the entire adapter that should write to stdout
+        process.stdout.write(responseStr + '\n');
+        
+        // Log the response metadata (but not to stdout)
+        // Use setImmediate to ensure this doesn't block the main thread
+        setImmediate(() => {
+            try {
+                logToFile('Response:', id ? `id=${id}` : 'notification', {
+                    size: responseStr.length,
+                    hasError: !!error
+                });
+            } catch (e) {
+                // Silently ignore logging errors
+            }
+        });
+    } catch (err) {
+        // Last resort error handling - write directly to stderr
+        process.stderr.write(`[ERROR] Failed to stringify JSON-RPC response: ${err.message}\n`);
+        
+        // Try to send a basic error response
+        try {
+            const fallbackResponse = JSON.stringify({
+                jsonrpc: '2.0',
+                id,
+                error: {
+                    code: -32603,
+                    message: 'Internal error: Failed to stringify response'
+                }
+            });
+            process.stdout.write(fallbackResponse + '\n');
+        } catch (e) {
+            // If even that fails, we can't do anything more
+            process.stderr.write(`[CRITICAL] Cannot send any response: ${e.message}\n`);
+        }
+    }
 }
 
 // Helper: Initialize the adapter and check backend availability
@@ -162,52 +452,85 @@ async function initializeAdapter() {
     if (adapterState.initialized) {
         return adapterState.backendAvailable;
     }
-    
+
     try {
         // Check if backend API is available by calling the health endpoint
         const healthResponse = await callApi('GET', '/health');
-        
+
         if (!healthResponse || healthResponse.status !== 'ok') {
             logDebug('[MCP Adapter] Error: Backend API server not available');
             adapterState.backendAvailable = false;
         } else {
             logDebug('[MCP Adapter] Successfully connected to backend API server');
             adapterState.backendAvailable = true;
+            adapterState.initialized = true;
+
+            // Start periodic health checks only if initial check was successful
+            if (!healthCheckInterval) {
+                healthCheckInterval = setInterval(async () => {
+                    try {
+                        const healthResponse = await callApi('GET', '/health');
+                        if (healthResponse && healthResponse.status === 'ok') {
+                            if (!adapterState.backendAvailable) {
+                                logDebug('[MCP Adapter] Backend API server became available again.');
+                                adapterState.backendAvailable = true;
+                                // TODO: Reset consecutive failure count here
+                            }
+                        } else {
+                            throw new Error('Backend health check failed or returned invalid status');
+                        }
+                    } catch (error) {
+                        if (adapterState.backendAvailable) {
+                            logDebug(`[MCP Adapter] Periodic health check failed: ${error.message}. Marking backend as unavailable.`);
+                            adapterState.backendAvailable = false;
+                            // TODO: Increment consecutive failure count here
+                            // TODO: Implement fail-fast: if consecutive failures > threshold, clearInterval(healthCheckInterval) and log permanent failure.
+                        }
+                        // else: It was already unavailable, do nothing extra
+                    }
+                }, HEALTH_CHECK_INTERVAL_MS);
+
+                // TODO: Ensure healthCheckInterval is cleared on adapter shutdown/process exit.
+            }
         }
-        
-        adapterState.initialized = true;
         return adapterState.backendAvailable;
     } catch (error) {
-        logDebug('[MCP Adapter] Initialization error:', error.message);
+        logDebug(`[MCP Adapter] Initialization error: ${error.message}`);
         adapterState.initialized = true;
         adapterState.backendAvailable = false;
         return false;
     }
 }
 
-// Helper: Check if we can access Microsoft 365 data
+/**
+ * Check if the backend API is available and if tools/modules are loaded.
+ * Calls the `/v1/tools` endpoint.
+ */
 async function checkModuleAccess() {
     try {
         if (!adapterState.initialized) {
             await initializeAdapter();
         }
-        
+
         if (!adapterState.backendAvailable) {
-            logDebug('[MCP Adapter] Backend API server is not available');
+            logDebug('[MCP Adapter] checkModuleAccess: Backend API server is not available (cached state).');
             return false;
         }
-        
-        // Check API status endpoint
-        const statusResponse = await callApi('GET', '/status');
-        if (statusResponse && statusResponse.status === 'ok') {
-            logDebug('[MCP Adapter] Microsoft 365 API is available');
+
+        // Check if tools are accessible via the API
+        logDebug('[MCP Adapter] checkModuleAccess: Checking /v1/tools endpoint...');
+        const toolsResponse = await callApi('GET', '/v1/tools');
+
+        // Check for a successful response and a non-empty tools array
+        if (toolsResponse && Array.isArray(toolsResponse.tools) && toolsResponse.tools.length > 0) {
+            logDebug(`[MCP Adapter] checkModuleAccess: Success - ${toolsResponse.tools.length} tools reported by API.`);
             return true;
         } else {
-            logDebug('[MCP Adapter] Microsoft 365 API status check failed');
+            logDebug('[MCP Adapter] checkModuleAccess: Failed - API did not return a valid tools list.', toolsResponse);
             return false;
         }
     } catch (error) {
-        logDebug('[MCP Adapter] Module access check error:', error.message);
+        logDebug(`[MCP Adapter] checkModuleAccess: Error checking /v1/tools - ${error.message}`);
         return false;
     }
 }
@@ -215,40 +538,525 @@ async function checkModuleAccess() {
 // Helper: Execute a module method with error handling via API
 async function executeModuleMethod(moduleName, methodName, params = {}) {
     try {
+        // Make sure adapter is initialized
         if (!adapterState.initialized) {
             await initializeAdapter();
         }
-        if (!adapterState.backendAvailable) {
-            throw new Error('Backend API server not available');
-        }
+
+        // Update last activity timestamp
+        adapterState.lastActivity = Date.now();
+
+        // --- Parameter Transformation ---
+        // Instead of validating parameters, we'll transform them as needed
+        // to match the format expected by the backend API
         
-        // Map module and method to API endpoints
+        // Log the parameters being processed
+        logDebug(`[MCP Adapter] Processing parameters for ${moduleName}.${methodName}:`, params);
+        
+        // Transform parameters based on the module and method
+        // This ensures compatibility with the backend API expectations
+        let transformedParams = { ...params }; // Start with a copy of the original params
+        // Map module.method to API endpoints
         let apiPath = '';
         let apiMethod = 'GET';
         let apiData = null;
+
+        // Determine API path and method based on module.method
+        const moduleMethod = `${moduleName}.${methodName}`;
         
-        // Map module.method to API endpoints
-        switch (`${moduleName}.${methodName}`) {
-            case 'mail.getMail':
-                apiPath = '/v1/mail';
+        // Log the module method being executed for debugging
+        logDebug(`[MCP Adapter] Executing module method: ${moduleMethod} with params:`, transformedParams);
+        
+        // Helper function to transform attendees from string or array to proper format
+        const transformAttendees = (attendees) => {
+            if (!attendees) return undefined;
+            
+            // If attendees is a string (comma-separated), convert to array
+            if (typeof attendees === 'string') {
+                return attendees.split(',').map(email => email.trim());
+            }
+            
+            // If already an array, return as is
+            return attendees;
+        };
+        
+        // Helper function to transform date/time to proper format
+        const transformDateTime = (dateTime, timeZone = 'UTC') => {
+            if (!dateTime) return undefined;
+            
+            // If already an object with dateTime, return as is
+            if (typeof dateTime === 'object' && dateTime.dateTime) {
+                return dateTime;
+            }
+            
+            // If a string, convert to object format
+            if (typeof dateTime === 'string') {
+                return {
+                    dateTime: dateTime,
+                    timeZone: timeZone
+                };
+            }
+            
+            return dateTime;
+        };
+        
+        switch (moduleMethod) {
+            // Query module endpoints
+            case 'query.processQuery':
+            case 'query.getQuery': // Add alias for backward compatibility
+                apiPath = '/v1/query';
+                apiMethod = 'POST';
+                // Ensure query parameter is properly named for the API
+                apiData = { 
+                    query: transformedParams.query,
+                    context: transformedParams.context
+                };
+                // Log the API call for debugging
+                logDebug(`[MCP Adapter] Making POST request to ${apiPath} with data:`, apiData);
+                break;
+            
+            // Email details endpoint
+            case 'mail.getEmailDetails':
+                if (!transformedParams.id) {
+                    throw new Error('Email ID is required for getEmailDetails');
+                }
+                // Properly format the path with the ID parameter
+                apiPath = `/mail/${transformedParams.id}`;
+                apiMethod = 'GET';
+                // Log the API call for debugging
+                logDebug(`[MCP Adapter] Making GET request to ${apiPath}`);
+                break;
+                
+            // Mark email as read endpoint
+            case 'mail.markAsRead':
+                if (!transformedParams.id) {
+                    throw new Error('Email ID is required for markAsRead');
+                }
+                // Properly format the path with the ID parameter
+                apiPath = `/mail/${transformedParams.id}/read`;
+                apiMethod = 'PATCH';
+                // Include isRead in the request body
+                apiData = {
+                    isRead: transformedParams.isRead !== false // Default to true if not explicitly set to false
+                };
+                // Log the API call for debugging
+                logDebug(`[MCP Adapter] Making PATCH request to ${apiPath} with data:`, apiData);
+                break;
+            case 'mail.getInbox':
+            case 'mail.readMail':
+            case 'outlook mail.readMail':
+                apiPath = '/mail';
                 apiMethod = 'GET';
                 break;
             case 'mail.sendMail':
-                apiPath = '/v1/mail/send';
+            case 'mail.sendEmail':
+                apiPath = '/mail/send';
+                apiMethod = 'POST';
+                // Transform parameters to match controller expectations
+                apiData = {
+                    to: transformAttendees(transformedParams.to),
+                    subject: transformedParams.subject,
+                    body: transformedParams.body,
+                    cc: transformAttendees(transformedParams.cc),
+                    bcc: transformAttendees(transformedParams.bcc)
+                };
+                // Log the API call for debugging
+                logDebug(`[MCP Adapter] Making POST request to ${apiPath} with data:`, apiData);
+                break;
+            case 'mail.searchMail':
+            case 'mail.searchEmails':
+            case 'mail.search': // Added this alias to handle Claude's tool call
+                apiPath = '/mail/search';
+                apiMethod = 'GET';
+                // Map 'query' parameter to 'q' as expected by the controller
+                if (params.query && !params.q) {
+                    params.q = params.query;
+                    // Remove the original query param to avoid confusion
+                    delete params.query;
+                }
+                break;
+            case 'mail.flagMail':
+            case 'mail.flagEmail':
+                apiPath = '/mail/flag';
                 apiMethod = 'POST';
                 apiData = params;
                 break;
+            case 'mail.getAttachments':
+                apiPath = '/mail/attachments';
+                apiMethod = 'GET';
+                break;
+
+            // Calendar module endpoints
             case 'calendar.getEvents':
+            case 'calendar.getCalendar':
                 apiPath = '/v1/calendar';
                 apiMethod = 'GET';
                 break;
             case 'calendar.createEvent':
-                apiPath = '/v1/calendar/create';
+            case 'calendar.create':
+                apiPath = '/v1/calendar/events';
                 apiMethod = 'POST';
-                apiData = params;
+                // Map of Microsoft time zones to IANA time zones
+                // The server will use this mapping to convert between formats as needed
+                const TIMEZONE_MAPPING = {
+                    'Pacific Standard Time': 'America/Los_Angeles',
+                    'Eastern Standard Time': 'America/New_York',
+                    'Central Standard Time': 'America/Chicago',
+                    'Mountain Standard Time': 'America/Denver',
+                    'Alaskan Standard Time': 'America/Anchorage',
+                    'Hawaiian Standard Time': 'Pacific/Honolulu',
+                    'W. Europe Standard Time': 'Europe/Berlin',
+                    'GMT Standard Time': 'Europe/London',
+                    'Romance Standard Time': 'Europe/Paris',
+                    'E. Europe Standard Time': 'Europe/Bucharest',
+                    'Singapore Standard Time': 'Asia/Singapore',
+                    'Tokyo Standard Time': 'Asia/Tokyo',
+                    'China Standard Time': 'Asia/Shanghai',
+                    'India Standard Time': 'Asia/Kolkata',
+                    'UTC': 'UTC'
+                };
+                
+                // For createEvent, we want to preserve the original Microsoft time zone format
+                // because the Graph API expects this format in the Prefer header
+                // The server's calendar-service.cjs will handle the mapping to IANA format
+                
+                // Make copies of start/end to avoid mutating the original
+                const start = { ...transformedParams.start };
+                const end = { ...transformedParams.end };
+                
+                // Log the original time zones for debugging
+                if (start && start.timeZone) {
+                    console.log(`[MCP Adapter] Original start time zone: ${start.timeZone}`);
+                    // Note that we're NOT converting here - the server will handle it
+                }
+                
+                if (end && end.timeZone) {
+                    console.log(`[MCP Adapter] Original end time zone: ${end.timeZone}`);
+                    // Note that we're NOT converting here - the server will handle it
+                }
+                
+                // Pass the user's timeZone parameter if provided - this helps the server
+                // determine the preferred timezone when not specified in start/end
+                const timeZone = transformedParams.timeZone;
+                if (timeZone) {
+                    console.log(`[MCP Adapter] Using provided timeZone parameter: ${timeZone}`);
+                }
+                
+                // Transform parameters to match the controller's expectations
+                apiData = {
+                    subject: transformedParams.subject,
+                    start: transformDateTime(start, timeZone),
+                    end: transformDateTime(end, timeZone),
+                    location: transformedParams.location,
+                    body: transformedParams.body,
+                    isOnlineMeeting: transformedParams.isOnlineMeeting
+                };
+                
+                // Special handling for attendees based on format
+                if (transformedParams.attendees) {
+                    // Handle different potential formats of attendees
+                    if (Array.isArray(transformedParams.attendees)) {
+                        const formattedAttendees = [];
+                        
+                        for (const attendee of transformedParams.attendees) {
+                            // Case 1: It's already in the right format with emailAddress.address
+                            if (attendee && attendee.emailAddress && attendee.emailAddress.address) {
+                                formattedAttendees.push(attendee);
+                            }
+                            // Case 2: It's an object with email property
+                            else if (attendee && attendee.email) {
+                                formattedAttendees.push({
+                                    emailAddress: {
+                                        address: attendee.email,
+                                        name: attendee.name || attendee.email.split('@')[0]
+                                    },
+                                    type: attendee.type || 'required'
+                                });
+                            }
+                            // Case 3: It's a simple string (email)
+                            else if (typeof attendee === 'string') {
+                                formattedAttendees.push({
+                                    emailAddress: {
+                                        address: attendee,
+                                        name: attendee.split('@')[0]
+                                    },
+                                    type: 'required'
+                                });
+                            }
+                        }
+                        
+                        if (formattedAttendees.length > 0) {
+                            apiData.attendees = formattedAttendees;
+                        }
+                    }
+                }
+                // Log the API call for debugging
+                logDebug(`[MCP Adapter] Making POST request to ${apiPath} with data:`, apiData);
                 break;
+            case 'calendar.events': // Handle the events endpoint for fetching events
+                apiPath = '/v1/calendar';  // Changed from /v1/calendar/events to /v1/calendar
+                apiMethod = 'GET';
+                // For GET requests, parameters go in the query string
+                apiData = null;
+                apiParams = {
+                    limit: transformedParams.limit || 20,
+                    filter: transformedParams.filter,
+                    timeMin: transformedParams.timeMin,
+                    timeMax: transformedParams.timeMax
+                };
+                
+                // Log the API call for debugging
+                logDebug(`[MCP Adapter] Making GET request to ${apiPath} with params:`, apiParams);
+                break;
+            case 'calendar.updateEvent':
+            case 'calendar.update':
+                // Ensure we have a valid event ID
+                if (!transformedParams.id) {
+                    throw new Error('Event ID is required for calendar update');
+                }
+                apiPath = '/v1/calendar/events/' + transformedParams.id;
+                apiMethod = 'PUT';
+                
+                // Create an object with only the provided parameters
+                // This avoids sending undefined values that could overwrite existing data
+                const updateData = {};
+                
+                if (transformedParams.subject !== undefined) {
+                    updateData.subject = transformedParams.subject;
+                }
+                
+                if (transformedParams.start !== undefined) {
+                    updateData.start = transformDateTime(transformedParams.start, transformedParams.timeZone);
+                }
+                
+                if (transformedParams.end !== undefined) {
+                    updateData.end = transformDateTime(transformedParams.end, transformedParams.timeZone);
+                }
+                
+                if (transformedParams.attendees !== undefined) {
+                    updateData.attendees = transformAttendees(transformedParams.attendees);
+                }
+                
+                if (transformedParams.location !== undefined) {
+                    updateData.location = transformedParams.location;
+                }
+                
+                if (transformedParams.body !== undefined) {
+                    updateData.body = transformedParams.body;
+                }
+                
+                if (transformedParams.isOnlineMeeting !== undefined) {
+                    updateData.isOnlineMeeting = transformedParams.isOnlineMeeting;
+                }
+                
+                apiData = updateData;
+                
+                // Log the update data for debugging
+                logDebug(`[MCP Adapter] Updating event ${transformedParams.id} with data:`, apiData);
+                break;
+            case 'calendar.getAvailability':
+            case 'calendar.availability':
+                apiPath = '/v1/calendar/availability';
+                apiMethod = 'POST';
+                
+                // Ensure we have start/end dates for availability check
+                if (!transformedParams.start && !transformedParams.startTime) {
+                    throw new Error('Start time is required for getAvailability');
+                }
+                
+                if (!transformedParams.end && !transformedParams.endTime) {
+                    throw new Error('End time is required for getAvailability');
+                }
+                
+                // Transform start/end to ISO string format if they're Date objects
+                const startTime = typeof transformedParams.start === 'object' && transformedParams.start.dateTime 
+                    ? transformedParams.start.dateTime 
+                    : transformedParams.start || transformedParams.startTime;
+                
+                const endTime = typeof transformedParams.end === 'object' && transformedParams.end.dateTime 
+                    ? transformedParams.end.dateTime 
+                    : transformedParams.end || transformedParams.endTime;
+                
+                // Transform parameters to match the controller's expectations
+                // The controller expects users and timeSlots array
+                apiData = {
+                    // Use users or attendees, transforming as needed
+                    users: transformAttendees(transformedParams.users) || transformAttendees(transformedParams.attendees) || [],
+                    // Format as timeSlots array as required by the controller
+                    timeSlots: [
+                        {
+                            start: {
+                                dateTime: startTime,
+                                timeZone: transformedParams.timeZone || 'UTC'
+                            },
+                            end: {
+                                dateTime: endTime,
+                                timeZone: transformedParams.timeZone || 'UTC'
+                            }
+                        }
+                    ]
+                };
+                
+                // Log the transformed data for debugging
+                logDebug(`[MCP Adapter] Transformed availability data:`, apiData);
+                break;
+            case 'calendar.acceptEvent':
+                apiPath = `/v1/calendar/events/${params.eventId}/accept`;
+                apiMethod = 'POST';
+                apiData = params.comment ? { comment: params.comment } : {};
+                break;
+            case 'calendar.tentativelyAcceptEvent':
+                apiPath = `/v1/calendar/events/${params.eventId}/tentativelyAccept`;
+                apiMethod = 'POST';
+                apiData = params.comment ? { comment: params.comment } : {};
+                break;
+            case 'calendar.declineEvent':
+                apiPath = `/v1/calendar/events/${params.eventId}/decline`;
+                apiMethod = 'POST';
+                apiData = params.comment ? { comment: params.comment } : {};
+                break;
+            case 'calendar.cancelEvent':
+                // Handle both eventId and id parameter names
+                if (!transformedParams.eventId && !transformedParams.id) {
+                    throw new Error('Event ID is required for cancelEvent (either eventId or id parameter)');
+                }
+                
+                const cancelEventId = transformedParams.eventId || transformedParams.id;
+                apiPath = `/v1/calendar/events/${cancelEventId}/cancel`;
+                apiMethod = 'POST';
+                apiData = transformedParams.comment ? { comment: transformedParams.comment } : {};
+                
+                // Log the cancel request
+                logDebug(`[MCP Adapter] Cancelling event ${cancelEventId}`);
+                break;
+            case 'calendar.findMeetingTimes':
+            case 'calendar.findtimes': // Add this case to handle the findtimes endpoint
+                apiPath = '/v1/calendar/findMeetingTimes';
+                apiMethod = 'POST';
+                // Transform parameters to match what the calendar service expects
+                
+                // Extract time constraints from different possible input formats
+                let timeConstraints = transformedParams.timeConstraints;
+                if (!timeConstraints && (transformedParams.startTime || transformedParams.start)) {
+                    timeConstraints = {
+                        startTime: transformedParams.startTime || transformedParams.start,
+                        endTime: transformedParams.endTime || transformedParams.end,
+                        timeZone: transformedParams.timeZone || 'UTC'
+                    };
+                }
+                
+                apiData = {
+                    // Transform attendees to array format
+                    attendees: transformAttendees(transformedParams.attendees) || [],
+                    // Time constraints
+                    timeConstraint: {
+                        start: timeConstraints?.startTime || timeConstraints?.start,
+                        end: timeConstraints?.endTime || timeConstraints?.end,
+                        timeZone: timeConstraints?.timeZone || transformedParams.timeZone || 'UTC'
+                    },
+                    // Duration in minutes
+                    meetingDuration: transformedParams.meetingDuration || transformedParams.duration || 60,
+                    // Additional parameters
+                    maxCandidates: transformedParams.maxCandidates || 10,
+                    minimumAttendeePercentage: transformedParams.minimumAttendeePercentage || 100
+                };
+                
+                // Log the transformed parameters for debugging
+                logDebug(`[MCP Adapter] Transformed findMeetingTimes parameters:`, apiData);
+                break;
+            case 'calendar.scheduleMeeting':
+            case 'calendar.schedule': // Add alias for backward compatibility
+                apiPath = '/v1/calendar/events'; // Map to the same endpoint as createEvent
+                apiMethod = 'POST';
+                
+                // Extract start and end time information - prioritize preferredTimes if available
+                let meetingStartTime, meetingEndTime;
+                
+                if (transformedParams.preferredTimes && transformedParams.preferredTimes.length > 0) {
+                    meetingStartTime = transformedParams.preferredTimes[0].start;
+                    meetingEndTime = transformedParams.preferredTimes[0].end;
+                    console.log(`[MCP Adapter scheduleMeeting] Using preferredTimes: ${JSON.stringify(meetingStartTime)} to ${JSON.stringify(meetingEndTime)}`);
+                } else {
+                    // Try various parameter combinations to extract start/end times
+                    if (transformedParams.start) {
+                        meetingStartTime = transformedParams.start;
+                    } else if (transformedParams.startDateTime) {
+                        meetingStartTime = { 
+                            dateTime: transformedParams.startDateTime, 
+                            timeZone: transformedParams.timeZone || 'Pacific Standard Time' 
+                        };
+                    }
+                    
+                    if (transformedParams.end) {
+                        meetingEndTime = transformedParams.end;
+                    } else if (transformedParams.endDateTime) {
+                        meetingEndTime = { 
+                            dateTime: transformedParams.endDateTime, 
+                            timeZone: transformedParams.timeZone || 'Pacific Standard Time' 
+                        };
+                    }
+                    
+                    console.log(`[MCP Adapter scheduleMeeting] Using direct parameters: ${JSON.stringify(meetingStartTime)} to ${JSON.stringify(meetingEndTime)}`);
+                }
+                
+                // Log timezone information for debugging
+                if (meetingStartTime && meetingStartTime.timeZone) {
+                    console.log(`[MCP Adapter scheduleMeeting] Start time zone: ${meetingStartTime.timeZone}`);
+                }
+                
+                if (meetingEndTime && meetingEndTime.timeZone) {
+                    console.log(`[MCP Adapter scheduleMeeting] End time zone: ${meetingEndTime.timeZone}`);
+                }
+                
+                if (transformedParams.timeZone) {
+                    console.log(`[MCP Adapter scheduleMeeting] Default time zone: ${transformedParams.timeZone}`);
+                }
+                
+                // Transform parameters to match what the calendar controller expects
+                apiData = {
+                    // Required parameters
+                    subject: transformedParams.subject,
+                    attendees: transformAttendees(transformedParams.attendees) || [],
+                    // Use the extracted start and end times
+                    start: meetingStartTime ? transformDateTime(meetingStartTime, transformedParams.timeZone) : undefined,
+                    end: meetingEndTime ? transformDateTime(meetingEndTime, transformedParams.timeZone) : undefined,
+                    // Optional parameters
+                    location: transformedParams.location,
+                    body: transformedParams.body,
+                    isOnlineMeeting: transformedParams.isOnlineMeeting
+                };
+                // Log the API call for debugging
+                logDebug(`[MCP Adapter] Making POST request to ${apiPath} with data:`, apiData);
+                break;
+            case 'calendar.getRooms':
+                apiPath = '/v1/calendar/rooms';
+                apiMethod = 'GET';
+                break;
+            case 'calendar.getCalendars':
+                apiPath = '/v1/calendar/calendars';
+                apiMethod = 'GET';
+                break;
+            case 'calendar.addAttachment':
+                apiPath = `/v1/calendar/events/${params.eventId}/attachments`;
+                apiMethod = 'POST';
+                apiData = params.attachment;
+                break;
+            case 'calendar.removeAttachment':
+                apiPath = `/v1/calendar/events/${params.eventId}/attachments/${params.attachmentId}`;
+                apiMethod = 'DELETE';
+                break;
+
+            // Files module endpoints
             case 'files.listFiles':
                 apiPath = '/v1/files';
+                apiMethod = 'GET';
+                break;
+            case 'files.searchFiles':
+                apiPath = '/v1/files/search';
+                apiMethod = 'GET';
+                break;
+            case 'files.downloadFile':
+                apiPath = '/v1/files/download';
                 apiMethod = 'GET';
                 break;
             case 'files.uploadFile':
@@ -256,6 +1064,80 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 apiMethod = 'POST';
                 apiData = params;
                 break;
+            case 'files.getFileMetadata':
+                apiPath = '/v1/files/metadata';
+                apiMethod = 'GET';
+                break;
+            case 'files.createSharingLink':
+                apiPath = '/v1/files/share';
+                apiMethod = 'POST';
+                apiData = params;
+                break;
+            case 'files.getSharingLinks':
+                apiPath = '/v1/files/sharing';
+                apiMethod = 'GET';
+                break;
+            case 'files.removeSharingPermission':
+                apiPath = '/v1/files/sharing/remove';
+                apiMethod = 'POST';
+                apiData = params;
+                break;
+            case 'files.getFileContent':
+                apiPath = '/v1/files/content';
+                apiMethod = 'GET';
+                break;
+            case 'files.setFileContent':
+                apiPath = '/v1/files/content';
+                apiMethod = 'POST';
+                apiData = params;
+                break;
+            case 'files.updateFileContent':
+                apiPath = '/v1/files/content/update';
+                apiMethod = 'POST';
+                apiData = params;
+                break;
+
+            // People module endpoints
+            case 'people.getRelevantPeople':
+                apiPath = '/v1/people';
+                apiMethod = 'GET';
+                // Map any limit parameter correctly
+                if (params.limit) {
+                    params.limit = parseInt(params.limit, 10);
+                }
+                break;
+            case 'people.searchPeople':
+            case 'people.search':
+                apiPath = '/v1/people/search';
+                apiMethod = 'GET';
+                // Make sure query parameter is preserved
+                if (!params.query && params.q) {
+                    params.query = params.q;
+                    // Remove the q param to avoid confusion
+                    delete params.q;
+                }
+                break;
+            case 'people.findPeople':
+            case 'people.find':
+                apiPath = '/v1/people/find';
+                apiMethod = 'GET';
+                // Make sure query parameter is preserved
+                if (!params.query && params.q) {
+                    params.query = params.q;
+                    // Remove the q param to avoid confusion
+                    delete params.q;
+                }
+                // Ensure limit is parsed as integer
+                if (params.limit) {
+                    params.limit = parseInt(params.limit, 10);
+                }
+                break;
+            case 'people.getPersonById':
+                apiPath = `/v1/people/${params.id}`;
+                apiMethod = 'GET';
+                break;
+
+            // System endpoints
             case 'system.getToolDefinitions':
                 apiPath = '/tools';
                 apiMethod = 'GET';
@@ -273,19 +1155,27 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
             default:
                 throw new Error(`Unknown API endpoint for ${moduleName}.${methodName}`);
         }
-        
+
         // For GET requests with params, add them as query parameters
         if (apiMethod === 'GET' && Object.keys(params).length > 0) {
             const queryParams = new URLSearchParams();
             for (const [key, value] of Object.entries(params)) {
-                queryParams.append(key, value);
+                // Special handling for complex objects and arrays to prevent [object Object] in URLs
+                if (typeof value === 'object' && value !== null) {
+                    continue; // Skip adding complex objects to query params
+                } else {
+                    queryParams.append(key, value);
+                }
             }
-            apiPath += `?${queryParams.toString()}`;
+            
+            if (queryParams.toString()) {
+                apiPath += `?${queryParams.toString()}`;
+            }
         }
-        
+
         logDebug(`[MCP Adapter] Executing ${moduleName}.${methodName} via API: ${apiMethod} ${apiPath}`);
         const result = await callApi(apiMethod, apiPath, apiData);
-        
+
         // Special case for system.getManifest to transform tools list to manifest format
         if (`${moduleName}.${methodName}` === 'system.getManifest' && result && result.tools) {
             return {
@@ -300,7 +1190,9 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 }
             };
         }
-        
+
+        // TODO: [Streaming] Handle streaming responses if API supports it (e.g., for file downloads) (MEDIUM)
+
         return result;
     } catch (error) {
         logDebug(`[MCP Adapter] Error executing ${moduleName}.${methodName}:`, error.message);
@@ -324,32 +1216,93 @@ async function handleToolCall(toolName, toolArgs) {
         if (!adapterState.initialized) {
             await initializeAdapter();
         }
-        
+
         // Update last activity timestamp
         adapterState.lastActivity = Date.now();
         
-        // Map tool calls to module methods
+        // Special case for createEvent tool which needs direct mapping
+        if (toolName === 'createEvent') {
+            logDebug(`[MCP Adapter] Using direct mapping for createEvent -> calendar.create`);
+            return await executeModuleMethod('calendar', 'create', toolArgs);
+        }
+
+        // First try to use the API to get the tool mapping
+        try {
+            const toolsResponse = await callApi('GET', '/tools');
+            if (toolsResponse && Array.isArray(toolsResponse.tools)) {
+                // Find the tool definition
+                const toolDef = toolsResponse.tools.find(tool => tool.name === toolName);
+                if (toolDef) {
+                    // Extract module and method from endpoint
+                    // Example: /api/v1/mail/send -> mail.sendEmail
+                    const path = toolDef.endpoint.replace('/api/v1/', '');
+                    const parts = path.split('/');
+
+                    if (parts.length > 0) {
+                        const moduleName = parts[0];
+                        let methodName = parts.length > 1 ? parts[1] : 'get' + moduleName.charAt(0).toUpperCase() + moduleName.slice(1);
+
+                        // Special case mappings
+                        const methodMappings = {
+                            'mail': { '': 'getInbox' },
+                            'calendar': { '': 'getEvents' },
+                            'files': { '': 'listFiles' },
+                            'people': { '': 'getRelevantPeople' }
+                        };
+
+                        if (parts.length === 1 && methodMappings[moduleName] && methodMappings[moduleName]['']) {
+                            methodName = methodMappings[moduleName][''];
+                        }
+
+                        return await executeModuleMethod(moduleName, methodName, toolArgs);
+                    }
+                }
+            }
+        } catch (error) {
+            // If API call fails, fall back to hardcoded mappings
+            logDebug(`[MCP Adapter] Failed to get tool mapping from API: ${error.message}`);
+        }
+        // TODO: [Refactor] Remove fallback logic below if /v1/tools API proves reliable for all tools/aliases (MEDIUM)
+
+        // Fall back to hardcoded mappings if API approach fails
         switch (toolName) {
-            case 'query':
-                // Natural language query to Microsoft 365
-                return { error: 'Query functionality not yet implemented' };
-                
+            // Fix for events and createEvent misinterpretation
+            case 'createEvent':
+                return await executeModuleMethod('calendar', 'create', toolArgs);
+
+            // Mail module tools
+            case 'readMail':
             case 'getMail':
                 // Fetch mail from Microsoft 365 inbox
-                return await executeModuleMethod('mail', 'getMail', toolArgs);
-                
+                // The module method is getInbox, not readMail
+                return await executeModuleMethod('mail', 'getInbox', toolArgs);
+
+            case 'searchMail':
+                // Search emails by query
+                return await executeModuleMethod('mail', 'searchEmails', toolArgs);
+
             case 'sendMail':
                 // Send an email via Microsoft 365
-                return await executeModuleMethod('mail', 'sendMail', toolArgs);
-                
+                return await executeModuleMethod('mail', 'sendEmail', toolArgs);
+
+            case 'flagMail':
+                // Flag or unflag an email
+                return await executeModuleMethod('mail', 'flagEmail', toolArgs);
+
+            case 'getAttachments':
+                // Get email attachments
+                return await executeModuleMethod('mail', 'getAttachments', toolArgs);
+
+            // Calendar module tools
+            case 'getEvents':
             case 'getCalendar':
                 // Process date ranges for calendar
                 const timeframe = toolArgs.timeframe || 'today';
                 let start, end;
-                
+
                 const today = new Date();
                 const todayStr = today.toISOString().split('T')[0];
-                
+
                 switch (timeframe) {
                     case 'today':
                         start = todayStr;
@@ -360,7 +1313,7 @@ async function handleToolCall(toolName, toolArgs) {
                         const startOfWeek = new Date(today);
                         startOfWeek.setDate(today.getDate() - today.getDay());
                         start = startOfWeek.toISOString().split('T')[0];
-                        
+
                         // End of current week (Saturday)
                         const endOfWeek = new Date(today);
                         endOfWeek.setDate(today.getDate() + (6 - today.getDay()));
@@ -369,7 +1322,7 @@ async function handleToolCall(toolName, toolArgs) {
                     case 'month':
                         // Start of current month
                         start = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-01`;
-                        
+
                         // End of current month
                         const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0);
                         end = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(lastDay.getDate()).padStart(2, '0')}`;
@@ -379,30 +1332,133 @@ async function handleToolCall(toolName, toolArgs) {
                         start = todayStr;
                         end = todayStr;
                 }
-                
+
                 logDebug(`[MCP Adapter] Calendar request with date range: ${start} to ${end}`);
-                
+
                 // Add date range to the arguments
                 const calendarArgs = {
                     ...toolArgs,
                     start,
                     end
                 };
-                
+
                 return await executeModuleMethod('calendar', 'getEvents', calendarArgs);
-                
+
             case 'createEvent':
                 // Create a calendar event in Microsoft 365
-                return await executeModuleMethod('calendar', 'createEvent', toolArgs);
-                
+                return await executeModuleMethod('calendar', 'create', toolArgs);
+
+            case 'updateEvent':
+                // Update a calendar event
+                return await executeModuleMethod('calendar', 'update', toolArgs);
+
+            case 'getAvailability':
+                // Get availability for users
+                return await executeModuleMethod('calendar', 'getAvailability', toolArgs);
+
+            case 'scheduleMeeting':
+                // Schedule a meeting with intelligent time selection
+                return await executeModuleMethod('calendar', 'scheduleMeeting', toolArgs);
+
+            case 'acceptEvent':
+                // Accept a calendar event invitation
+                return await executeModuleMethod('calendar', 'acceptEvent', toolArgs);
+
+            case 'tentativelyAcceptEvent':
+                // Tentatively accept a calendar event invitation
+                return await executeModuleMethod('calendar', 'tentativelyAcceptEvent', toolArgs);
+
+            case 'declineEvent':
+                // Decline a calendar event invitation
+                return await executeModuleMethod('calendar', 'declineEvent', toolArgs);
+
+            case 'cancelEvent':
+                // Cancel a calendar event and send cancellation messages
+                return await executeModuleMethod('calendar', 'cancelEvent', toolArgs);
+
+            case 'findMeetingTimes':
+                // Find suitable meeting times for attendees
+                return await executeModuleMethod('calendar', 'findMeetingTimes', toolArgs);
+
+            case 'getRooms':
+                // Get available rooms for meetings
+                return await executeModuleMethod('calendar', 'getRooms', toolArgs);
+
+            case 'getCalendars':
+                // Get user calendars
+                return await executeModuleMethod('calendar', 'getCalendars', toolArgs);
+
+            case 'addAttachment':
+                // Add an attachment to an event
+                return await executeModuleMethod('calendar', 'addAttachment', toolArgs);
+
+            case 'removeAttachment':
+                // Remove an attachment from an event
+                return await executeModuleMethod('calendar', 'removeAttachment', toolArgs);
+
+            // Files module tools
             case 'listFiles':
                 // List files in OneDrive/SharePoint
                 return await executeModuleMethod('files', 'listFiles', toolArgs);
-                
+
+            case 'searchFiles':
+                // Search for files by name
+                return await executeModuleMethod('files', 'searchFiles', toolArgs);
+
+            case 'downloadFile':
+                // Download a file by ID
+                return await executeModuleMethod('files', 'downloadFile', toolArgs);
+
             case 'uploadFile':
-                // Upload a file to OneDrive/SharePoint
+                // Upload a file to root directory
                 return await executeModuleMethod('files', 'uploadFile', toolArgs);
-                
+
+            case 'getFileMetadata':
+                // Get metadata for a file
+                return await executeModuleMethod('files', 'getFileMetadata', toolArgs);
+
+            case 'createSharingLink':
+                // Create a sharing link for a file
+                return await executeModuleMethod('files', 'createSharingLink', toolArgs);
+
+            case 'getSharingLinks':
+                // Get sharing links for a file
+                return await executeModuleMethod('files', 'getSharingLinks', toolArgs);
+
+            case 'removeSharingPermission':
+                // Remove a sharing permission
+                return await executeModuleMethod('files', 'removeSharingPermission', toolArgs);
+
+            case 'getFileContent':
+                // Get file content
+                return await executeModuleMethod('files', 'getFileContent', toolArgs);
+
+            case 'setFileContent':
+                // Set file content
+                return await executeModuleMethod('files', 'setFileContent', toolArgs);
+
+            case 'updateFileContent':
+                // Update file content
+                return await executeModuleMethod('files', 'updateFileContent', toolArgs);
+
+            // People module tools
+            case 'findPeople':
+                // Find people based on criteria
+                return await executeModuleMethod('people', 'find', toolArgs);
+
+            case 'searchPeople':
+                // Search for people by name or email
+                return await executeModuleMethod('people', 'search', toolArgs);
+
+            case 'getRelevantPeople':
+                // Get people most relevant to the user
+                return await executeModuleMethod('people', 'getRelevantPeople', toolArgs);
+
+            case 'getPersonById':
+                // Get a specific person by ID
+                return await executeModuleMethod('people', 'getPersonById', toolArgs);
+
+
             default:
                 return { error: `Unknown tool: ${toolName}` };
         }
@@ -418,14 +1474,14 @@ async function handleToolCall(toolName, toolArgs) {
 // Helper: handle incoming JSON-RPC requests
 async function handleRequest(msg) {
     const { id, method, params } = msg;
-    
+
     // Debug: log every request to stderr and file
     logDebug(`[MCP Adapter] Received: ${method}`, params);
     logToFile('Received:', method, params);
-    
+
     try {
         let result;
-        
+
         // Handle standard MCP methods
         switch (method) {
             case 'initialize': {
@@ -451,21 +1507,21 @@ async function handleRequest(msg) {
                     sendResponse(id, null, { code: -32602, message: 'Missing tool name in params' });
                     return;
                 }
-                
+
                 const toolName = params.name;
                 const toolArgs = params.arguments || {};
                 logDebug(`[MCP Adapter] Calling tool: ${toolName} with args:`, toolArgs);
-                
+
                 try {
                     // Use the handleToolCall function to process the tool call
                     const toolResult = await handleToolCall(toolName, toolArgs);
-                    
+
                     if (toolResult && toolResult.error) {
                         logDebug(`[MCP Adapter] Tool error (${toolName}):`, toolResult.error);
                         sendResponse(id, null, { code: -32603, message: `Tool error: ${toolResult.error}` });
                         return;
                     }
-                    
+
                     // Format the result according to MCP spec
                     const formattedResult = {
                         content: [
@@ -476,7 +1532,7 @@ async function handleRequest(msg) {
                         ],
                         isError: false
                     };
-                    
+
                     // Success response
                     sendResponse(id, formattedResult, null);
                     logDebug(`[MCP Adapter] Tool ${toolName} succeeded:`, JSON.stringify(toolResult).substring(0, 100) + '...');
@@ -493,7 +1549,7 @@ async function handleRequest(msg) {
                 try {
                     logDebug('[MCP Adapter] Getting tools list from API');
                     const toolsResult = await callApi('GET', '/tools');
-                    
+
                     if (!toolsResult || !toolsResult.tools) {
                         logDebug('[MCP Adapter] API returned invalid tools list');
                         // Fallback to empty list if API fails
@@ -520,7 +1576,7 @@ async function handleRequest(msg) {
                                     .map(([key, _]) => key)
                             }
                         }));
-                        
+
                         result = {
                             protocolVersion: (params && params.protocolVersion) ? params.protocolVersion : "2024-11-05",
                             tools: mcpTools
@@ -583,19 +1639,53 @@ async function handleRequest(msg) {
     }
 }
 
-// Initialize: check backend API availability
-async function initialize() {
-    logDebug('[MCP Adapter] Initializing (API isolation approach)...');
-    const ok = await initializeAdapter();
-    if (ok) {
-        logDebug('[MCP Adapter] ✅ Backend API server available. Ready to handle MCP requests.');
-    } else {
-        logDebug('[MCP Adapter] ❌ Backend API server not available. Adapter will function in limited mode.');
+// Helper: handle core requests (manifest, listResources)
+async function _handleCoreRequest(coreMethodName, requestId, coreParams = {}) {
+    logDebug(`[MCP Adapter] Handling core request: ${coreMethodName}`);
+    try {
+        const hasAccess = await checkModuleAccess();
+        if (!hasAccess) {
+            sendResponse(requestId, null, createJsonRpcError(-32001, 'Access Denied', 'Backend or modules unavailable.'));
+            return;
+        }
+        const result = await executeModuleMethod('core', coreMethodName, coreParams);
+        sendResponse(requestId, result);
+    } catch (error) { 
+        logDebug(`[MCP Adapter] Error handling ${coreMethodName}:`, error);
+        sendResponse(requestId, null, createJsonRpcError(-32603, 'Internal Error', `Error handling ${coreMethodName}: ${error.message}`));
     }
 }
 
-// Run initialization (proxy approach)
-initialize();
+// Initialize: check backend API availability
+async function initialize() {
+    // Allow skipping initialization for specific test environments
+    if (process.env.MCP_SKIP_INIT === 'true') {
+        logDebug('[MCP Adapter] Skipping initialization due to MCP_SKIP_INIT flag.');
+        adapterState.initialized = true; // Mark as initialized to avoid re-triggering
+        adapterState.backendAvailable = true; // Assume available for tests
+        return Promise.resolve(true);
+    }
+
+    logDebug('[MCP Adapter] Initializing (API isolation approach)...');
+    const ok = await initializeAdapter();
+    if (!ok) {
+        logDebug('[MCP Adapter] Initialization failed: Backend API not available.');
+    } else {
+        logDebug('[MCP Adapter] Initialization successful: Backend API available.');
+    }
+    return Promise.resolve(ok);
+}
+
+// Graceful shutdown
+async function shutdown() {
+    logDebug('[MCP Adapter] Shutting down...');
+    if (healthCheckInterval) {
+        clearInterval(healthCheckInterval);
+        healthCheckInterval = null;
+        logDebug('[MCP Adapter] Health check interval cleared.');
+    }
+    // TODO: [Cleanup] Add any other necessary cleanup (e.g., close connections) (LOW)
+}
 
 // Main: read stdin line by line, handle JSON-RPC
 const rl = readline.createInterface({ input: process.stdin });
@@ -626,10 +1716,13 @@ rl.on('close', () => {
 // Handle process signals for clean shutdown
 process.on('SIGINT', () => {
     logDebug('[MCP Adapter] Received SIGINT. Exiting.');
-    process.exit(0);
+    shutdown().then(() => process.exit(0));
 });
 
 process.on('SIGTERM', () => {
     logDebug('[MCP Adapter] Received SIGTERM. Exiting.');
-    process.exit(0);
+    shutdown().then(() => process.exit(0));
 });
+
+// Run initialization (proxy approach)
+initialize();

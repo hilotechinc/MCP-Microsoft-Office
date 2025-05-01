@@ -36,7 +36,11 @@ function initLogger(logFilePath, logLevel = 'info') {
         ),
         transports: [
             new winston.transports.File({ filename: LOG_FILE_PATH, maxsize: 1048576, maxFiles: 5 }),
-            new winston.transports.Console({ format: winston.format.simple() })
+            new winston.transports.Console({ 
+                format: winston.format.simple(), 
+                stderrLevels: ['error', 'warn', 'info', 'http', 'verbose', 'debug', 'silly'],
+                consoleWarnLevels: [] // Ensure no levels go to stdout
+            })
         ]
     });
 }

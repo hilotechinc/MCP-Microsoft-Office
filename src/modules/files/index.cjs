@@ -24,6 +24,165 @@ const FilesModule = {
     name: 'OneDrive Files',
     capabilities: FILES_CAPABILITIES,
     /**
+     * Lists files and folders in a directory (defaults to root)
+     * @param {string} [parentId] - Parent folder ID (null for root)
+     * @param {object} req - Express request object (optional)
+     * @returns {Promise<Array<object>>} List of files and folders
+     */
+    async listFiles(parentId, req) {
+        const { graphService } = this.services || {};
+        if (!graphService || typeof graphService.listFiles !== 'function') {
+            throw new Error('GraphService.listFiles not implemented');
+        }
+        return await graphService.listFiles(parentId, req);
+    },
+    
+    /**
+     * Searches files by name
+     * @param {string} query - Search query
+     * @param {object} req - Express request object (optional)
+     * @returns {Promise<Array<object>>} List of matching files
+     */
+    async searchFiles(query, req) {
+        const { graphService } = this.services || {};
+        if (!graphService || typeof graphService.searchFiles !== 'function') {
+            throw new Error('GraphService.searchFiles not implemented');
+        }
+        return await graphService.searchFiles(query, req);
+    },
+    
+    /**
+     * Downloads a file by ID
+     * @param {string} id - File ID
+     * @param {object} req - Express request object (optional)
+     * @returns {Promise<Buffer>} File content
+     */
+    async downloadFile(id, req) {
+        const { graphService } = this.services || {};
+        if (!graphService || typeof graphService.downloadFile !== 'function') {
+            throw new Error('GraphService.downloadFile not implemented');
+        }
+        return await graphService.downloadFile(id, req);
+    },
+    
+    /**
+     * Uploads a file to root directory
+     * @param {string} name - File name
+     * @param {Buffer} content - File content
+     * @param {object} req - Express request object (optional)
+     * @returns {Promise<object>} File metadata
+     */
+    async uploadFile(name, content, req) {
+        const { graphService } = this.services || {};
+        if (!graphService || typeof graphService.uploadFile !== 'function') {
+            throw new Error('GraphService.uploadFile not implemented');
+        }
+        return await graphService.uploadFile(name, content, req);
+    },
+    
+    /**
+     * Retrieves metadata for a file by ID
+     * @param {string} id - File ID
+     * @param {object} req - Express request object (optional)
+     * @returns {Promise<object>} File metadata
+     */
+    async getFileMetadata(id, req) {
+        const { graphService } = this.services || {};
+        if (!graphService || typeof graphService.getFileMetadata !== 'function') {
+            throw new Error('GraphService.getFileMetadata not implemented');
+        }
+        return await graphService.getFileMetadata(id, req);
+    },
+    
+    /**
+     * Creates a sharing link for a file
+     * @param {string} id - File ID
+     * @param {string} type - Link type ('view', 'edit', etc.)
+     * @param {object} req - Express request object (optional)
+     * @returns {Promise<object>} Sharing link
+     */
+    async createSharingLink(id, type = 'view', req) {
+        const { graphService } = this.services || {};
+        if (!graphService || typeof graphService.createSharingLink !== 'function') {
+            throw new Error('GraphService.createSharingLink not implemented');
+        }
+        return await graphService.createSharingLink(id, type, req);
+    },
+    
+    /**
+     * Gets sharing links for a file
+     * @param {string} id - File ID
+     * @param {object} req - Express request object (optional)
+     * @returns {Promise<Array<object>>} List of sharing links
+     */
+    async getSharingLinks(id, req) {
+        const { graphService } = this.services || {};
+        if (!graphService || typeof graphService.getSharingLinks !== 'function') {
+            throw new Error('GraphService.getSharingLinks not implemented');
+        }
+        return await graphService.getSharingLinks(id, req);
+    },
+    
+    /**
+     * Removes a sharing permission from a file
+     * @param {string} fileId - File ID
+     * @param {string} permissionId - Permission ID
+     * @param {object} req - Express request object (optional)
+     * @returns {Promise<object>} Result
+     */
+    async removeSharingPermission(fileId, permissionId, req) {
+        const { graphService } = this.services || {};
+        if (!graphService || typeof graphService.removeSharingPermission !== 'function') {
+            throw new Error('GraphService.removeSharingPermission not implemented');
+        }
+        return await graphService.removeSharingPermission(fileId, permissionId, req);
+    },
+    
+    /**
+     * Gets file content by ID
+     * @param {string} id - File ID
+     * @param {object} req - Express request object (optional)
+     * @returns {Promise<Buffer>} File content
+     */
+    async getFileContent(id, req) {
+        const { graphService } = this.services || {};
+        if (!graphService || typeof graphService.getFileContent !== 'function') {
+            throw new Error('GraphService.getFileContent not implemented');
+        }
+        return await graphService.getFileContent(id, req);
+    },
+    
+    /**
+     * Sets file content by ID
+     * @param {string} id - File ID
+     * @param {Buffer} content - File content
+     * @param {object} req - Express request object (optional)
+     * @returns {Promise<object>} Updated file metadata
+     */
+    async setFileContent(id, content, req) {
+        const { graphService } = this.services || {};
+        if (!graphService || typeof graphService.setFileContent !== 'function') {
+            throw new Error('GraphService.setFileContent not implemented');
+        }
+        return await graphService.setFileContent(id, content, req);
+    },
+    
+    /**
+     * Updates file content by ID
+     * @param {string} id - File ID
+     * @param {Buffer} content - File content
+     * @param {object} req - Express request object (optional)
+     * @returns {Promise<object>} Updated file metadata
+     */
+    async updateFileContent(id, content, req) {
+        const { graphService } = this.services || {};
+        if (!graphService || typeof graphService.updateFileContent !== 'function') {
+            throw new Error('GraphService.updateFileContent not implemented');
+        }
+        return await graphService.updateFileContent(id, content, req);
+    },
+    
+    /**
      * Initializes the files module with dependencies.
      * @param {object} services - { graphService, cacheService }
      * @returns {object} Initialized module

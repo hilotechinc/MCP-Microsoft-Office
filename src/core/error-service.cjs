@@ -5,13 +5,6 @@
 
 const { v4: uuidv4 } = require('uuid');
 
-// This file is a stub. Use '../core/error-service.cjs' for all real error handling logic.
-module.exports = {
-  createError: () => { throw new Error('Use error-service.cjs instead of error-service.js'); },
-  CATEGORIES: {},
-  SEVERITIES: {}
-};
-
 /**
  * Error categories for classification.
  * @enum {string}

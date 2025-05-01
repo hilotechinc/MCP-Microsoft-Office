@@ -21,11 +21,26 @@ function setupMiddleware(expressApp) {
     // Middleware
     expressApp.use(cors());
     expressApp.use(bodyParser.json({ limit: '2mb' }));
-    expressApp.use(morgan('dev'));
+    // Configure morgan to skip logging for the /api/v1/logs endpoint
+    expressApp.use(morgan('dev', {
+        skip: (req, res) => req.originalUrl === '/api/v1/logs'
+    }));
 
     // Request logging
     expressApp.use((req, res, next) => {
         monitoringService.info(`Request: ${req.method} ${req.url}`, { ip: req.ip });
+        
+        // IMPORTANT: Ensure API routes always return JSON
+        if (req.url.startsWith('/api/v1/')) {
+            // Make sure Content-Type is application/json for API responses
+            const originalJson = res.json;
+            res.json = function(body) {
+                // Set Content-Type explicitly to ensure proper parsing by the client
+                res.setHeader('Content-Type', 'application/json');
+                return originalJson.call(this, body);
+            };
+        }
+        
         next();
     });
 }

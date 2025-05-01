@@ -75,6 +75,20 @@ async function startDevServer() {
   // Create API router for other endpoints
   const apiRouter = express.Router();
   registerRoutes(apiRouter);
+  
+  // Ensure all mail-related endpoints respond with JSON content type
+  apiRouter.use('/v1/mail', (req, res, next) => {
+    res.setHeader('Content-Type', 'application/json');
+    next();
+  });
+  
+  // Also catch any sub-paths of mail (eg. /v1/mail/search, /v1/mail/attachments, etc.)
+  apiRouter.use('/v1/mail/*', (req, res, next) => {
+    res.setHeader('Content-Type', 'application/json');
+    next();
+  });
+  
+  // Mount the API router at /api
   app.use('/api', apiRouter);
   
   // Add direct health endpoint
@@ -114,8 +128,14 @@ async function startDevServer() {
     }
   }));
   
-  // Fallback for SPA routing
-  app.get('*', (req, res) => {
+  // Fallback for SPA routing - but exclude API routes
+  app.get('*', (req, res, next) => {
+    // Skip if it's an API route
+    if (req.path.startsWith('/api/')) {
+      // If it's an API route that wasn't matched, return 404 instead of the HTML
+      return res.status(404).json({ error: 'API endpoint not found', path: req.path });
+    }
+    // For all other routes, serve the SPA
     res.sendFile(path.join(__dirname, 'src/renderer/index.html'));
   });
   
