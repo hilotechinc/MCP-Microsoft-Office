@@ -1,6 +1,7 @@
 /**
  * @fileoverview ToolsService - Aggregates and manages MCP tools from modules.
  * Follows MCP modular, testable, and consistent API contract rules.
+ * Handles tool definition, mapping, and parameter transformation.
  */
 
 /**
@@ -20,19 +21,42 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
     // Internal state for caching (will be used later)
     let cachedTools = null;
 
-    // TODO: [mapToolToModule] Alias configuration should ideally be externalized or passed in. Hardcoded for now.
+    // Comprehensive tool alias map for consistent module and method routing
     const toolAliases = {
+        // Mail module tools
         getMail: { moduleName: 'mail', methodName: 'getInbox' },
+        readMail: { moduleName: 'mail', methodName: 'getInbox' },
         sendMail: { moduleName: 'mail', methodName: 'sendEmail' },
         searchMail: { moduleName: 'mail', methodName: 'searchEmails' },
         flagMail: { moduleName: 'mail', methodName: 'flagEmail' },
         getMailDetails: { moduleName: 'mail', methodName: 'getEmailDetails' },
         markMailRead: { moduleName: 'mail', methodName: 'markAsRead' },
+        
+        // Calendar module tools
         getCalendar: { moduleName: 'calendar', methodName: 'getEvents' },
-        findPeople: { moduleName: 'people', methodName: 'searchPeople' },
-        searchPeople: { moduleName: 'people', methodName: 'searchPeople' },
-        scheduleMeeting: { moduleName: 'calendar', methodName: 'scheduleMeeting' }
-        // Add more aliases as needed
+        getEvents: { moduleName: 'calendar', methodName: 'getEvents' },
+        createEvent: { moduleName: 'calendar', methodName: 'create' },
+        updateEvent: { moduleName: 'calendar', methodName: 'update' },
+        cancelEvent: { moduleName: 'calendar', methodName: 'cancelEvent' },
+        getAvailability: { moduleName: 'calendar', methodName: 'getAvailability' },
+        findMeetingTimes: { moduleName: 'calendar', methodName: 'findMeetingTimes' },
+        scheduleMeeting: { moduleName: 'calendar', methodName: 'scheduleMeeting' },
+        
+        // Files module tools
+        listFiles: { moduleName: 'files', methodName: 'listFiles' },
+        searchFiles: { moduleName: 'files', methodName: 'searchFiles' },
+        downloadFile: { moduleName: 'files', methodName: 'downloadFile' },
+        uploadFile: { moduleName: 'files', methodName: 'uploadFile' },
+        getFileMetadata: { moduleName: 'files', methodName: 'getFileMetadata' },
+        
+        // People module tools
+        findPeople: { moduleName: 'people', methodName: 'find' },
+        searchPeople: { moduleName: 'people', methodName: 'search' },
+        getRelevantPeople: { moduleName: 'people', methodName: 'getRelevantPeople' },
+        getPersonById: { moduleName: 'people', methodName: 'getPersonById' },
+        
+        // Query module
+        query: { moduleName: 'query', methodName: 'processQuery' }
     };
 
     /**
@@ -85,11 +109,11 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 toolDef.endpoint = '/api/v1/mail/send';
                 toolDef.method = 'POST';
                 toolDef.parameters = {
-                    to: { type: 'string', description: 'Recipient email address(es), comma-separated' },
+                    to: { type: 'string', description: 'One or more valid recipient email addresses, comma-separated' },
                     subject: { type: 'string', description: 'Email subject line' },
                     body: { type: 'string', description: 'Email body content' },
-                    cc: { type: 'string', description: 'CC recipient(s), comma-separated', optional: true },
-                    bcc: { type: 'string', description: 'BCC recipient(s), comma-separated', optional: true },
+                    cc: { type: 'string', description: 'One or more valid CC recipient email addresses, comma-separated', optional: true },
+                    bcc: { type: 'string', description: 'One or more valid BCC recipient email addresses, comma-separated', optional: true },
                     attachments: { type: 'array', description: 'File attachments', optional: true }
                 };
                 break;
@@ -427,6 +451,262 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
         // Future: Potentially re-trigger other initialization if needed
     }
 
+    /**
+     * Helper function to transform attendees from string or array to proper format
+     * @param {string|Array} attendees - Attendees as string or array
+     * @returns {Array|undefined} - Transformed attendees or undefined if none
+     */
+    function transformAttendees(attendees) {
+        if (!attendees) return undefined;
+        
+        // If attendees is a string (comma-separated), convert to array
+        if (typeof attendees === 'string') {
+            return attendees.split(',').map(email => email.trim());
+        }
+        
+        // If already an array, return as is
+        return attendees;
+    }
+    
+    /**
+     * Helper function to transform date/time to proper format
+     * @param {string|object} dateTime - Date time string or object
+     * @param {string} timeZone - Default timezone if not specified
+     * @returns {object|undefined} - Transformed date time object
+     */
+    function transformDateTime(dateTime, timeZone = 'UTC') {
+        if (!dateTime) return undefined;
+        
+        // If already an object with dateTime, return as is
+        if (typeof dateTime === 'object' && dateTime.dateTime) {
+            return dateTime;
+        }
+        
+        // If a string, convert to object format
+        if (typeof dateTime === 'string') {
+            return {
+                dateTime: dateTime,
+                timeZone: timeZone
+            };
+        }
+        
+        return dateTime;
+    }
+    
+    /**
+     * Transforms parameters for a specific module and method
+     * @param {string} moduleName - Module name
+     * @param {string} methodName - Method name
+     * @param {object} params - Original parameters
+     * @returns {object} - Transformed parameters
+     */
+    function transformParameters(moduleName, methodName, params = {}) {
+        logger.debug(`transformParameters: Transforming for ${moduleName}.${methodName}`);
+        
+        // Create a copy of the parameters to avoid modifying the original
+        const transformedParams = { ...params };
+        
+        // Transform parameters based on the module and method
+        switch (`${moduleName}.${methodName}`) {
+            // Mail module methods
+            case 'mail.sendEmail':
+            case 'mail.sendMail':
+                return {
+                    to: transformAttendees(transformedParams.to),
+                    subject: transformedParams.subject,
+                    body: transformedParams.body,
+                    cc: transformAttendees(transformedParams.cc),
+                    bcc: transformAttendees(transformedParams.bcc)
+                };
+                
+            case 'mail.searchEmails':
+            case 'mail.searchMail':
+                // Ensure query parameter is properly named
+                if (transformedParams.query && !transformedParams.q) {
+                    transformedParams.q = transformedParams.query;
+                    delete transformedParams.query;
+                }
+                return transformedParams;
+                
+            // Calendar module methods
+            case 'calendar.create':
+            case 'calendar.createEvent':
+                return {
+                    subject: transformedParams.subject,
+                    start: transformDateTime(transformedParams.start, transformedParams.timeZone),
+                    end: transformDateTime(transformedParams.end, transformedParams.timeZone),
+                    location: transformedParams.location,
+                    body: transformedParams.body,
+                    attendees: transformAttendees(transformedParams.attendees),
+                    isOnlineMeeting: transformedParams.isOnlineMeeting
+                };
+                
+            case 'calendar.update':
+            case 'calendar.updateEvent':
+                // Create an object with only the provided parameters
+                const updateData = {};
+                
+                if (transformedParams.id !== undefined) {
+                    updateData.id = transformedParams.id;
+                }
+                
+                if (transformedParams.subject !== undefined) {
+                    updateData.subject = transformedParams.subject;
+                }
+                
+                if (transformedParams.start !== undefined) {
+                    updateData.start = transformDateTime(transformedParams.start, transformedParams.timeZone);
+                }
+                
+                if (transformedParams.end !== undefined) {
+                    updateData.end = transformDateTime(transformedParams.end, transformedParams.timeZone);
+                }
+                
+                if (transformedParams.attendees !== undefined) {
+                    updateData.attendees = transformAttendees(transformedParams.attendees);
+                }
+                
+                if (transformedParams.location !== undefined) {
+                    updateData.location = transformedParams.location;
+                }
+                
+                if (transformedParams.body !== undefined) {
+                    updateData.body = transformedParams.body;
+                }
+                
+                if (transformedParams.isOnlineMeeting !== undefined) {
+                    updateData.isOnlineMeeting = transformedParams.isOnlineMeeting;
+                }
+                
+                return updateData;
+                
+            case 'calendar.getAvailability':
+                // Ensure we have start/end times for availability check
+                if (!transformedParams.start && !transformedParams.startTime) {
+                    logger.warn('getAvailability requires start time');
+                }
+                
+                if (!transformedParams.end && !transformedParams.endTime) {
+                    logger.warn('getAvailability requires end time');
+                }
+                
+                // Transform start/end to the format expected by the API
+                const startTime = typeof transformedParams.start === 'object' && transformedParams.start.dateTime 
+                    ? transformedParams.start.dateTime 
+                    : transformedParams.start || transformedParams.startTime;
+                
+                const endTime = typeof transformedParams.end === 'object' && transformedParams.end.dateTime 
+                    ? transformedParams.end.dateTime 
+                    : transformedParams.end || transformedParams.endTime;
+                
+                return {
+                    users: transformAttendees(transformedParams.users) || transformAttendees(transformedParams.attendees) || [],
+                    timeSlots: [
+                        {
+                            start: {
+                                dateTime: startTime,
+                                timeZone: transformedParams.timeZone || 'UTC'
+                            },
+                            end: {
+                                dateTime: endTime,
+                                timeZone: transformedParams.timeZone || 'UTC'
+                            }
+                        }
+                    ]
+                };
+                
+            case 'calendar.scheduleMeeting':
+                // Extract start and end time information
+                let meetingStartTime, meetingEndTime;
+                
+                if (transformedParams.preferredTimes && transformedParams.preferredTimes.length > 0) {
+                    meetingStartTime = transformedParams.preferredTimes[0].start;
+                    meetingEndTime = transformedParams.preferredTimes[0].end;
+                } else {
+                    // Try various parameter combinations to extract start/end times
+                    if (transformedParams.start) {
+                        meetingStartTime = transformedParams.start;
+                    } else if (transformedParams.startDateTime) {
+                        meetingStartTime = { 
+                            dateTime: transformedParams.startDateTime, 
+                            timeZone: transformedParams.timeZone || 'Pacific Standard Time' 
+                        };
+                    }
+                    
+                    if (transformedParams.end) {
+                        meetingEndTime = transformedParams.end;
+                    } else if (transformedParams.endDateTime) {
+                        meetingEndTime = { 
+                            dateTime: transformedParams.endDateTime, 
+                            timeZone: transformedParams.timeZone || 'Pacific Standard Time' 
+                        };
+                    }
+                }
+                
+                return {
+                    subject: transformedParams.subject,
+                    attendees: transformAttendees(transformedParams.attendees) || [],
+                    start: meetingStartTime ? transformDateTime(meetingStartTime, transformedParams.timeZone) : undefined,
+                    end: meetingEndTime ? transformDateTime(meetingEndTime, transformedParams.timeZone) : undefined,
+                    location: transformedParams.location,
+                    body: transformedParams.body,
+                    isOnlineMeeting: transformedParams.isOnlineMeeting
+                };
+                
+            case 'calendar.findMeetingTimes':
+                // Extract time constraints from different possible input formats
+                let timeConstraints = transformedParams.timeConstraints;
+                if (!timeConstraints && (transformedParams.startTime || transformedParams.start)) {
+                    timeConstraints = {
+                        startTime: transformedParams.startTime || transformedParams.start,
+                        endTime: transformedParams.endTime || transformedParams.end,
+                        timeZone: transformedParams.timeZone || 'UTC'
+                    };
+                }
+                
+                return {
+                    attendees: transformAttendees(transformedParams.attendees) || [],
+                    timeConstraint: {
+                        start: timeConstraints?.startTime || timeConstraints?.start,
+                        end: timeConstraints?.endTime || timeConstraints?.end,
+                        timeZone: timeConstraints?.timeZone || transformedParams.timeZone || 'UTC'
+                    },
+                    meetingDuration: transformedParams.meetingDuration || transformedParams.duration || 60,
+                    maxCandidates: transformedParams.maxCandidates || 10,
+                    minimumAttendeePercentage: transformedParams.minimumAttendeePercentage || 100
+                };
+
+            // People module methods
+            case 'people.find':
+            case 'people.findPeople':
+            case 'people.search':
+            case 'people.searchPeople':
+                // Make sure query parameter is preserved
+                if (!transformedParams.query && transformedParams.q) {
+                    transformedParams.query = transformedParams.q;
+                    delete transformedParams.q;
+                }
+                
+                // Ensure limit is a number
+                if (transformedParams.limit) {
+                    transformedParams.limit = parseInt(transformedParams.limit, 10);
+                }
+                
+                return transformedParams;
+                
+            // Query module methods
+            case 'query.processQuery':
+                return { 
+                    query: transformedParams.query,
+                    context: transformedParams.context
+                };
+                
+            // Default case - return original parameters
+            default:
+                return transformedParams;
+        }
+    }
+
     return {
         /**
          * Gets all available tools from registered modules
@@ -551,6 +831,34 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
             logger.warn(`mapToolToModule: No module or valid alias found for tool '${toolName}'.`);
             return null; // Not found
         },
+
+        /**
+         * Transforms parameters for a specific tool
+         * @param {string} toolName - Name of the tool
+         * @param {object} params - Original parameters
+         * @returns {object} - Transformed parameters and module/method mapping
+         */
+        transformToolParameters(toolName, params = {}) {
+            // First, map the tool to a module and method
+            const mapping = this.mapToolToModule(toolName);
+            
+            if (!mapping) {
+                logger.error(`transformToolParameters: No mapping found for tool '${toolName}'.`);
+                return { 
+                    mapping: null, 
+                    params: params
+                };
+            }
+            
+            // Then transform the parameters based on the module and method
+            const transformedParams = transformParameters(mapping.moduleName, mapping.methodName, params);
+            
+            return {
+                mapping,
+                params: transformedParams
+            };
+        },
+        
         refresh // Expose the refresh method
     };
 }

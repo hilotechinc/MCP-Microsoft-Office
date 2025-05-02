@@ -61,7 +61,7 @@ async function searchEmails(query, options = {}, req) {
 async function sendEmail(emailData, req) {
   try {
     const client = await graphClientFactory.createClient(req);
-    const { to, subject, body, cc, bcc } = emailData;
+    const { to, subject, body, cc, bcc, contentType } = emailData;
     
     // Handle recipients in various formats (string or array)
     function formatRecipients(recipients) {
@@ -79,7 +79,7 @@ async function sendEmail(emailData, req) {
     const message = {
       subject,
       body: {
-        contentType: 'HTML',
+        contentType: contentType || 'Text',
         content: body
       },
       toRecipients: formatRecipients(to),

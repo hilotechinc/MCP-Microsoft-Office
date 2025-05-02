@@ -224,6 +224,14 @@ module.exports = ({ calendarModule }) => ({
             }
             
             // Validate request body
+            const attendeeSchema = Joi.object({
+                emailAddress: Joi.object({
+                    address: Joi.string().email().required(),
+                    name: Joi.string().optional()
+                }).required(),
+                type: Joi.string().valid('required', 'optional', 'resource').default('required')
+            });
+
             const updateSchema = Joi.object({
                 subject: Joi.string().optional(),
                 start: Joi.object({
@@ -235,26 +243,7 @@ module.exports = ({ calendarModule }) => ({
                     timeZone: Joi.string().default('UTC')
                 }).optional(),
                 // Support both string array and object array for attendees
-                attendees: Joi.alternatives().try(
-                    // Plain email addresses as strings
-                    Joi.array().items(Joi.string().email()),
-                    
-                    // Simple format with email and name
-                    Joi.array().items(Joi.object({
-                        email: Joi.string().email().required(),
-                        name: Joi.string().optional(),
-                        type: Joi.string().valid('required', 'optional').optional()
-                    })),
-                    
-                    // Full Graph API format with emailAddress
-                    Joi.array().items(Joi.object({
-                        emailAddress: Joi.object({
-                            address: Joi.string().email().required(),
-                            name: Joi.string().optional()
-                        }).required(),
-                        type: Joi.string().valid('required', 'optional').optional()
-                    }))
-                ).optional(),
+                attendees: Joi.array().items(attendeeSchema).optional(),
                 // Location can be string or object with displayName
                 location: Joi.alternatives().try(
                     Joi.string(),
@@ -656,6 +645,44 @@ module.exports = ({ calendarModule }) => ({
     /**
      * POST /api/calendar/schedule
      * Schedules a meeting with intelligent time selection
+     */
+    async scheduleMeeting(req, res) {
+        try {
+            // Validate request body
+            const meetingSchema = Joi.object({
+                subject: Joi.string().required(),
+                attendees: Joi.array().items(Joi.string().email()).required(),
+                preferredTimes: Joi.array().items(Joi.object({
+                    start: Joi.object({
+                        dateTime: Joi.string().required(),
+                        timeZone: Joi.string().default('UTC')
+                    }).required(),
+                    end: Joi.object({
+                        dateTime: Joi.string().required(),
+                        timeZone: Joi.string().default('UTC')
+                    }).required()
+                })).optional(),
+                duration: Joi.number().min(15).max(480).optional(), // Duration in minutes
+                body: Joi.alternatives().try(
+                    Joi.string(),
+                    Joi.object({
+                        contentType: Joi.string().valid('text', 'html', 'HTML').default('text'),
+                        content: Joi.string().required()
+                    })
+                ).optional(),
+                location: Joi.alternatives().try(
+                    Joi.string(),
+                    Joi.object({
+                        displayName: Joi.string().required(),
+                        address: Joi.object().optional()
+                    })
+                ).optional(),
+                isOnlineMeeting: Joi.boolean().optional()
+            });
+            
+            const { error } = meetingSchema.validate(req.body);
+            if (error) {
+                return res.status(400).json({ 
                     error: 'Invalid request', 
                     details: error.details[0].message 
                 });
@@ -735,7 +762,7 @@ module.exports = ({ calendarModule }) => ({
         try {
             // Validate request body
             const optionsSchema = Joi.object({
-                attendees: Joi.array().items(Joi.string().email()).required(),
+                attendees: Joi.array().items(Joi.string().email()).min(1).required(),
                 timeConstraints: Joi.object({
                     startTime: Joi.object({
                         dateTime: Joi.string().required(),
@@ -794,7 +821,7 @@ module.exports = ({ calendarModule }) => ({
                 
                 for (let i = 0; i < maxSuggestions; i++) {
                     const slotStart = new Date(startTime.getTime() + (i * meetingDuration * 60 * 1000));
-                    const slotEnd = new Date(slotStart.getTime() + (meetingDuration * 60 * 1000));
+                    const slotEnd = new Date(Math.min(slotStart.getTime() + (meetingDuration * 60 * 1000), endTime.getTime()));
                     
                     mockSuggestions.push({
                         confidence: 1.0 - (i * 0.1), // Decreasing confidence for later slots

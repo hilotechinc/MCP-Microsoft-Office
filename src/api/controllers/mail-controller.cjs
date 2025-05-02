@@ -132,7 +132,8 @@ module.exports = ({ mailModule }) => ({
             bcc: Joi.alternatives(
                 Joi.string().email(),
                 Joi.array().items(Joi.string().email())
-            ).optional()
+            ).optional(),
+            contentType: Joi.string().valid('Text', 'HTML').optional().default('Text')
         });
         
         console.log('[Mail Controller] Received send mail request:', JSON.stringify(req.body));

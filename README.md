@@ -4,28 +4,91 @@ Microsoft 365 MCP Gateway is a bridge that connects Claude to your Microsoft 365
 
 ## Architecture Overview
 
-The system consists of three main components:
+The system follows a modular, layered architecture with clear separation of concerns:
 
 1. **MCP Adapter (`mcp-adapter.cjs`)**: Implements the Model Context Protocol to allow Claude to communicate with Microsoft 365 services.
-2. **Backend Server (`dev-server.cjs`)**: Express server that handles authentication, API endpoints, and Microsoft Graph integration.
-3. **Database (`mcp.sqlite`)**: Local SQLite database for storing authentication tokens and session data.
+2. **Backend Server (`dev-server.cjs`)**: Express server that handles API endpoints, routing, and orchestration.
+3. **API Controllers**: Handle request validation, module invocation, and response formatting.
+4. **Functional Modules**: Implement domain-specific logic for mail, calendar, files, and people.
+5. **Graph Services**: Interact directly with Microsoft Graph API, handling authentication and data transformation.
+6. **MSAL Authentication**: Manages Microsoft identity tokens and authentication flows.
+7. **Database (`mcp.sqlite`)**: Local SQLite database for storing authentication tokens and session data.
+
+### Detailed Architecture Diagram
 
 ```
-┌────────────────┐      ┌───────────────────┐     ┌─────────────────────┐
-│                │      │                   │     │                     │
-│  Claude LLM    │◄────►│  MCP Adapter      │◄───►│  Backend Server     │
-│                │      │  (mcp-adapter.cjs)│     │  (dev-server.cjs)   │
-│                │      │                   │     │                     │
-└────────────────┘      └───────────────────┘     └──────────┬──────────┘
-                                                             │
-                                                             ▼
-┌────────────────────────────┐                     ┌─────────────────────┐
-│                            │                     │                     │
-│  Microsoft Graph Services  │◄────────────────────┤  Auth & Storage     │
-│  (src/graph/*)             │                     │  Services           │
-│                            │                     │                     │
-└────────────────────────────┘                     └─────────────────────┘
+┌────────────────┐      ┌───────────────────────────────────┐     ┌─────────────────────────────────────┐
+│                │      │                                   │     │                                     │
+│  Claude LLM    │◄────►│  MCP Adapter (mcp-adapter.cjs)    │◄───►│  Backend Server (dev-server.cjs)    │
+│  Tool Calls    │      │  • JSON-RPC handling              │     │  • Express server                   │
+│                │      │  • Tool mapping                   │     │  • Route registration               │
+└────────────────┘      │  • Parameter transformation       │     │  • Middleware                       │
+                        │  • HTTP client                    │     │                                     │
+                        └───────────────────────────────────┘     └─────────────────┬───────────────────┘
+                                                                                    │
+                                                                                    ▼
+┌────────────────────────────────┐     ┌───────────────────────────────────┐     ┌─────────────────────────────────────┐
+│                                │     │                                   │     │                                     │
+│  Microsoft Graph API           │◄───►│  Graph Services (src/graph/*)     │◄───►│  API Controllers (src/api/controllers)│
+│  • Microsoft 365 Services      │     │  • Graph client                   │     │  • Request validation               │
+│  • OAuth 2.0 endpoints         │     │  • API operations                 │     │  • Parameter processing             │
+│                                │     │  • Data normalization             │     │  • Response formatting              │
+└────────────────────────────────┘     │  • Error handling                 │     │  • Error handling                   │
+                                        └─────────────────┬─────────────────┘     └─────────────────┬───────────────────┘
+                                                          │                                         │
+                                                          │                                         │
+                                                          ▼                                         ▼
+                                        ┌─────────────────────────────────┐     ┌─────────────────────────────────────┐
+                                        │                                 │     │                                     │
+                                        │  MSAL Authentication            │     │  Functional Modules (src/modules/*) │
+                                        │  • Token acquisition            │     │  • Domain logic                     │
+                                        │  • Token refresh                │     │  • Capability registration          │
+                                        │  • Secure storage               │     │  • Intent handling                  │
+                                        │  • Login flows                  │     │  • Caching                          │
+                                        └─────────────────────────────────┘     └─────────────────────────────────────┘
 ```
+
+### End-to-End Flow Description
+
+The following describes the complete flow of a request from Claude through the system to Microsoft Graph API and back, using the files module as an example:
+
+1. **Claude Tool Call**
+   - Claude issues a tool call (e.g., `listFiles`, `uploadFile`, `getFileMetadata`)
+   - Tool parameters are passed as JSON-RPC to the MCP adapter
+
+2. **MCP Adapter Processing**
+   - `handleRequest()` receives the JSON-RPC request
+   - `handleToolCall()` maps the tool name to a module and method
+   - `executeModuleMethod()` transforms parameters if needed (e.g., formatting dates)
+   - The adapter constructs an HTTP request to the backend server
+
+3. **Backend Routing**
+   - Express routes the request to the appropriate controller (e.g., `/api/v1/files` → `filesController.listFiles`)
+   - The controller validates input parameters using Joi schemas
+
+4. **Controller to Module**
+   - The controller calls the appropriate files module method
+   - The module checks cache for applicable operations
+   - For cache misses, the module delegates to the Graph service
+
+5. **Graph Service to Microsoft Graph**
+   - The Graph service constructs the appropriate Graph API request
+   - MSAL authentication is handled at this layer (token acquisition/refresh)
+   - The request is sent to Microsoft Graph API
+   - The response is received and initial error handling occurs
+
+6. **Response Processing**
+   - Graph service returns data to the files module
+   - The module uses normalizers to transform the data to a consistent format
+   - Normalized data is cached where appropriate
+   - The controller formats the final HTTP response
+
+7. **Return to Claude**
+   - MCP adapter receives the HTTP response
+   - The adapter formats it as a JSON-RPC response
+   - Claude receives the structured data and presents it to the user
+
+This flow ensures clean separation of concerns, consistent error handling, and proper data normalization at each layer.
 
 ## Getting Started
 

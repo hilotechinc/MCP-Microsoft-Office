@@ -109,7 +109,13 @@ async function _fetchWithRetry(path, token, method, body, options, retries = 2) 
             headers,
             body: body ? JSON.stringify(body) : undefined
         });
-        if (res.ok) return await res.json();
+        if (res.status === 202) { 
+            console.log(`[Graph Client] Request successful with status 202 (Accepted) for ${method} ${url}`);
+            return { success: true, status: res.status }; 
+        }
+        if (res.ok) { 
+             return await res.json();
+        }
         if (res.status === 429) {
             const retryAfter = Number(res.headers.get('retry-after')) || 1;
             if (attempt === retries) throw new Error(`Graph API throttled (429) after ${retries+1} attempts`);

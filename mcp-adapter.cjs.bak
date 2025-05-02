@@ -22,10 +22,9 @@ const https = require('https');
 const { URLSearchParams } = require('url');
 const Joi = require('joi'); // For parameter validation
 
-// Import services
+// Import monitoring and error services
 const monitoringService = require('./src/core/monitoring-service.cjs');
 const errorService = require('./src/core/error-service.cjs');
-const createToolsService = require('./src/core/tools-service.cjs');
 
 // API configuration
 const API_HOST = process.env.API_HOST || 'localhost';
@@ -83,12 +82,7 @@ function writeToLogFile(level, ...args) {
         try {
             setImmediate(() => {
                 if (level === 'error') {
-                    monitoringService.logError({
-                        message: `${prefix} ${formattedArgs}`,
-                        category: 'MCP_ADAPTER',
-                        severity: 'ERROR',
-                        context: {}
-                    });
+                    monitoringService.error(`${prefix} ${formattedArgs}`, {});
                 } else if (level === 'warn') {
                     monitoringService.warn(`${prefix} ${formattedArgs}`, {});
                 } else if (level === 'debug') {
@@ -122,34 +116,6 @@ let adapterState = {
     lastActivity: 0,
     backendAvailable: false
 };
-
-// Initialize tools service with a stub module registry containing the module definitions
-const stubModuleRegistry = {
-    getAllModules: () => [
-        { id: 'mail', name: 'mail', capabilities: ['getInbox', 'sendEmail', 'searchEmails', 'flagEmail', 'getEmailDetails', 'markAsRead'] },
-        { id: 'calendar', name: 'calendar', capabilities: ['getEvents', 'create', 'update', 'scheduleMeeting', 'getAvailability', 'findMeetingTimes', 'cancelEvent'] },
-        { id: 'files', name: 'files', capabilities: ['listFiles', 'uploadFile', 'downloadFile', 'getFileMetadata'] },
-        { id: 'people', name: 'people', capabilities: ['find', 'search', 'getRelevantPeople', 'getPersonById'] }
-    ],
-    getModule: (moduleName) => {
-        const modules = {
-            'mail': { id: 'mail', capabilities: ['getInbox', 'sendEmail', 'searchEmails', 'flagEmail', 'getEmailDetails', 'markAsRead'] },
-            'calendar': { id: 'calendar', capabilities: ['getEvents', 'create', 'update', 'scheduleMeeting', 'getAvailability', 'findMeetingTimes', 'cancelEvent'] },
-            'files': { id: 'files', capabilities: ['listFiles', 'uploadFile', 'downloadFile', 'getFileMetadata'] },
-            'people': { id: 'people', capabilities: ['find', 'search', 'getRelevantPeople', 'getPersonById'] }
-        };
-        return modules[moduleName] || null;
-    }
-};
-const toolsService = createToolsService({ 
-    moduleRegistry: stubModuleRegistry, 
-    logger: {
-        debug: (...args) => logDebug('[ToolsService]', ...args),
-        info: (...args) => logDebug('[ToolsService]', ...args),
-        warn: (...args) => logDebug('[ToolsService] WARN:', ...args),
-        error: (...args) => process.stderr.write(`[MCP ADAPTER ERROR] [ToolsService] ${args.join(' ')}\n`)
-    }
-});
 
 // Helper: Initialize the adapter and check backend availability
 let healthCheckInterval = null; // Keep track of the interval timer
@@ -570,7 +536,13 @@ async function checkModuleAccess() {
 }
 
 // Helper: Execute a module method with error handling via API
-async function executeModuleMethod(moduleName, methodName, params = {}) {
+// @param {string} moduleName - Name of the module
+// @param {string} methodName - Name of the method
+// @param {object} params - Parameters for the method
+// @param {string} [apiPath] - Full API path from tool definition (if available)
+// @param {string} [apiMethod] - HTTP method from tool definition (if available)
+// @returns {Promise<object>} - API response
+async function executeModuleMethod(moduleName, methodName, params = {}, apiPath = null, apiMethod = null) {
     try {
         // Make sure adapter is initialized
         if (!adapterState.initialized) {
@@ -590,16 +562,17 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
         // Transform parameters based on the module and method
         // This ensures compatibility with the backend API expectations
         let transformedParams = { ...params }; // Start with a copy of the original params
-        // Map module.method to API endpoints
-        let apiPath = '';
-        let apiMethod = 'GET';
+        // Initialize API variables
         let apiData = null;
-
-        // Determine API path and method based on module.method
-        const moduleMethod = `${moduleName}.${methodName}`;
         
-        // Log the module method being executed for debugging
-        logDebug(`[MCP Adapter] Executing module method: ${moduleMethod} with params:`, transformedParams);
+        // Use provided apiPath and apiMethod if available, otherwise construct them
+        if (!apiPath || !apiMethod) {
+            // Determine API path and method based on module.method if not provided
+            const moduleMethod = `${moduleName}.${methodName}`;
+            apiMethod = apiMethod || 'GET'; // Default to GET if not provided
+            
+            // Log the module method being executed for debugging
+            logDebug(`[MCP Adapter] Executing module method: ${moduleMethod} with params:`, transformedParams);
         
         // Helper function to transform attendees from string or array to proper format
         const transformAttendees = (attendees) => {
@@ -634,20 +607,22 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
             return dateTime;
         };
         
-        switch (moduleMethod) {
-            // Query module endpoints
-            case 'query.processQuery':
-            case 'query.getQuery': // Add alias for backward compatibility
-                apiPath = '/v1/query';
-                apiMethod = 'POST';
-                // Ensure query parameter is properly named for the API
-                apiData = { 
-                    query: transformedParams.query,
-                    context: transformedParams.context
-                };
-                // Log the API call for debugging
-                logDebug(`[MCP Adapter] Making POST request to ${apiPath} with data:`, apiData);
-                break;
+        if (!apiPath) {
+            // Only construct apiPath if not provided
+            switch (moduleMethod) {
+                // Query module endpoints
+                case 'query.processQuery':
+                case 'query.getQuery': // Add alias for backward compatibility
+                    apiPath = '/v1/query';
+                    apiMethod = 'POST';
+                    // Ensure query parameter is properly named for the API
+                    apiData = { 
+                        query: transformedParams.query,
+                        context: transformedParams.context
+                    };
+                    // Log the API call for debugging
+                    logDebug(`[MCP Adapter] Making POST request to ${apiPath} with data:`, apiData);
+                    break;
             
             // Email details endpoint
             case 'mail.getEmailDetails':
@@ -682,28 +657,20 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 apiPath = '/v1/mail';
                 apiMethod = 'GET';
                 break;
+            case 'mail.sendMail':
             case 'mail.sendEmail':
-            case 'mail.send':
-                const toolDefinition = toolsService.getToolByName('mail.sendEmail');
-                if (toolDefinition) {
-                    apiPath = toolDefinition.endpoint;
-                    apiMethod = toolDefinition.method;
-                } else {
-                    apiPath = '/v1/mail/send';
-                    apiMethod = 'POST';
-                }
-                // Basic structuring - assumes controller expects these directly
-                // Infer contentType
-                const looksLikeHtml = /<[a-z][\s\S]*>/i.test(params.body || '');
+                apiPath = '/v1/mail/send';
+                apiMethod = 'POST';
+                // Transform parameters to match controller expectations
                 apiData = {
-                    to: params.to,
-                    cc: params.cc, // Pass CC if provided
-                    bcc: params.bcc, // Pass BCC if provided
-                    subject: params.subject,
-                    body: params.body,
-                    contentType: looksLikeHtml ? 'HTML' : 'Text' // Set content type
+                    to: transformAttendees(transformedParams.to),
+                    subject: transformedParams.subject,
+                    body: transformedParams.body,
+                    cc: transformAttendees(transformedParams.cc),
+                    bcc: transformAttendees(transformedParams.bcc)
                 };
-                logDebug(`[MCP Adapter] Handling ${moduleName}.${methodName} with path ${apiPath} and data:`, apiData);
+                // Log the API call for debugging
+                logDebug(`[MCP Adapter] Making POST request to ${apiPath} with data:`, apiData);
                 break;
             case 'mail.searchMail':
             case 'mail.searchEmails':
@@ -1251,55 +1218,6 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
     }
 }
 
-// Helper function to handle calendar timeframe conversion
-function processCalendarTimeframe(toolArgs) {
-    // Process date ranges for calendar
-    const timeframe = toolArgs.timeframe || 'today';
-    let start, end;
-
-    const today = new Date();
-    const todayStr = today.toISOString().split('T')[0];
-
-    switch (timeframe) {
-        case 'today':
-            start = todayStr;
-            end = todayStr;
-            break;
-        case 'week':
-            // Start of current week (Sunday)
-            const startOfWeek = new Date(today);
-            startOfWeek.setDate(today.getDate() - today.getDay());
-            start = startOfWeek.toISOString().split('T')[0];
-
-            // End of current week (Saturday)
-            const endOfWeek = new Date(today);
-            endOfWeek.setDate(today.getDate() + (6 - today.getDay()));
-            end = endOfWeek.toISOString().split('T')[0];
-            break;
-        case 'month':
-            // Start of current month
-            start = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-01`;
-
-            // End of current month
-            const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0);
-            end = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(lastDay.getDate()).padStart(2, '0')}`;
-            break;
-        default:
-            // Default to today if timeframe is not recognized
-            start = todayStr;
-            end = todayStr;
-    }
-
-    logDebug(`[MCP Adapter] Calendar request with date range: ${start} to ${end}`);
-
-    // Add date range to the arguments
-    return {
-        ...toolArgs,
-        start,
-        end
-    };
-}
-
 // Helper: Map MCP tool calls to module methods
 async function handleToolCall(toolName, toolArgs) {
     try {
@@ -1311,62 +1229,135 @@ async function handleToolCall(toolName, toolArgs) {
         // Update last activity timestamp
         adapterState.lastActivity = Date.now();
         
-        logDebug(`[MCP Adapter] Handling tool call: ${toolName}`);
-        
-        // Special handling for calendar date ranges
-        if ((toolName === 'getEvents' || toolName === 'getCalendar') && toolArgs.timeframe) {
-            toolArgs = processCalendarTimeframe(toolArgs);
+        // Get tool definitions from the API
+        const toolsResponse = await callApi('GET', '/tools');
+        if (!toolsResponse || !Array.isArray(toolsResponse.tools)) {
+            throw new Error('Failed to retrieve tool definitions from API');
         }
         
-        // First try to use the toolsService to map and transform the parameters
-        const { mapping, params } = toolsService.transformToolParameters(toolName, toolArgs);
-        
-        if (mapping) {
-            logDebug(`[MCP Adapter] Using tools service mapping: ${toolName} -> ${mapping.moduleName}.${mapping.methodName}`);
-            return await executeModuleMethod(mapping.moduleName, mapping.methodName, params);
+        // Find the tool definition
+        const toolDef = toolsResponse.tools.find(tool => tool.name === toolName);
+        if (!toolDef) {
+            throw new Error(`Unknown tool: ${toolName}`);
         }
         
-        // If tools service can't map it, try the API approach
-        try {
-            const toolsResponse = await callApi('GET', '/tools');
-            if (toolsResponse && Array.isArray(toolsResponse.tools)) {
-                // Find the tool definition
-                const toolDef = toolsResponse.tools.find(tool => tool.name === toolName);
-                if (toolDef) {
-                    // Extract module and method from endpoint
-                    // Example: /api/v1/mail/send -> mail.sendEmail
-                    const path = toolDef.endpoint.replace('/api/v1/', '');
-                    const parts = path.split('/');
-
-                    if (parts.length > 0) {
-                        const moduleName = parts[0];
-                        let methodName = parts.length > 1 ? parts[1] : 'get' + moduleName.charAt(0).toUpperCase() + moduleName.slice(1);
-
-                        // Special case mappings
-                        const methodMappings = {
-                            'mail': { '': 'getInbox' },
-                            'calendar': { '': 'getEvents' },
-                            'files': { '': 'listFiles' },
-                            'people': { '': 'getRelevantPeople' }
-                        };
-
-                        if (parts.length === 1 && methodMappings[moduleName] && methodMappings[moduleName]['']) {
-                            methodName = methodMappings[moduleName][''];
-                        }
-
-                        logDebug(`[MCP Adapter] Using API mapping: ${toolName} -> ${moduleName}.${methodName}`);
-                        return await executeModuleMethod(moduleName, methodName, toolArgs);
-                    }
+        logDebug(`[MCP Adapter] Found tool definition for ${toolName}:`, toolDef);
+        
+        // Extract module and method from endpoint
+        // Example: /api/v1/mail/send -> mail.sendEmail
+        const path = toolDef.endpoint.replace('/api', '');
+        const apiPath = path; // Store the full API path for executeModuleMethod
+        
+        // Extract the module name and method from the path
+        // Remove the /v1/ prefix to get the module path
+        const modulePath = path.replace(/^/v1//, '');
+        const parts = modulePath.split('/');
+        
+        if (parts.length === 0) {
+            throw new Error(`Invalid endpoint path: ${path}`);
+        }
+        
+        const moduleName = parts[0];
+        
+        // Special case for calendar.create which can be called as createEvent
+        if (toolName === 'createEvent') {
+            logDebug(`[MCP Adapter] Using direct mapping for createEvent -> calendar.create`);
+            return await executeModuleMethod('calendar', 'create', toolArgs, apiPath, toolDef.method);
+        }
+        
+        // Special case mappings for root endpoints
+        const methodMappings = {
+            'mail': { '': 'getInbox' },
+            'calendar': { '': 'getEvents' },
+            'files': { '': 'listFiles' },
+            'people': { '': 'getRelevantPeople' }
+        };
+        
+        let methodName;
+        if (parts.length === 1 && methodMappings[moduleName] && methodMappings[moduleName]['']) {
+            // Root endpoint like /v1/mail -> mail.getInbox
+            methodName = methodMappings[moduleName][''];
+        } else if (parts.length > 1) {
+            // Endpoint with method like /v1/mail/send -> mail.sendEmail
+            methodName = parts[1];
+            
+            // Handle special case mappings for specific endpoints
+            const specialMethodMappings = {
+                'mail': {
+                    'send': 'sendEmail',
+                    'search': 'searchEmails',
+                    'flag': 'flagEmail'
+                },
+                'calendar': {
+                    'events': 'create', // For POST to /v1/calendar/events
+                    'findMeetingTimes': 'findMeetingTimes'
+                },
+                'people': {
+                    'search': 'searchPeople',
+                    'find': 'findPeople'
                 }
+            };
+            
+            if (specialMethodMappings[moduleName] && specialMethodMappings[moduleName][methodName]) {
+                methodName = specialMethodMappings[moduleName][methodName];
             }
-        } catch (error) {
-            // If API call fails, log the error
-            logDebug(`[MCP Adapter] Failed to get tool mapping from API: ${error.message}`);
+        } else {
+            throw new Error(`Could not determine method name from endpoint: ${path}`);
         }
         
-        // If we get here, we couldn't map the tool
-        logDebug(`[MCP Adapter] Could not map tool: ${toolName}`);
-        return { error: `Unknown tool: ${toolName}` };
+        logDebug(`[MCP Adapter] Mapped ${toolName} to ${moduleName}.${methodName}`);
+        
+        // Special case for calendar events with timeframe
+        if (moduleName === 'calendar' && methodName === 'getEvents' && toolArgs.timeframe) {
+            // Process date ranges for calendar
+            const timeframe = toolArgs.timeframe;
+            let start, end;
+            
+            const today = new Date();
+            const todayStr = today.toISOString().split('T')[0];
+            
+            switch (timeframe) {
+                case 'today':
+                    start = todayStr;
+                    end = todayStr;
+                    break;
+                case 'week':
+                    // Start of current week (Sunday)
+                    const startOfWeek = new Date(today);
+                    startOfWeek.setDate(today.getDate() - today.getDay());
+                    start = startOfWeek.toISOString().split('T')[0];
+                    
+                    // End of current week (Saturday)
+                    const endOfWeek = new Date(today);
+                    endOfWeek.setDate(today.getDate() + (6 - today.getDay()));
+                    end = endOfWeek.toISOString().split('T')[0];
+                    break;
+                case 'month':
+                    // Start of current month
+                    start = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-01`;
+                    
+                    // End of current month
+                    const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+                    end = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(lastDay.getDate()).padStart(2, '0')}`;
+                    break;
+                default:
+                    // Default to today if timeframe is not recognized
+                    start = todayStr;
+                    end = todayStr;
+            }
+            
+            logDebug(`[MCP Adapter] Calendar request with date range: ${start} to ${end}`);
+            
+            // Add date range to the arguments
+            toolArgs = {
+                ...toolArgs,
+                start,
+                end
+            };
+        }
+        
+        // Execute the module method with the API path and method from the tool definition
+        return await executeModuleMethod(moduleName, methodName, toolArgs, apiPath, toolDef.method);
     } catch (error) {
         logDebug(`[MCP Adapter] Error handling tool call ${toolName}:`, error.message);
         return { 
@@ -1450,48 +1441,18 @@ async function handleRequest(msg) {
                 break;
             }
             case 'tools/list':
-                // Try to get tools list from the API first, then fallback to tools service if needed
+                // Get the tools list from the API
                 try {
                     logDebug('[MCP Adapter] Getting tools list from API');
                     const toolsResult = await callApi('GET', '/tools');
 
                     if (!toolsResult || !toolsResult.tools) {
-                        logDebug('[MCP Adapter] API returned invalid tools list, falling back to tools service');
-                        
-                        // Use the tools service to get the tools list
-                        const toolsFromService = toolsService.getAllTools();
-                        
-                        if (toolsFromService && toolsFromService.length > 0) {
-                            // Format tools for MCP response
-                            const mcpTools = toolsFromService.map(tool => ({
-                                name: tool.name,
-                                description: tool.description,
-                                inputSchema: {
-                                    type: 'object',
-                                    properties: Object.entries(tool.parameters || {}).reduce((acc, [key, value]) => {
-                                        acc[key] = {
-                                            type: value.type || 'string',
-                                            description: value.description || ''
-                                        };
-                                        return acc;
-                                    }, {}),
-                                    required: Object.entries(tool.parameters || {})
-                                        .filter(([_, value]) => !value.optional)
-                                        .map(([key, _]) => key)
-                                }
-                            }));
-                            
-                            result = {
-                                protocolVersion: (params && params.protocolVersion) ? params.protocolVersion : "2024-11-05",
-                                tools: mcpTools
-                            };
-                        } else {
-                            // If tools service also fails, return empty list
-                            result = {
-                                protocolVersion: (params && params.protocolVersion) ? params.protocolVersion : "2024-11-05",
-                                tools: []
-                            };
-                        }
+                        logDebug('[MCP Adapter] API returned invalid tools list');
+                        // Fallback to empty list if API fails
+                        result = {
+                            protocolVersion: (params && params.protocolVersion) ? params.protocolVersion : "2024-11-05",
+                            tools: []
+                        };
                     } else {
                         // Convert API tools format to MCP format
                         const mcpTools = toolsResult.tools.map(tool => ({
@@ -1519,51 +1480,11 @@ async function handleRequest(msg) {
                     }
                 } catch (error) {
                     logDebug('[MCP Adapter] Error getting tools list from API:', error.message);
-                    logDebug('[MCP Adapter] Falling back to tools service');
-                    
-                    // Use the tools service as fallback
-                    try {
-                        const toolsFromService = toolsService.getAllTools();
-                        
-                        if (toolsFromService && toolsFromService.length > 0) {
-                            // Format tools for MCP response
-                            const mcpTools = toolsFromService.map(tool => ({
-                                name: tool.name,
-                                description: tool.description,
-                                inputSchema: {
-                                    type: 'object',
-                                    properties: Object.entries(tool.parameters || {}).reduce((acc, [key, value]) => {
-                                        acc[key] = {
-                                            type: value.type || 'string',
-                                            description: value.description || ''
-                                        };
-                                        return acc;
-                                    }, {}),
-                                    required: Object.entries(tool.parameters || {})
-                                        .filter(([_, value]) => !value.optional)
-                                        .map(([key, _]) => key)
-                                }
-                            }));
-                            
-                            result = {
-                                protocolVersion: (params && params.protocolVersion) ? params.protocolVersion : "2024-11-05",
-                                tools: mcpTools
-                            };
-                        } else {
-                            // If tools service also fails, return empty list
-                            result = {
-                                protocolVersion: (params && params.protocolVersion) ? params.protocolVersion : "2024-11-05",
-                                tools: []
-                            };
-                        }
-                    } catch (serviceError) {
-                        logDebug('[MCP Adapter] Error getting tools from service:', serviceError.message);
-                        // Final fallback - empty list
-                        result = {
-                            protocolVersion: (params && params.protocolVersion) ? params.protocolVersion : "2024-11-05",
-                            tools: []
-                        };
-                    }
+                    // Fallback to empty list if API fails
+                    result = {
+                        protocolVersion: (params && params.protocolVersion) ? params.protocolVersion : "2024-11-05",
+                        tools: []
+                    };
                 }
                 sendResponse(id, result, null);
                 logToFile('Responded:', method, { id, result });

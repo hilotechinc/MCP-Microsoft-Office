@@ -9,7 +9,10 @@ const peopleService = require('./people-service.cjs');
 
 // Configuration for time zones
 const CONFIG = {
+  // Default to W. Europe Standard Time (covers Oslo, Norway) if not specified
   DEFAULT_TIMEZONE: process.env.DEFAULT_TIMEZONE || 'W. Europe Standard Time',
+  // For Nordic countries, we want to be more specific
+  NORDIC_DEFAULT_TIMEZONE: 'Northern Europe Standard Time', // Maps to Europe/Oslo
   TIMEZONE_CACHE_TTL: 60 * 60 * 1000, // 1 hour in milliseconds
   TIMEZONE_MAPPING: {
     // Map common time zone identifiers to IANA formats
@@ -168,13 +171,10 @@ function getEndpointPath(userId, path) {
 }
 
 /**
- * Gets the user's preferred time zone from their mailbox settings.
- * This is the authoritative time zone for the user.
+ * Gets the user's preferred time zone directly from their mailbox settings.
  * @param {object} client - Graph client instance
  * @param {string} [userId='me'] - The user ID to get the time zone for
- * @returns {Promise<string>}
- * @throws {PermissionError} If mailbox settings cannot be accessed
- * @throws {GraphApiError} For other Graph API errors
+ * @returns {Promise<string>} - The user's preferred timezone or default if not available
  */
 async function getUserPreferredTimeZone(client, userId = 'me') {
   // Create a unique cache key for this user
@@ -185,68 +185,60 @@ async function getUserPreferredTimeZone(client, userId = 'me') {
   if (userTimeZoneCache.has(cacheKey)) {
     const cachedData = userTimeZoneCache.get(cacheKey);
     if ((now - cachedData.timestamp) < CONFIG.TIMEZONE_CACHE_TTL) {
-      if (process.env.NODE_ENV !== 'production') {
-        console.log(`Using cached user's preferred time zone for ${userId}: ${cachedData.value}`);
-      }
+      console.log(`[TIMEZONE] Using cached user's preferred time zone: ${cachedData.value}`);
       return cachedData.value;
     }
   }
 
   try {
-    if (process.env.NODE_ENV !== 'production') {
-      console.log(`Fetching user's preferred time zone from mailbox settings for ${userId}...`);
-    }
-    // Note: This requires MailboxSettings.Read permission which might not be granted
-    const endpoint = getEndpointPath(userId, '/mailboxSettings');
-    const mailboxSettings = await client.api(endpoint).get();
-    const timeZone = mailboxSettings.timeZone;
+    // Since we're having issues with the specific timeZone endpoint, let's use the general mailboxSettings endpoint
+    // which is more reliable and contains the timezone information
+    console.log(`[TIMEZONE] Fetching user's mailbox settings including timezone`);
     
-    // Cache the result
-    userTimeZoneCache.set(cacheKey, {
-      value: timeZone,
-      timestamp: now
-    });
+    // Make the API call to get all mailbox settings
+    const mailboxSettings = await client.api('/me/mailboxSettings').get();
+    console.log(`[TIMEZONE] Mailbox settings response received, checking for timezone`);
     
-    if (process.env.NODE_ENV !== 'production') {
-      console.log(`User's preferred time zone for ${userId}: ${timeZone}`);
-    }
-    return timeZone;
-  } catch (error) {
-    // Specific error handling based on error type
-    if (error.statusCode === 403) {
-      if (process.env.NODE_ENV !== 'production') {
-        console.warn('Permission denied accessing mailbox settings. Using default time zone.');
-      }
-      // Create a custom error type for permission issues
-      const permissionError = new Error('Permission denied accessing mailbox settings');
-      permissionError.name = 'PermissionError';
-      permissionError.originalError = error;
+    if (mailboxSettings && mailboxSettings.timeZone) {
+      const timeZone = mailboxSettings.timeZone;
+      console.log(`[TIMEZONE] Successfully retrieved timezone from mailbox settings: ${timeZone}`);
       
-      // Still cache the default to avoid repeated failed API calls
+      // Cache the result
       userTimeZoneCache.set(cacheKey, {
-        value: CONFIG.DEFAULT_TIMEZONE,
+        value: timeZone,
         timestamp: now
       });
       
-      return CONFIG.DEFAULT_TIMEZONE;
+      return timeZone;
     } else {
-      // For other errors, create a GraphApiError
-      if (process.env.NODE_ENV !== 'production') {
-        console.error('Error fetching user\'s preferred time zone:', error);
-      }
-      const graphError = new Error(`Graph API error: ${error.message}`);
-      graphError.name = 'GraphApiError';
-      graphError.originalError = error;
-      
-      // Cache the default value to avoid repeated failed API calls
-      userTimeZoneCache.set(cacheKey, {
-        value: CONFIG.DEFAULT_TIMEZONE,
-        timestamp: now
-      });
-      
-      return CONFIG.DEFAULT_TIMEZONE;
+      console.warn(`[TIMEZONE] No timezone found in mailbox settings, using default: ${CONFIG.DEFAULT_TIMEZONE}`);
     }
+  } catch (error) {
+    // Enhanced error logging
+    console.error(`[TIMEZONE] Error fetching mailbox settings:`);
+    console.error(`[TIMEZONE] Error code: ${error.statusCode || 'unknown'}`);
+    console.error(`[TIMEZONE] Error message: ${error.message || 'No message'}`);
+    
+    if (error.body) {
+      try {
+        const errorBody = typeof error.body === 'string' ? JSON.parse(error.body) : error.body;
+        console.error(`[TIMEZONE] Error details:`, JSON.stringify(errorBody, null, 2));
+      } catch (e) {
+        console.error(`[TIMEZONE] Error body (raw):`, error.body);
+      }
+    }
+    
+    console.warn(`[TIMEZONE] Unable to retrieve mailbox settings, falling back to default timezone: ${CONFIG.DEFAULT_TIMEZONE}`);
   }
+  
+  // If we get here, we couldn't get the timezone from the API, so use the default
+  // Cache the default value to avoid repeated failed API calls
+  userTimeZoneCache.set(cacheKey, {
+    value: CONFIG.DEFAULT_TIMEZONE,
+    timestamp: now
+  });
+  
+  return CONFIG.DEFAULT_TIMEZONE;
 }
 
 // Import normalizeEvent from the central normalizers module
@@ -429,42 +421,61 @@ async function createEvent(eventData, userId = 'me') {
     throw validationError;
   }
 
-  // Get the user's preferred time zone
+  // Get the user's preferred time zone directly from mailbox settings
   let userTimeZone;
   try {
-    userTimeZone = await getUserPreferredTimeZone(client, userId);
-    if (process.env.NODE_ENV !== 'production') {
-      console.log(`User's preferred time zone: ${userTimeZone}`);
+    // Use the general mailboxSettings endpoint which is more reliable
+    console.log(`[TIMEZONE] Fetching user's mailbox settings including timezone`);
+    const mailboxSettings = await client.api('/me/mailboxSettings').get();
+    console.log(`[TIMEZONE] Mailbox settings response:`, JSON.stringify(mailboxSettings, null, 2));
+    
+    // Extract the timezone from the mailbox settings
+    userTimeZone = mailboxSettings.timeZone;
+    console.log(`[TIMEZONE] User's mailbox timezone setting: ${userTimeZone}`);
+    
+    // If no mailbox timezone is set, fall back to the timezone in the request
+    if (!userTimeZone) {
+      userTimeZone = eventData.start.timeZone || CONFIG.DEFAULT_TIMEZONE;
+      console.log(`[TIMEZONE] No mailbox timezone set, using provided timezone: ${userTimeZone}`);
     }
   } catch (error) {
-    if (process.env.NODE_ENV !== 'production') {
-      console.warn('Could not get user\'s preferred time zone, using provided time zone or default', error);
-    }
+    console.warn('[TIMEZONE] Could not get user\'s mailbox settings:', error.message);
+    // Fall back to the timezone provided in the request, or the default
     userTimeZone = eventData.start.timeZone || CONFIG.DEFAULT_TIMEZONE;
+    console.log(`[TIMEZONE] Falling back to provided timezone: ${userTimeZone}`);
   }
 
-  // Check if we need to map the time zone to IANA format
-  let mappedStartTimeZone = eventData.start.timeZone;
-  let mappedEndTimeZone = eventData.end.timeZone;
+  // Simplified timezone handling - prioritize the user's mailbox timezone
+  // If not available, use the timezone from Claude's request
+  // If neither are available, fall back to system default
+  let eventStartTimeZone = userTimeZone || eventData.start.timeZone || CONFIG.DEFAULT_TIMEZONE;
+  let eventEndTimeZone = userTimeZone || eventData.end.timeZone || CONFIG.DEFAULT_TIMEZONE;
   
-  console.log('TIMEZONE DEBUG: Original start time zone:', mappedStartTimeZone);
-  console.log('TIMEZONE DEBUG: Original end time zone:', mappedEndTimeZone);
-  console.log('TIMEZONE DEBUG: Available mappings:', Object.keys(CONFIG.TIMEZONE_MAPPING).join(', '));
+  console.log('TIMEZONE DEBUG: User\'s mailbox timezone:', userTimeZone);
+  console.log('TIMEZONE DEBUG: Event start timezone from request:', eventData.start.timeZone);
+  console.log('TIMEZONE DEBUG: Event end timezone from request:', eventData.end.timeZone);
+  console.log('TIMEZONE DEBUG: Selected start timezone:', eventStartTimeZone);
+  console.log('TIMEZONE DEBUG: Selected end timezone:', eventEndTimeZone);
   
-  // Map the time zones if needed
-  if (mappedStartTimeZone && CONFIG.TIMEZONE_MAPPING[mappedStartTimeZone]) {
-    console.log(`TIMEZONE DEBUG: Mapping start time zone from "${mappedStartTimeZone}" to "${CONFIG.TIMEZONE_MAPPING[mappedStartTimeZone]}"`);
-    mappedStartTimeZone = CONFIG.TIMEZONE_MAPPING[mappedStartTimeZone];
+  // Log the timezone selection decision
+  if (userTimeZone) {
+    console.log('TIMEZONE DEBUG: Using user\'s mailbox timezone as first priority');
+  } else if (eventData.start.timeZone) {
+    console.log('TIMEZONE DEBUG: No mailbox timezone available, using timezone from request');
   } else {
-    console.log('TIMEZONE DEBUG: No mapping found for start time zone');
+    console.log('TIMEZONE DEBUG: No mailbox or request timezone available, using system default');
   }
   
-  if (mappedEndTimeZone && CONFIG.TIMEZONE_MAPPING[mappedEndTimeZone]) {
-    console.log(`TIMEZONE DEBUG: Mapping end time zone from "${mappedEndTimeZone}" to "${CONFIG.TIMEZONE_MAPPING[mappedEndTimeZone]}"`);
-    mappedEndTimeZone = CONFIG.TIMEZONE_MAPPING[mappedEndTimeZone];
-  } else {
-    console.log('TIMEZONE DEBUG: No mapping found for end time zone');
+  // Special handling for UTC timezone - always preserve it exactly as is
+  if (eventStartTimeZone === 'UTC') {
+    console.log('TIMEZONE DEBUG: Preserving UTC timezone for start time');
   }
+  
+  if (eventEndTimeZone === 'UTC') {
+    console.log('TIMEZONE DEBUG: Preserving UTC timezone for end time');
+  }
+  
+  // No need for complex mappings - use the timezone directly from request or mailbox settings
   
   // Normalize the event to match the Graph API format
   const graphEvent = {
@@ -477,15 +488,14 @@ async function createEvent(eventData, userId = 'me') {
       contentType: 'HTML',
       content: ''
     }),
-    // Ensure we're using the user's preferred timezone or the properly mapped timezone
-  // The mapped timezone has precedence, followed by user's timezone
+    // Simplified timezone handling - use the timezone directly from the event data or mailbox settings
     start: {
       dateTime: eventData.start.dateTime,
-      timeZone: mappedStartTimeZone || userTimeZone
+      timeZone: eventStartTimeZone
     },
     end: {
       dateTime: eventData.end.dateTime,
-      timeZone: mappedEndTimeZone || userTimeZone
+      timeZone: eventEndTimeZone
     },
     isOnlineMeeting: eventData.isOnlineMeeting || false,
     responseRequested: true
@@ -564,11 +574,6 @@ function isValidEmail(email) {
     preferTimeZone = 'W. Europe Standard Time';
     console.log(`TIMEZONE DEBUG: Special case - Using 'W. Europe Standard Time' for Europe/Oslo timezone`);
   }
-  // If we have a mapped timezone (in IANA format), convert it back to Windows format for the Prefer header
-  else if (mappedStartTimeZone && CONFIG.REVERSE_TIMEZONE_MAPPING[mappedStartTimeZone]) {
-    preferTimeZone = CONFIG.REVERSE_TIMEZONE_MAPPING[mappedStartTimeZone];
-    console.log(`TIMEZONE DEBUG: Using Windows timezone format for Prefer header: ${preferTimeZone} (mapped from IANA: ${mappedStartTimeZone})`);
-  } 
   // If the timezone appears to be in IANA format (contains '/'), try to convert it to Windows format
   else if (preferTimeZone && preferTimeZone.includes('/')) {
     if (CONFIG.REVERSE_TIMEZONE_MAPPING[preferTimeZone]) {
