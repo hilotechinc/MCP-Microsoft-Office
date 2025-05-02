@@ -265,89 +265,217 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
             case 'deleteEvent':
             case 'cancelEvent': // Alias
                 toolDef.description = 'Delete or cancel a calendar event';
-                toolDef.endpoint = '/api/v1/calendar/events/:id'; // Placeholder for ID in path
-                toolDef.method = 'DELETE';
-                toolDef.parameters = { /* ... specific params ... */ };
+                toolDef.endpoint = '/api/v1/calendar/events/:id/cancel'; // Correct endpoint
+                toolDef.method = 'POST'; // Correct method (POST, not DELETE)
+                toolDef.parameters = {
+                    id: { 
+                        type: 'string', 
+                        description: 'Event ID to cancel', 
+                        required: true,
+                        inPath: true 
+                    },
+                    comment: { 
+                        type: 'string', 
+                        description: 'Optional cancellation comment', 
+                        optional: true 
+                    }
+                };
+                // Ensure this tool is properly registered with the /api/v1/calendar/events/:id/cancel endpoint
+                toolDef.parameterMapping = {
+                    id: { inPath: true },
+                    comment: { inBody: true }
+                };
                 break;
             case 'getAvailability':
-                toolDef.description = 'Get free/busy schedule for users';
+                toolDef.description = 'Get availability information for specified users and time slots';
                 toolDef.endpoint = '/api/v1/calendar/availability';
-                toolDef.method = 'POST'; // Typically POST for complex queries
-                toolDef.parameters = {
-                    users: { type: 'array', description: 'Array of user email addresses', items: { type: 'string' } },
-                    start: { type: 'string', description: 'Start time (ISO date string)' },
-                    end: { type: 'string', description: 'End time (ISO date string)' },
-                    timeZone: { type: 'string', description: 'Time zone for availability check', optional: true }
-                };
-                break;
-            case 'findMeetingTimes':
-                toolDef.description = 'Find suggested meeting times';
-                toolDef.endpoint = '/api/v1/calendar/findMeetingTimes';
                 toolDef.method = 'POST';
                 toolDef.parameters = {
-                    attendees: { type: 'array', description: 'Array of attendee email addresses', items: { type: 'string' } },
-                    timeConstraints: { 
-                        type: 'object', 
-                        description: 'Time constraints for the meeting',
-                        properties: {
-                            startTime: { 
-                                type: 'object', 
-                                description: 'Start time',
-                                properties: {
-                                    dateTime: { type: 'string', description: 'ISO date string' },
-                                    timeZone: { type: 'string', description: 'Time zone', optional: true }
-                                }
-                            },
-                            endTime: { 
-                                type: 'object', 
-                                description: 'End time',
-                                properties: {
-                                    dateTime: { type: 'string', description: 'ISO date string' },
-                                    timeZone: { type: 'string', description: 'Time zone', optional: true }
-                                }
-                            },
-                            meetingDuration: { type: 'number', description: 'Duration in minutes', optional: true }
-                        }
-                    },
-                    maxCandidates: { type: 'number', description: 'Maximum number of meeting time suggestions', optional: true }
-                };
-                break;
-            case 'scheduleMeeting':
-                toolDef.description = 'Schedule a meeting with intelligent time selection';
-                toolDef.endpoint = '/api/v1/calendar/schedule';
-                toolDef.method = 'POST';
-                toolDef.parameters = {
-                    subject: { type: 'string', description: 'Meeting subject/title' },
-                    attendees: { type: 'array', description: 'Array of attendee email addresses', items: { type: 'string' } },
-                    preferredTimes: { 
+                    users: { type: 'array', itemType: 'string', description: 'Array of user email addresses to check availability for', required: true },
+                    timeSlots: { 
                         type: 'array', 
-                        description: 'Preferred time slots for the meeting',
-                        optional: true,
-                        items: {
-                            type: 'object',
-                            properties: {
-                                start: {
-                                    type: 'object',
-                                    properties: {
-                                        dateTime: { type: 'string', description: 'ISO date string' },
-                                        timeZone: { type: 'string', description: 'Time zone', optional: true }
-                                    }
-                                },
-                                end: {
-                                    type: 'object',
-                                    properties: {
-                                        dateTime: { type: 'string', description: 'ISO date string' },
-                                        timeZone: { type: 'string', description: 'Time zone', optional: true }
-                                    }
+                        itemType: 'object', 
+                        description: 'Array of time slots to check availability within', 
+                        required: true,
+                        schema: { // Define nested schema for clarity
+                            start: { 
+                                type: 'object', 
+                                required: true,
+                                schema: {
+                                    dateTime: { type: 'string', format: 'date-time', description: 'Start date/time in ISO format', required: true },
+                                    timeZone: { type: 'string', description: 'Time zone (e.g., UTC)', optional: true, default: 'UTC' }
+                                }
+                            },
+                            end: { 
+                                type: 'object', 
+                                required: true,
+                                schema: {
+                                    dateTime: { type: 'string', format: 'date-time', description: 'End date/time in ISO format', required: true },
+                                    timeZone: { type: 'string', description: 'Time zone (e.g., UTC)', optional: true, default: 'UTC' }
                                 }
                             }
                         }
-                    },
-                    duration: { type: 'number', description: 'Meeting duration in minutes', optional: true },
-                    location: { type: 'string', description: 'Meeting location', optional: true },
-                    body: { type: 'string', description: 'Meeting description/body', optional: true },
-                    isOnlineMeeting: { type: 'boolean', description: 'Whether this is an online meeting', optional: true }
+                    }
                 };
+                break;
+                case 'findMeetingTimes':
+                    toolDef.description = 'Find suggested meeting times based on attendees and constraints';
+                    toolDef.endpoint = '/api/v1/calendar/findMeetingTimes';
+                    toolDef.method = 'POST';
+                    toolDef.parameters = {
+                        attendees: { 
+                            type: 'array', 
+                            description: 'Array of attendee email addresses', 
+                            items: { type: 'string', format: 'email' },
+                            required: true,
+                            minItems: 1
+                        },
+                        timeConstraints: { 
+                            type: 'object', 
+                            description: 'Time constraints for the meeting',
+                            required: true,
+                            properties: {
+                                startTime: { 
+                                    type: 'object', 
+                                    description: 'Start time',
+                                    required: true,
+                                    properties: {
+                                        dateTime: { type: 'string', description: 'ISO date string', required: true },
+                                        timeZone: { type: 'string', description: 'Time zone', optional: true, default: 'UTC' }
+                                    }
+                                },
+                                endTime: { 
+                                    type: 'object', 
+                                    description: 'End time',
+                                    required: true,
+                                    properties: {
+                                        dateTime: { type: 'string', description: 'ISO date string', required: true },
+                                        timeZone: { type: 'string', description: 'Time zone', optional: true, default: 'UTC' }
+                                    }
+                                },
+                                meetingDuration: { 
+                                    type: 'number', 
+                                    description: 'Duration in minutes', 
+                                    optional: true, 
+                                    min: 15, 
+                                    max: 480, 
+                                    default: 60 
+                                }
+                            }
+                        },
+                        locationConstraint: {
+                            type: 'object',
+                            description: 'Location constraints for the meeting',
+                            optional: true,
+                            properties: {
+                                isRequired: { type: 'boolean', description: 'Whether a location is required', optional: true, default: false },
+                                suggestLocation: { type: 'boolean', description: 'Whether to suggest a location', optional: true, default: false },
+                                locations: {
+                                    type: 'array',
+                                    description: 'Array of potential locations',
+                                    optional: true,
+                                    items: {
+                                        type: 'object',
+                                        properties: {
+                                            displayName: { type: 'string', description: 'Display name of the location', required: true },
+                                            locationEmailAddress: { type: 'string', description: 'Email address of the location', optional: true }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        maxCandidates: { 
+                            type: 'number', 
+                            description: 'Maximum number of meeting time suggestions', 
+                            optional: true, 
+                            min: 1, 
+                            max: 100, 
+                            default: 10 
+                        }
+                    };
+                break;
+                case 'scheduleMeeting':
+                    toolDef.description = 'Schedule a meeting with intelligent time selection';
+                    toolDef.endpoint = '/api/v1/calendar/schedule';
+                    toolDef.method = 'POST';
+                    toolDef.parameters = {
+                        subject: { type: 'string', description: 'Meeting subject/title', required: true },
+                        attendees: { 
+                            type: 'array', 
+                            description: 'Array of attendee email addresses', 
+                            items: { type: 'string', format: 'email' },
+                            required: true
+                        },
+                        preferredTimes: { 
+                            type: 'array', 
+                            description: 'Preferred time slots for the meeting',
+                            optional: true,
+                            items: {
+                                type: 'object',
+                                properties: {
+                                    start: {
+                                        type: 'object',
+                                        required: true,
+                                        properties: {
+                                            dateTime: { type: 'string', description: 'ISO date string', required: true },
+                                            timeZone: { type: 'string', description: 'Time zone', optional: true, default: 'UTC' }
+                                        }
+                                    },
+                                    end: {
+                                        type: 'object',
+                                        required: true,
+                                        properties: {
+                                            dateTime: { type: 'string', description: 'ISO date string', required: true },
+                                            timeZone: { type: 'string', description: 'Time zone', optional: true, default: 'UTC' }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        duration: { 
+                            type: 'number', 
+                            description: 'Meeting duration in minutes', 
+                            optional: true,
+                            min: 15,
+                            max: 480
+                        },
+                        body: { 
+                            type: 'any', 
+                            description: 'Meeting description/body as string or object with contentType and content', 
+                            optional: true,
+                            oneOf: [
+                                { type: 'string' },
+                                { 
+                                    type: 'object',
+                                    properties: {
+                                        contentType: { 
+                                            type: 'string', 
+                                            description: 'Content type (text, html, HTML)', 
+                                            enum: ['text', 'html', 'HTML'],
+                                            default: 'text'
+                                        },
+                                        content: { type: 'string', description: 'The actual content', required: true }
+                                    }
+                                }
+                            ]
+                        },
+                        location: { 
+                            type: 'any', 
+                            description: 'Meeting location as string or object with displayName and address', 
+                            optional: true,
+                            oneOf: [
+                                { type: 'string' },
+                                { 
+                                    type: 'object',
+                                    properties: {
+                                        displayName: { type: 'string', description: 'Display name of the location', required: true },
+                                        address: { type: 'object', description: 'Address details', optional: true }
+                                    }
+                                }
+                            ]
+                        },
+                        isOnlineMeeting: { type: 'boolean', description: 'Whether this is an online meeting', optional: true }
+                    };
                 break;
             case 'getRooms':
                 toolDef.description = 'Get available meeting rooms';

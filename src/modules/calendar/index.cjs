@@ -427,6 +427,8 @@ const CalendarModule = {
             throw err;
         }
 
+        console.log('[Calendar Module] Validated Options:', JSON.stringify(validatedOptions, null, 2));
+
         const { users, timeSlots, duration, windowStart } = validatedOptions;
 
         let startDateTime, endDateTime;
@@ -442,6 +444,9 @@ const CalendarModule = {
             startDateTime = moment(windowStart).toISOString();
             endDateTime = moment(startDateTime).add(moment.duration(duration)).toISOString();
         }
+
+        console.log(`[Calendar Module] Extracted startDateTime: ${startDateTime} (Type: ${typeof startDateTime})`);
+        console.log(`[Calendar Module] Extracted endDateTime: ${endDateTime} (Type: ${typeof endDateTime})`);
 
         try {
             if (typeof graphService.getAvailability !== 'function') {

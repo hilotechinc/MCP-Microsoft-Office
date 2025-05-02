@@ -566,74 +566,55 @@ module.exports = ({ calendarModule }) => ({
                 };
             }
             
-            const { error } = availabilitySchema.validate(req.body);
+            const { error, value: validatedValue } = availabilitySchema.validate(req.body);
             if (error) {
                 return res.status(400).json({ 
                     error: 'Invalid request', 
                     details: error.details[0].message 
                 });
             }
-            
+
             // Try to use the module's getAvailability method if available
             let availabilityData;
             try {
                 console.log('[Calendar Controller] Attempting to get real availability data from module');
-                if (typeof calendarModule.getAvailability === 'function') {
-                    availabilityData = await calendarModule.getAvailability(req.body);
-                    console.log('[Calendar Controller] Successfully retrieved real availability data');
-                } else {
-                    throw new Error('Module method not implemented');
-                }
+                // Extract data from the validated value
+                const users = validatedValue.users;
+                const timeSlots = validatedValue.timeSlots;
+
+                // Call the module with the correct structure
+                const availability = await calendarModule.getAvailability({
+                    users: users,
+                    timeSlots: timeSlots
+                });
+
+                // Use the actual result from the module
+                availabilityData = availability;
+
+                console.log(`[Calendar Controller] Successfully retrieved real availability data for ${users.length} users`);
+
             } catch (moduleError) {
-                console.error('[Calendar Controller] Error getting real availability data:', moduleError.message);
+                console.error('[Calendar Controller] Error getting real availability data from module:', moduleError);
+                errorService.createError(
+                    'controller',
+                    'Failed to retrieve availability data from module.',
+                    'error',
+                    { controller: 'calendar', method: 'getAvailability', originalError: moduleError.message, stack: moduleError.stack }
+                );
+                
+                // Decide whether to fall back to mock or send error
+                // For now, let's send an error response instead of falling back silently
+                return res.status(500).json({
+                    error: 'Failed to retrieve availability data.',
+                    details: process.env.NODE_ENV !== 'production' ? moduleError.message : 'An internal error occurred.'
+                });
+                /* // Previous fallback logic (commented out)
                 console.log('[Calendar Controller] Falling back to mock availability data');
-                
-                // Generate mock availability data only if the real module call fails
-                const users = req.body.users;
-                const timeSlots = req.body.timeSlots;
-                
-                availabilityData = {
-                    users: users.map(user => {
-                        // Generate random availability for each user and time slot
-                        return {
-                            email: user,
-                            availability: timeSlots.map(slot => {
-                                const startTime = new Date(slot.start.dateTime);
-                                const endTime = new Date(slot.end.dateTime);
-                                const duration = endTime - startTime;
-                                
-                                // Create 1-hour blocks of availability
-                                const availabilityBlocks = [];
-                                const hourInMs = 60 * 60 * 1000;
-                                
-                                for (let time = startTime.getTime(); time < endTime.getTime(); time += hourInMs) {
-                                    // 80% chance of being available for each hour block
-                                    if (Math.random() > 0.2) {
-                                        const blockStart = new Date(time);
-                                        const blockEnd = new Date(Math.min(time + hourInMs, endTime.getTime()));
-                                        
-                                        availabilityBlocks.push({
-                                            start: blockStart.toISOString(),
-                                            end: blockEnd.toISOString(),
-                                            status: 'available'
-                                        });
-                                    }
-                                }
-                                
-                                return {
-                                    timeSlot: {
-                                        start: slot.start.dateTime,
-                                        end: slot.end.dateTime
-                                    },
-                                    availableSlots: availabilityBlocks
-                                };
-                            })
-                        };
-                    })
-                };
-                console.log(`[Calendar Controller] Generated mock availability data for ${users.length} users`);
+                availabilityData = { // Generate mock data... }; 
+                */
             }
-            
+
+            // Send the successful response (real data)
             res.json(availabilityData);
         } catch (err) {
             const mcpError = errorService.createError('api', err.message, 'error', { stack: err.stack });
