@@ -2,3 +2,5 @@ node_modules
 .env
 **/.claude
 data/mcp.sqlite
+data/mcp.sqlite
+logs/mcp.log

@@ -99,8 +99,9 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 toolDef.description = 'Fetch mail from Microsoft 365 inbox';
                 toolDef.endpoint = '/api/v1/mail';
                 toolDef.parameters = {
-                    // Example: Add specific parameters if needed
-                    // limit: { type: 'number', description: 'Max results', optional: true }
+                    limit: { type: 'number', description: 'Maximum number of messages to retrieve', optional: true, default: 20 },
+                    filter: { type: 'string', description: 'Filter string for messages', optional: true },
+                    debug: { type: 'boolean', description: 'Enable debug mode to return raw message data', optional: true, default: false }
                 };
                 break;
             case 'sendEmail':
@@ -109,12 +110,45 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 toolDef.endpoint = '/api/v1/mail/send';
                 toolDef.method = 'POST';
                 toolDef.parameters = {
-                    to: { type: 'string', description: 'One or more valid recipient email addresses, comma-separated' },
-                    subject: { type: 'string', description: 'Email subject line' },
-                    body: { type: 'string', description: 'Email body content' },
-                    cc: { type: 'string', description: 'One or more valid CC recipient email addresses, comma-separated', optional: true },
-                    bcc: { type: 'string', description: 'One or more valid BCC recipient email addresses, comma-separated', optional: true },
-                    attachments: { type: 'array', description: 'File attachments', optional: true }
+                    to: { 
+                        type: 'string', 
+                        description: 'Recipient email address(es). Can be a single email, comma-separated list, or array of emails',
+                        required: true
+                    },
+                    subject: { 
+                        type: 'string', 
+                        description: 'Email subject line', 
+                        required: true,
+                        minLength: 1
+                    },
+                    body: { 
+                        type: 'string', 
+                        description: 'Email body content', 
+                        required: true,
+                        minLength: 1
+                    },
+                    cc: { 
+                        type: 'string', 
+                        description: 'CC recipient email address(es). Can be a single email, comma-separated list, or array of emails', 
+                        optional: true 
+                    },
+                    bcc: { 
+                        type: 'string', 
+                        description: 'BCC recipient email address(es). Can be a single email, comma-separated list, or array of emails', 
+                        optional: true 
+                    },
+                    contentType: { 
+                        type: 'string', 
+                        description: 'Content type of the email body', 
+                        optional: true, 
+                        enum: ['Text', 'HTML'],
+                        default: 'Text'
+                    },
+                    attachments: { 
+                        type: 'array', 
+                        description: 'File attachments', 
+                        optional: true 
+                    }
                 };
                 break;
             case 'searchEmails':
@@ -122,22 +156,53 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 toolDef.description = 'Search emails by query';
                 toolDef.endpoint = '/api/v1/mail/search';
                 toolDef.parameters = {
-                    query: { type: 'string', description: 'Search query' },
-                    limit: { type: 'number', description: 'Number of results', optional: true }
+                    query: { 
+                        type: 'string', 
+                        description: 'Search query string', 
+                        required: true,
+                        aliases: ['q'] // Support both 'query' and 'q' parameters
+                    },
+                    limit: { 
+                        type: 'number', 
+                        description: 'Maximum number of results to return', 
+                        optional: true,
+                        default: 20
+                    }
                 };
                 break;
             case 'flagEmail':
             case 'flagMail':
                 toolDef.description = 'Flag or unflag an email';
                 toolDef.endpoint = '/api/v1/mail/flag';
-                toolDef.method = 'POST'; // Explicit override if needed
-                toolDef.parameters = { /* ... specific params ... */ };
+                toolDef.method = 'POST';
+                toolDef.parameters = {
+                    id: { 
+                        type: 'string', 
+                        description: 'Email ID to flag or unflag',
+                        required: true
+                    },
+                    flag: { 
+                        type: 'boolean', 
+                        description: 'Whether to flag (true) or unflag (false) the email',
+                        optional: true,
+                        default: true
+                    }
+                };
                 break;
             case 'getAttachments':
                 toolDef.description = 'Get email attachments';
                 toolDef.endpoint = '/api/v1/mail/attachments';
-                toolDef.method = 'POST'; // Often POST for actions with IDs in body
-                toolDef.parameters = { /* ... specific params ... */ };
+                toolDef.method = 'GET';
+                toolDef.parameters = {
+                    id: { 
+                        type: 'string', 
+                        description: 'Email ID to get attachments for',
+                        required: true
+                    }
+                };
+                toolDef.parameterMapping = {
+                    id: { inQuery: true }
+                };
                 break;
             case 'getEmailDetails':
             case 'getMailDetails':
@@ -287,11 +352,16 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 };
                 break;
             case 'getAvailability':
-                toolDef.description = 'Get availability information for specified users and time slots';
+                toolDef.description = 'Get availability information for specified users and time slots. This tool helps identify when people are free or busy before scheduling meetings.';
                 toolDef.endpoint = '/api/v1/calendar/availability';
                 toolDef.method = 'POST';
                 toolDef.parameters = {
-                    users: { type: 'array', itemType: 'string', description: 'Array of user email addresses to check availability for', required: true },
+                    users: { 
+                        type: 'array', 
+                        itemType: 'string', 
+                        description: 'Array of user email addresses to check availability for (must be valid email addresses)', 
+                        required: true 
+                    },
                     timeSlots: { 
                         type: 'array', 
                         itemType: 'object', 
@@ -302,20 +372,59 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                                 type: 'object', 
                                 required: true,
                                 schema: {
-                                    dateTime: { type: 'string', format: 'date-time', description: 'Start date/time in ISO format', required: true },
-                                    timeZone: { type: 'string', description: 'Time zone (e.g., UTC)', optional: true, default: 'UTC' }
+                                    dateTime: { 
+                                        type: 'string', 
+                                        format: 'date-time', 
+                                        description: 'Start date/time in ISO format (e.g., 2025-05-02T14:00:00)', 
+                                        required: true 
+                                    },
+                                    timeZone: { 
+                                        type: 'string', 
+                                        description: 'Time zone (e.g., UTC, Europe/Oslo)', 
+                                        optional: true, 
+                                        default: 'UTC' 
+                                    }
                                 }
                             },
                             end: { 
                                 type: 'object', 
                                 required: true,
                                 schema: {
-                                    dateTime: { type: 'string', format: 'date-time', description: 'End date/time in ISO format', required: true },
-                                    timeZone: { type: 'string', description: 'Time zone (e.g., UTC)', optional: true, default: 'UTC' }
+                                    dateTime: { 
+                                        type: 'string', 
+                                        format: 'date-time', 
+                                        description: 'End date/time in ISO format (e.g., 2025-05-02T15:00:00)', 
+                                        required: true 
+                                    },
+                                    timeZone: { 
+                                        type: 'string', 
+                                        description: 'Time zone (e.g., UTC, Europe/Oslo)', 
+                                        optional: true, 
+                                        default: 'UTC' 
+                                    }
                                 }
                             }
                         }
+                    },
+                    // Support for simpler API calls with direct start/end parameters
+                    start: { 
+                        type: 'string', 
+                        format: 'date-time', 
+                        description: 'Alternative to timeSlots: Start date/time in ISO format for a single time slot', 
+                        optional: true 
+                    },
+                    end: { 
+                        type: 'string', 
+                        format: 'date-time', 
+                        description: 'Alternative to timeSlots: End date/time in ISO format for a single time slot', 
+                        optional: true 
                     }
+                };
+                toolDef.parameterMapping = {
+                    users: { inBody: true },
+                    timeSlots: { inBody: true },
+                    start: { inBody: true },
+                    end: { inBody: true }
                 };
                 break;
                 case 'findMeetingTimes':
@@ -498,27 +607,194 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
             // File tools (OneDrive/SharePoint)
             case 'listFiles':
                 toolDef.description = 'List files in a specific drive or folder';
-                toolDef.endpoint = '/api/v1/files'; // Needs refinement for path
+                toolDef.endpoint = '/api/v1/files';
+                toolDef.method = 'GET';
                 toolDef.parameters = {
-                    // Example: path: { type: 'string' }, limit: { type: 'number' }
+                    parentId: { 
+                        type: 'string', 
+                        description: 'ID of the parent folder to list files from. If not provided, lists files from the root folder.',
+                        optional: true
+                    }
+                };
+                toolDef.parameterMapping = {
+                    parentId: { inQuery: true }
+                };
+                break;
+            case 'searchFiles':
+                toolDef.description = 'Search for files by name or content. This tool must be used to find files before performing operations on them.';
+                toolDef.endpoint = '/api/v1/files/search';
+                toolDef.method = 'GET';
+                toolDef.parameters = {
+                    q: { 
+                        type: 'string', 
+                        description: 'Search query to find files by name or content',
+                        required: true
+                    }
+                };
+                toolDef.parameterMapping = {
+                    q: { inQuery: true }
                 };
                 break;
             case 'uploadFile':
-                toolDef.description = 'Upload a file';
-                toolDef.endpoint = '/api/v1/files/upload'; // Needs refinement for path
+                toolDef.description = 'Upload a file to OneDrive or SharePoint';
+                toolDef.endpoint = '/api/v1/files/upload';
                 toolDef.method = 'POST';
-                toolDef.parameters = { /* ... specific params ... */ };
+                toolDef.parameters = {
+                    name: { 
+                        type: 'string', 
+                        description: 'Name of the file to upload',
+                        required: true
+                    },
+                    content: { 
+                        type: 'string', 
+                        description: 'Content of the file to upload',
+                        required: true
+                    }
+                };
                 break;
             case 'downloadFile':
-                toolDef.description = 'Download a file';
-                toolDef.endpoint = '/api/v1/files/download'; // Needs refinement for path and ID
-                toolDef.parameters = { /* ... specific params ... */ };
+                toolDef.description = 'Download a file from OneDrive or SharePoint';
+                toolDef.endpoint = '/api/v1/files/download';
+                toolDef.method = 'GET';
+                toolDef.parameters = {
+                    id: { 
+                        type: 'string', 
+                        description: 'ID of the file to download',
+                        required: true
+                    }
+                };
+                toolDef.parameterMapping = {
+                    id: { inQuery: true }
+                };
+                break;
+            case 'getFileMetadata':
+                toolDef.description = 'Get metadata for a specific file';
+                toolDef.endpoint = '/api/v1/files/metadata';
+                toolDef.method = 'GET';
+                toolDef.parameters = {
+                    id: { 
+                        type: 'string', 
+                        description: 'ID of the file to get metadata for',
+                        required: true
+                    }
+                };
+                toolDef.parameterMapping = {
+                    id: { inQuery: true }
+                };
+                break;
+            case 'getFileContent':
+                toolDef.description = 'Get the content of a specific file. Use searchFiles first to find the file ID.';
+                toolDef.endpoint = '/api/v1/files/content';
+                toolDef.method = 'GET';
+                toolDef.parameters = {
+                    id: { 
+                        type: 'string', 
+                        description: 'ID of the file to get content for (required, must be obtained from searchFiles or listFiles)',
+                        required: true
+                    }
+                };
+                toolDef.parameterMapping = {
+                    id: { inQuery: true }
+                };
+                break;
+            case 'setFileContent':
+                toolDef.description = 'Set the content of a specific file';
+                toolDef.endpoint = '/api/v1/files/content';
+                toolDef.method = 'POST';
+                toolDef.parameters = {
+                    id: { 
+                        type: 'string', 
+                        description: 'ID of the file to set content for',
+                        required: true
+                    },
+                    content: { 
+                        type: 'string', 
+                        description: 'New content for the file',
+                        required: true
+                    }
+                };
+                break;
+            case 'updateFileContent':
+                toolDef.description = 'Update the content of a specific file';
+                toolDef.endpoint = '/api/v1/files/content/update';
+                toolDef.method = 'POST';
+                toolDef.parameters = {
+                    id: { 
+                        type: 'string', 
+                        description: 'ID of the file to update content for',
+                        required: true
+                    },
+                    content: { 
+                        type: 'string', 
+                        description: 'New content for the file',
+                        required: true
+                    }
+                };
                 break;
             case 'deleteFile':
                 toolDef.description = 'Delete a file or folder';
-                toolDef.endpoint = '/api/v1/files'; // Needs refinement for path and ID
+                toolDef.endpoint = '/api/v1/files/:id';
                 toolDef.method = 'DELETE';
-                toolDef.parameters = { /* ... specific params ... */ };
+                toolDef.parameters = {
+                    id: { 
+                        type: 'string', 
+                        description: 'ID of the file or folder to delete',
+                        required: true
+                    }
+                };
+                toolDef.parameterMapping = {
+                    id: { inPath: true }
+                };
+                break;
+            case 'createSharingLink':
+                toolDef.description = 'Create a sharing link for a file';
+                toolDef.endpoint = '/api/v1/files/share';
+                toolDef.method = 'POST';
+                toolDef.parameters = {
+                    id: { 
+                        type: 'string', 
+                        description: 'ID of the file to create a sharing link for',
+                        required: true
+                    },
+                    type: { 
+                        type: 'string', 
+                        description: 'Type of sharing link (view or edit)',
+                        enum: ['view', 'edit'],
+                        default: 'view'
+                    }
+                };
+                break;
+            case 'getSharingLinks':
+                toolDef.description = 'Get sharing links for a file';
+                toolDef.endpoint = '/api/v1/files/sharing';
+                toolDef.method = 'GET';
+                toolDef.parameters = {
+                    id: { 
+                        type: 'string', 
+                        description: 'ID of the file to get sharing links for',
+                        required: true
+                    }
+                };
+                toolDef.parameterMapping = {
+                    id: { inQuery: true }
+                };
+                break;
+            case 'removeSharingPermission':
+                toolDef.description = 'Remove a sharing permission from a file';
+                toolDef.endpoint = '/api/v1/files/sharing/remove';
+                toolDef.method = 'POST';
+                toolDef.parameters = {
+                    fileId: { 
+                        type: 'string', 
+                        description: 'ID of the file to remove sharing permission from',
+                        required: true
+                    },
+                    permissionId: { 
+                        type: 'string', 
+                        description: 'ID of the permission to remove',
+                        required: true
+                    }
+                };
                 break;
 
             // Query tool
@@ -529,9 +805,27 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 toolDef.endpoint = '/api/v1/people/find';
                 toolDef.method = 'GET';
                 toolDef.parameters = {
-                    query: { type: 'string', description: 'Search query to find a person' },
-                    name: { type: 'string', description: 'Person name to search for', optional: true },
-                    limit: { type: 'number', description: 'Maximum number of results', optional: true }
+                    query: { 
+                        type: 'string', 
+                        description: 'Search query to find a person',
+                        optional: true
+                    },
+                    name: { 
+                        type: 'string', 
+                        description: 'Person name to search for', 
+                        optional: true 
+                    },
+                    limit: { 
+                        type: 'number', 
+                        description: 'Maximum number of results', 
+                        optional: true,
+                        default: 10
+                    }
+                };
+                toolDef.parameterMapping = {
+                    query: { inQuery: true },
+                    name: { inQuery: true },
+                    limit: { inQuery: true }
                 };
                 break;
             case 'searchPeople':
@@ -539,9 +833,21 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 toolDef.endpoint = '/api/v1/people/search';
                 toolDef.method = 'GET';
                 toolDef.parameters = {
-                    query: { type: 'string', description: 'Search query (name or email)' },
-                    limit: { type: 'number', description: 'Maximum number of results', optional: true },
-                    includeContacts: { type: 'boolean', description: 'Include personal contacts in search', optional: true }
+                    query: { 
+                        type: 'string', 
+                        description: 'Search query (name or email)',
+                        required: true
+                    },
+                    limit: { 
+                        type: 'number', 
+                        description: 'Maximum number of results', 
+                        optional: true,
+                        default: 10
+                    }
+                };
+                toolDef.parameterMapping = {
+                    query: { inQuery: true },
+                    limit: { inQuery: true }
                 };
                 break;
             case 'getRelevantPeople':
@@ -549,15 +855,43 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 toolDef.endpoint = '/api/v1/people';
                 toolDef.method = 'GET';
                 toolDef.parameters = {
-                    limit: { type: 'number', description: 'Maximum number of people to return', optional: true },
-                    filter: { type: 'string', description: 'Filter criteria', optional: true },
-                    orderby: { type: 'string', description: 'Order by field', optional: true }
+                    limit: { 
+                        type: 'number', 
+                        description: 'Maximum number of people to return', 
+                        optional: true,
+                        default: 10
+                    },
+                    filter: { 
+                        type: 'string', 
+                        description: 'Filter criteria', 
+                        optional: true 
+                    },
+                    orderby: { 
+                        type: 'string', 
+                        description: 'Order by field', 
+                        optional: true 
+                    }
+                };
+                toolDef.parameterMapping = {
+                    limit: { inQuery: true },
+                    filter: { inQuery: true },
+                    orderby: { inQuery: true }
                 };
                 break;
             case 'getPersonById':
                 toolDef.description = 'Get a specific person by ID';
                 toolDef.endpoint = '/api/v1/people/:id';
-                // TODO: Define parameters for getPersonById
+                toolDef.method = 'GET';
+                toolDef.parameters = {
+                    id: { 
+                        type: 'string', 
+                        description: 'ID of the person to retrieve',
+                        required: true
+                    }
+                };
+                toolDef.parameterMapping = {
+                    id: { inPath: true }
+                };
                 break;
 
             // Default for unknown capabilities
