@@ -349,15 +349,71 @@ const CalendarModule = {
 
         // 4. Auto-Schedule Event in the Best Slot
         console.log(`Best slot found with confidence ${bestSuggestion.confidence}. Scheduling meeting.`);
+        
+        // Format the body data correctly for Graph API
+        let formattedBody;
+        if (options.body) {
+            if (typeof options.body === 'string') {
+                // If body is a string, convert to HTML content object
+                formattedBody = {
+                    contentType: 'HTML',
+                    content: options.body
+                };
+            } else if (typeof options.body === 'object') {
+                // If body is an object, ensure it has the required fields
+                formattedBody = {
+                    contentType: (options.body.contentType || 'HTML').toUpperCase(), // Normalize to uppercase
+                    content: options.body.content || '' // Default to empty string if not provided
+                };
+                
+                // Ensure contentType is one of the valid values
+                if (!['HTML', 'TEXT'].includes(formattedBody.contentType)) {
+                    formattedBody.contentType = 'HTML'; // Default to HTML if invalid
+                }
+            }
+        } else {
+            // Default empty body
+            formattedBody = {
+                contentType: 'HTML',
+                content: ''
+            };
+        }
+        
+        // Log the best suggestion for debugging
+        console.log(`Selected best suggestion:`, JSON.stringify(bestSuggestion, null, 2));
+        
+        // Get the slot data based on the structure of the best suggestion
+        const slotData = bestSuggestion.meetingTimeSlot || bestSuggestion.timeSlot || bestSuggestion.slot;
+        
+        if (!slotData || !slotData.start || !slotData.end) {
+            console.error('Invalid slot data in best suggestion:', bestSuggestion);
+            throw new Error('Invalid meeting time slot data');
+        }
+        
+        // Create the event data with correctly formatted body
         const eventDataToCreate = {
             subject: subject,
-            start: bestSuggestion.slot.start,
-            end: bestSuggestion.slot.end,
+            start: {
+                dateTime: new Date(slotData.start.dateTime).toISOString(),
+                timeZone: slotData.start.timeZone || 'UTC'
+            },
+            end: {
+                dateTime: new Date(slotData.end.dateTime).toISOString(),
+                timeZone: slotData.end.timeZone || 'UTC'
+            },
             attendees: resolvedAttendees, // Use resolved attendees
-            body: options.body, // Pass through if provided
+            body: formattedBody, // Use properly formatted body
             location: options.location, // Pass through if provided
             isOnlineMeeting: options.isOnlineMeeting || false // Default to false
         };
+        
+        console.log(`Prepared event data for creation:`, JSON.stringify({
+            subject: eventDataToCreate.subject,
+            startTime: eventDataToCreate.start.dateTime,
+            endTime: eventDataToCreate.end.dateTime,
+            attendees: eventDataToCreate.attendees.length,
+            hasBody: !!eventDataToCreate.body
+        }, null, 2));
 
         try {
             const createdEvent = await this.services.graphService.createEvent(eventDataToCreate);

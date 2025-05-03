@@ -669,12 +669,41 @@ module.exports = ({ calendarModule }) => ({
                 });
             }
             
+            // Format the body parameter correctly before passing to the module
+            const formattedRequestBody = { ...req.body };
+            
+            // Handle body parameter specifically to ensure it's in the correct format
+            if (formattedRequestBody.body) {
+                console.log('[Calendar Controller] Original body parameter:', JSON.stringify(formattedRequestBody.body));
+                
+                // Convert string body to proper object format
+                if (typeof formattedRequestBody.body === 'string') {
+                    formattedRequestBody.body = {
+                        contentType: 'html',
+                        content: formattedRequestBody.body
+                    };
+                    console.log('[Calendar Controller] Converted string body to object format');
+                } 
+                // Ensure object has required properties
+                else if (typeof formattedRequestBody.body === 'object') {
+                    if (!formattedRequestBody.body.content) {
+                        console.warn('[Calendar Controller] Body object missing content property');
+                        formattedRequestBody.body.content = '';
+                    }
+                    
+                    if (!formattedRequestBody.body.contentType) {
+                        console.warn('[Calendar Controller] Body object missing contentType property, defaulting to html');
+                        formattedRequestBody.body.contentType = 'html';
+                    }
+                }
+            }
+            
             // Try to use the module's scheduleMeeting method if available
             let scheduledEvent;
             try {
-                console.log('[Calendar Controller] Attempting to schedule meeting using module');
+                console.log('[Calendar Controller] Attempting to schedule meeting using module with formatted data');
                 if (typeof calendarModule.scheduleMeeting === 'function') {
-                    scheduledEvent = await calendarModule.scheduleMeeting(req.body);
+                    scheduledEvent = await calendarModule.scheduleMeeting(formattedRequestBody);
                     console.log('[Calendar Controller] Successfully scheduled meeting using module');
                 } else {
                     throw new Error('Module method not implemented');
@@ -891,12 +920,41 @@ module.exports = ({ calendarModule }) => ({
                 });
             }
             
+            // Format the body parameter correctly before passing to the module
+            const formattedRequestBody = { ...req.body };
+            
+            // Handle body parameter specifically to ensure it's in the correct format
+            if (formattedRequestBody.body) {
+                console.log('[Calendar Controller] Original body parameter:', JSON.stringify(formattedRequestBody.body));
+                
+                // Convert string body to proper object format
+                if (typeof formattedRequestBody.body === 'string') {
+                    formattedRequestBody.body = {
+                        contentType: 'html',
+                        content: formattedRequestBody.body
+                    };
+                    console.log('[Calendar Controller] Converted string body to object format');
+                } 
+                // Ensure object has required properties
+                else if (typeof formattedRequestBody.body === 'object') {
+                    if (!formattedRequestBody.body.content) {
+                        console.warn('[Calendar Controller] Body object missing content property');
+                        formattedRequestBody.body.content = '';
+                    }
+                    
+                    if (!formattedRequestBody.body.contentType) {
+                        console.warn('[Calendar Controller] Body object missing contentType property, defaulting to html');
+                        formattedRequestBody.body.contentType = 'html';
+                    }
+                }
+            }
+            
             // Try to use the module's scheduleMeeting method if available
             let scheduledEvent;
             try {
-                console.log('[Calendar Controller] Attempting to schedule meeting using module');
+                console.log('[Calendar Controller] Attempting to schedule meeting using module with formatted data');
                 if (typeof calendarModule.scheduleMeeting === 'function') {
-                    scheduledEvent = await calendarModule.scheduleMeeting(req.body);
+                    scheduledEvent = await calendarModule.scheduleMeeting(formattedRequestBody);
                     console.log('[Calendar Controller] Successfully scheduled meeting using module');
                 } else {
                     throw new Error('Module method not implemented');

@@ -37,9 +37,21 @@ async function listFiles(parentId, req) {
  * @returns {Promise<Array<object>>}
  */
 async function searchFiles(query, req) {
-  const client = await graphClientFactory.createClient(req);
-  const res = await client.api(`/me/drive/root/search(q='${encodeURIComponent(query)}')`).get();
-  return (res.value || []).map(normalizeFile);
+  try {
+    console.log(`[Files Service] Searching for files with query: ${query}`);
+    const client = await graphClientFactory.createClient(req);
+    const searchUrl = `/me/drive/root/search(q='${encodeURIComponent(query)}')`;
+    console.log(`[Files Service] Using search URL: ${searchUrl}`);
+    
+    const res = await client.api(searchUrl).get();
+    console.log(`[Files Service] Search response received with ${res.value ? res.value.length : 0} results`);
+    
+    const normalizedResults = (res.value || []).map(normalizeFile);
+    return normalizedResults;
+  } catch (error) {
+    console.error(`[Files Service] Error searching files with query "${query}":`, error);
+    throw error; // Rethrow to allow controller to handle fallback
+  }
 }
 
 /**
@@ -114,12 +126,26 @@ async function removeSharingPermission(fileId, permissionId) {
 }
 
 /**
- * Downloads file content by ID (alias for downloadFile).
- * @param {string} id
- * @returns {Promise<Buffer>}
+ * Gets file content by ID from OneDrive/SharePoint
+ * @param {string} id - The file ID to retrieve
+ * @param {object} req - Express request object
+ * @returns {Promise<{content: Buffer, contentType: string}>} File content and content type
  */
-async function getFileContent(id) {
-  return await downloadFile(id);
+async function getFileContent(id, req) {
+  const client = await graphClientFactory.createClient(req);
+  
+  // First get file metadata to determine content type
+  const fileMetadata = await client.api(`/me/drive/items/${id}`).get();
+  const contentType = fileMetadata.file ? fileMetadata.file.mimeType : 'application/octet-stream';
+  
+  // Get the actual file content
+  const content = await client.api(`/me/drive/items/${id}/content`).get();
+  
+  // Return both the content and content type
+  return {
+    content: content,
+    contentType: contentType
+  };
 }
 
 /**

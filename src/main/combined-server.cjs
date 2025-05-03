@@ -1,9 +1,7 @@
 /**
- * @fileoverview Enhanced dev server for MCP Desktop development.
- * - Combined frontend and API server
- * - Serves static files with proper MIME types
- * - Handles authentication
- * - Improved logging
+ * @fileoverview Combined Express server for MCP Electron app.
+ * Combines both the API and frontend serving capabilities.
+ * Based on the dev-server.cjs approach but for use in Electron.
  */
 
 // Load environment variables from .env file
@@ -11,18 +9,31 @@ require('dotenv').config();
 
 const express = require('express');
 const session = require('express-session');
-const { createProxyMiddleware } = require('http-proxy-middleware');
 const path = require('path');
 const http = require('http');
+const { setupMiddleware } = require('./server.cjs');
+const monitoringService = require('../core/monitoring-service.cjs');
+const errorService = require('../core/error-service.cjs');
 
-// Import services
-const monitoringService = require('./src/core/monitoring-service.cjs');
-const errorService = require('./src/core/error-service.cjs');
+// Create a combined express server instance
+const app = express();
+let server = null;
 
-// Import the server module but don't start it automatically
-const serverModule = require('./src/main/server.cjs');
+// If this file is being run directly (not imported), start the server
+if (require.main === module) {
+  startCombinedServer().then(() => {
+    console.log(`
+🚀 MCP Desktop combined server running at http://localhost:3000
+📝 Open this URL in your browser to access the application
+📊 Logs written to ${monitoringService.LOG_FILE_PATH}
+    `);
+  }).catch(err => {
+    console.error('Failed to start combined server:', err);
+    process.exit(1);
+  });
+}
 
-// Add global error handlers to prevent crashes
+// Add global error handlers but allow process termination with SIGINT
 process.on('uncaughtException', (err) => {
   const mcpError = errorService.createError(
     errorService.CATEGORIES.SYSTEM,
@@ -31,7 +42,7 @@ process.on('uncaughtException', (err) => {
     { stack: err.stack }
   );
   monitoringService.error(`Uncaught Exception: ${err.message}`, { stack: err.stack }, 'system');
-  // Don't exit the process, just log the error
+  // Log the error but still allow normal termination
 });
 
 process.on('unhandledRejection', (reason, promise) => {
@@ -42,31 +53,41 @@ process.on('unhandledRejection', (reason, promise) => {
     { reason }
   );
   monitoringService.error(`Unhandled Promise Rejection: ${reason}`, { reason }, 'system');
-  // Don't exit the process, just log the error
+  // Log the error but still allow normal termination
 });
 
-async function startDevServer() {
-  monitoringService.info('Starting MCP Desktop development server...', {}, 'dev-server');
+// Add proper SIGINT handler to allow Ctrl+C termination
+process.on('SIGINT', async () => {
+  console.log('\nReceived SIGINT (Ctrl+C). Shutting down gracefully...');
+  if (server) {
+    console.log('Closing server...');
+    await stopCombinedServer();
+  }
+  console.log('Exiting process...');
+  process.exit(0);
+});
+
+/**
+ * Start a combined server that serves both API and frontend
+ * @param {number} port - Port to listen on
+ * @returns {Promise<http.Server>} The HTTP server instance
+ */
+async function startCombinedServer(port = 3000) {
+  // Set up middleware from the server module
+  setupMiddleware(app);
   
-  // Create a single Express app for both frontend and API
-  const app = express();
-  const PORT = 3000;
-  
-  // Add request logging
+  // Add CORS headers for Electron web requests
   app.use((req, res, next) => {
-    monitoringService.debug(`${req.method} ${req.path}`, { query: req.query }, 'dev-server');
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+    
+    // Handle preflight requests
+    if (req.method === 'OPTIONS') {
+      return res.status(200).end();
+    }
     next();
   });
-  
-  // Directly register API routes on the main app
-  // This avoids proxy issues by using the same server for both frontend and API
-  
-  // Import required modules for API
-  const statusRouter = require('./src/api/status.cjs');
-  const { registerRoutes } = require('./src/api/routes.cjs');
-  
-  // Set up middleware from the server module
-  serverModule.setupMiddleware(app);
   
   // Set up session middleware for authentication
   app.use(session({
@@ -76,13 +97,17 @@ async function startDevServer() {
     cookie: { secure: false } // Set to true if using HTTPS
   }));
   
+  // Import required modules for API
+  const statusRouter = require('../api/status.cjs');
+  const { registerRoutes } = require('../api/routes.cjs');
+  
   // Register API routes directly
   app.use('/api/status', statusRouter);
   
   // Register auth endpoints directly to avoid routing issues
   app.post('/api/auth/login', async (req, res) => {
     try {
-      const msalService = require('./src/auth/msal-service.cjs');
+      const msalService = require('../auth/msal-service.cjs');
       await msalService.login(req, res);
       console.log('Login process initiated');
     } catch (error) {
@@ -91,9 +116,21 @@ async function startDevServer() {
     }
   });
   
+  // Also support GET for direct browser navigation
+  app.get('/api/auth/login', async (req, res) => {
+    try {
+      const msalService = require('../auth/msal-service.cjs');
+      await msalService.login(req, res);
+      console.log('Login process initiated (GET)');
+    } catch (error) {
+      console.error('Login failed (GET):', error);
+      res.status(500).json({ error: 'Login failed', message: error.message });
+    }
+  });
+  
   app.post('/api/auth/logout', async (req, res) => {
     try {
-      const msalService = require('./src/auth/msal-service.cjs');
+      const msalService = require('../auth/msal-service.cjs');
       await msalService.logout(req, res);
       console.log('User logged out successfully');
     } catch (error) {
@@ -105,7 +142,7 @@ async function startDevServer() {
   // Handle OAuth callback
   app.get('/api/auth/callback', async (req, res) => {
     try {
-      const msalService = require('./src/auth/msal-service.cjs');
+      const msalService = require('../auth/msal-service.cjs');
       await msalService.handleAuthCallback(req, res);
       console.log('OAuth callback processed successfully');
     } catch (error) {
@@ -124,7 +161,7 @@ async function startDevServer() {
     next();
   });
   
-  // Also catch any sub-paths of mail (eg. /v1/mail/search, /v1/mail/attachments, etc.)
+  // Also catch any sub-paths of mail
   apiRouter.use('/v1/mail/*', (req, res, next) => {
     res.setHeader('Content-Type', 'application/json');
     next();
@@ -138,13 +175,6 @@ async function startDevServer() {
     res.json({ status: 'ok', ts: new Date().toISOString() });
   });
   
-  // Add CORS headers for development
-  app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
-    next();
-  });
-
   // Explicitly define MIME types
   const mimeTypes = {
     '.html': 'text/html',
@@ -159,7 +189,7 @@ async function startDevServer() {
   };
 
   // Serve static files for frontend with proper MIME types
-  app.use(express.static(path.join(__dirname, 'src/renderer'), {
+  app.use(express.static(path.join(__dirname, '../renderer'), {
     setHeaders: (res, filePath) => {
       const ext = path.extname(filePath).toLowerCase();
       if (mimeTypes[ext]) {
@@ -178,38 +208,40 @@ async function startDevServer() {
       return res.status(404).json({ error: 'API endpoint not found', path: req.path });
     }
     // For all other routes, serve the SPA
-    res.sendFile(path.join(__dirname, 'src/renderer/index.html'));
+    res.sendFile(path.join(__dirname, '../renderer/index.html'));
   });
   
   // Start the server
-  const server = app.listen(PORT, () => {
-    monitoringService.info(`MCP Desktop dev server running at http://localhost:${PORT}`, {}, 'dev-server');
-    
-    console.log(`
-🚀 MCP Desktop dev server running at http://localhost:${PORT}/
-📊 API and frontend served from the same origin
-🔍 Authentication and API routes configured
-📝 Logs written to ${monitoringService.LOG_FILE_PATH}
-    `);
-  });
-  
-  // Handle server shutdown gracefully
-  process.on('SIGINT', () => {
-    monitoringService.info('Shutting down MCP Desktop dev server...', {}, 'dev-server');
-    server.close(() => {
-      monitoringService.info('MCP Desktop dev server stopped', {}, 'dev-server');
-      process.exit(0);
+  return new Promise((resolve) => {
+    server = app.listen(port, () => {
+      monitoringService.info(`Combined server running at http://localhost:${port}`, {}, 'server');
+      resolve(server);
     });
   });
-  
-  return server;
 }
 
-startDevServer().catch(err => {
-  monitoringService.error(`Failed to start development server: ${err.message}`, { 
-    stack: err.stack 
-  }, 'dev-server');
-  
-  console.error('Failed to start development server:', err);
-  process.exit(1);
-});
+/**
+ * Stop the server if it's running
+ * @returns {Promise<void>}
+ */
+function stopCombinedServer() {
+  return new Promise((resolve, reject) => {
+    if (server) {
+      monitoringService.info('Stopping combined server...', {}, 'server');
+      server.close((err) => {
+        if (err) {
+          monitoringService.error(`Error stopping server: ${err.message}`, { stack: err.stack }, 'server');
+          reject(err);
+        } else {
+          monitoringService.info('Server stopped successfully', {}, 'server');
+          resolve();
+        }
+      });
+    } else {
+      monitoringService.info('No server running to stop', {}, 'server');
+      resolve();
+    }
+  });
+}
+
+module.exports = { startCombinedServer, stopCombinedServer };

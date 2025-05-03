@@ -5,7 +5,12 @@
 // Minimal event emitter for dashboard events
 class EventEmitter {
     constructor() { this.events = {}; }
-    on(event, fn) { (this.events[event] = this.events[event] || []).push(fn); }
+    on(event, fn) { (this.events[event] = this.events[event] || []).push(fn); return () => this.off(event, fn); }
+    off(event, fn) { 
+        if (!this.events[event]) return;
+        const idx = this.events[event].indexOf(fn);
+        if (idx >= 0) this.events[event].splice(idx, 1);
+    }
     emit(event, ...args) { (this.events[event] || []).forEach(fn => fn(...args)); }
 }
 
@@ -28,6 +33,11 @@ export class App {
         
         // Dynamically import dependencies
         this.initialized = false;
+        this.components = {};
+        this.dependencies = {};
+        this.dependencyPromises = [];
+        
+        // Start loading dependencies immediately
         this.initDependencies();
     }
 
@@ -59,30 +69,96 @@ export class App {
      */
     async initDependencies() {
         try {
-            const module = await import('./check-connections.js');
-            addConnectionChecks = module.addConnectionChecks;
+            console.log('MCP Desktop: Loading dependencies...');
+            
+            // Create promises for all dependencies to load in parallel
+            this.dependencyPromises = [
+                // Connection check module
+                import('./check-connections.js')
+                    .then(module => {
+                        this.dependencies.connectionModule = module;
+                        addConnectionChecks = module.addConnectionChecks;
+                        console.log('MCP Desktop: Loaded connection check module');
+                    })
+                    .catch(err => {
+                        console.error('Failed to load check-connections.js:', err);
+                        throw err;
+                    }),
+                
+                // Log viewer component
+                import('./components/LogViewer.js')
+                    .then(module => {
+                        this.components.LogViewer = module.LogViewer;
+                        console.log('MCP Desktop: Loaded LogViewer component');
+                    })
+                    .catch(err => {
+                        console.error('Failed to load LogViewer.js:', err);
+                        // Non-critical component, don't throw
+                    })
+            ];
+            
+            // Wait for critical dependencies
+            await Promise.all(this.dependencyPromises);
+            
             this.initialized = true;
-            console.log('Dependencies loaded successfully');
+            console.log('MCP Desktop: All dependencies loaded successfully');
         } catch (error) {
-            console.error('Failed to load dependencies:', error);
+            console.error('MCP Desktop: Failed to load critical dependencies:', error);
+            throw new Error(`Failed to load critical dependencies: ${error.message}`);
         }
     }
 
     async render() {
-        // Wait for dependencies to be loaded before rendering
-        if (!this.initialized) {
-            await new Promise(resolve => {
-                const checkInit = () => {
-                    if (this.initialized) {
-                        resolve();
-                    } else {
-                        setTimeout(checkInit, 50);
+        console.log('MCP Desktop: Rendering application...');
+        
+        try {
+            // Wait for dependencies to be loaded before rendering
+            if (!this.initialized) {
+                console.log('MCP Desktop: Waiting for dependencies to load...');
+                
+                try {
+                    await Promise.allSettled(this.dependencyPromises);
+                    
+                    if (!this.initialized) {
+                        // Fallback timeout - don't wait forever
+                        await new Promise((resolve, reject) => {
+                            const timeout = setTimeout(() => {
+                                reject(new Error('Dependency loading timed out after 5 seconds'));
+                            }, 5000);
+                            
+                            const checkInit = () => {
+                                if (this.initialized) {
+                                    clearTimeout(timeout);
+                                    resolve();
+                                } else {
+                                    setTimeout(checkInit, 50);
+                                }
+                            };
+                            checkInit();
+                        });
                     }
-                };
-                checkInit();
-            });
+                } catch (error) {
+                    console.error('MCP Desktop: Error waiting for dependencies:', error);
+                    throw error;
+                }
+            }
+            
+            // Fetch status to display in the dashboard
+            await this.fetchStatus();
+            
+            console.log('MCP Desktop: Initial render complete');
+        } catch (error) {
+            console.error('MCP Desktop: Render failed:', error);
+            
+            // Display error in the root element
+            this.root.innerHTML = `
+                <div style="color: #d13438; padding: 20px; background-color: #fde7e9; border-radius: 4px; margin: 20px;">
+                    <h2>Render Error</h2>
+                    <p>${error.message}</p>
+                    <button onclick="location.reload()" style="padding: 8px 16px; background-color: #0078d4; color: white; border: none; border-radius: 4px; cursor: pointer; margin-top: 10px;">Reload Application</button>
+                </div>
+            `;
         }
-        await this.fetchStatus();
     }
 
     async renderDashboard() {
@@ -102,6 +178,7 @@ export class App {
         statusBar.style.gap = '24px';
         statusBar.style.marginBottom = '24px';
         this.root.appendChild(statusBar);
+        
         // Fetch status from API
         let status = { msGraph: 'red', llm: 'red', details: {} };
         try {
@@ -141,20 +218,9 @@ export class App {
         loginBtn.style.border = 'none';
         loginBtn.style.borderRadius = '4px';
         loginBtn.style.cursor = 'pointer';
-        loginBtn.onclick = async () => {
-            try {
-                // Call the login endpoint directly
-                const res = await fetch('/api/auth/login', { 
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' }
-                });
-                if (res.ok) {
-                    // Refresh status after login
-                    await this.fetchStatus();
-                }
-            } catch (error) {
-                console.error('Login failed:', error);
-            }
+        loginBtn.onclick = () => {
+            // Redirect to login page instead of fetch (avoids CORS issues)
+            window.location.href = '/api/auth/login';
         };
         statusBar.appendChild(loginBtn);
         // Show user info if signed in
@@ -179,8 +245,33 @@ export class App {
             serverStatus.style.color = '#e53935';
         }
         statusBar.appendChild(serverStatus);
-        // Add connection check buttons (mail, calendar)
-        addConnectionChecks(this.root);
+        // Add connection check buttons (mail, calendar) if the function is available
+        if (typeof addConnectionChecks === 'function') {
+            try {
+                addConnectionChecks(this.root);
+            } catch (error) {
+                console.error('MCP Desktop: Failed to add connection checks:', error);
+                // Continue rendering even if this fails
+            }
+        } else {
+            console.warn('MCP Desktop: addConnectionChecks is not available');
+        }
+
+        // Add log viewer component if components are loaded
+        if (this.components.LogViewer) {
+            const logViewerContainer = document.createElement('div');
+            logViewerContainer.id = 'log-viewer-container';
+            logViewerContainer.style.margin = '24px 0';
+            this.root.appendChild(logViewerContainer);
+            
+            // Initialize the log viewer component
+            new this.components.LogViewer(logViewerContainer, {
+                apiEndpoint: '/api/v1/logs',
+                refreshInterval: 5000,
+                autoScroll: true,
+                maxEntries: 100
+            });
+        }
 
         // Claude integration help
         if (status.msGraph === 'green' && status.llm === 'green') {
@@ -189,12 +280,11 @@ export class App {
             help.innerHTML = `
                 <h2>Connect MCP to Claude Desktop</h2>
                 <p>Add this API as a plugin in Claude Desktop:</p>
-                <pre style="background:#f5f5f5;padding:8px;border-radius:4px;">http://localhost:3001/api</pre>
+                <pre style="background:#f5f5f5;padding:8px;border-radius:4px;">http://localhost:3000/api</pre>
                 <p>Then you can ask Claude things like:<br><code>Can you help me respond to the last mail from Krister?</code></p>
             `;
             this.root.appendChild(help);
         }
-
     }
 
     /**

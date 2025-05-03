@@ -7,12 +7,13 @@
 const winston = require('winston');
 const path = require('path');
 const os = require('os');
-const storageService = require('./storage-service.cjs');
 const fs = require('fs');
 
 // Allow dynamic log file path for testability
 let logger = null;
-let LOG_FILE_PATH = process.env.MCP_LOG_PATH || path.join(__dirname, '../../logs/mcp.log');
+// Generate a datestamped log file name to prevent multiple file creation
+const dateSuffix = new Date().toISOString().slice(0,10).replace(/-/g, '');
+let LOG_FILE_PATH = process.env.MCP_LOG_PATH || path.join(__dirname, `../../logs/mcp${dateSuffix}.log`);
 
 // Read version from package.json
 let appVersion = 'unknown';
@@ -21,8 +22,39 @@ try {
     appVersion = pkg.version || 'unknown';
 } catch (e) {}
 
+// Create log event emitter for UI components to subscribe to
+const EventEmitter = require('events');
+const logEmitter = new EventEmitter();
+
 function initLogger(logFilePath, logLevel = 'info') {
-    LOG_FILE_PATH = logFilePath || process.env.MCP_LOG_PATH || path.join(__dirname, '../../logs/mcp.log');
+    // If no custom path provided, use date-stamped file name
+    if (!logFilePath && !process.env.MCP_LOG_PATH) {
+        const dateSuffix = new Date().toISOString().slice(0,10).replace(/-/g, '');
+        LOG_FILE_PATH = path.join(__dirname, `../../logs/mcp${dateSuffix}.log`);
+    } else {
+        LOG_FILE_PATH = logFilePath || process.env.MCP_LOG_PATH;
+    }
+    
+    // Create logs directory if it doesn't exist
+    const logsDir = path.dirname(LOG_FILE_PATH);
+    if (!fs.existsSync(logsDir)) {
+        fs.mkdirSync(logsDir, { recursive: true });
+    }
+    
+    // Custom format for console output
+    const consoleFormat = winston.format.printf(({ level, message, timestamp, context, category }) => {
+        const prefix = category ? `[MCP ${category.toUpperCase()}]` : '[MCP]';
+        // Keep context as an object rather than trying to stringify it
+        // This avoids circular reference issues and keeps the console output clean
+        return `${prefix} ${message}`;
+    });
+    
+    // Custom format for file output (more detailed JSON)
+    const fileFormat = winston.format.combine(
+        winston.format.timestamp(),
+        winston.format.json()
+    );
+    
     logger = winston.createLogger({
         level: logLevel,
         defaultMeta: {
@@ -30,18 +62,30 @@ function initLogger(logFilePath, logLevel = 'info') {
             hostname: os.hostname(),
             version: appVersion
         },
-        format: winston.format.combine(
-            winston.format.timestamp(),
-            winston.format.json()
-        ),
         transports: [
-            new winston.transports.File({ filename: LOG_FILE_PATH, maxsize: 1048576, maxFiles: 5 }),
+            // Log file transport (JSON format with rotation)
+            new winston.transports.File({ 
+                filename: LOG_FILE_PATH, 
+                maxsize: 2097152, // 2MB (reduced from 5MB)
+                maxFiles: 5, // Reduced from 10
+                tailable: true,
+                format: fileFormat,
+                handleExceptions: true,
+                handleRejections: true
+            }),
+            // Console transport (formatted for readability)
             new winston.transports.Console({ 
-                format: winston.format.simple(), 
-                stderrLevels: ['error', 'warn', 'info', 'http', 'verbose', 'debug', 'silly'],
-                consoleWarnLevels: [] // Ensure no levels go to stdout
+                format: winston.format.combine(
+                    winston.format.colorize(),
+                    consoleFormat
+                ),
+                stderrLevels: ['error', 'warn'],
+                consoleWarnLevels: [], // Ensure no levels go to stdout
+                handleExceptions: true,
+                handleRejections: true
             })
-        ]
+        ],
+        exitOnError: false // Don't crash on error
     });
 }
 
@@ -62,7 +106,7 @@ function _resetLoggerForTest(logFilePath, logLevel = 'info') {
  */
 function logError(error) {
     if (!logger) initLogger();
-    logger.error({
+    const logData = {
         id: error.id,
         category: error.category,
         message: error.message,
@@ -72,57 +116,122 @@ function logError(error) {
         pid: process.pid,
         hostname: os.hostname(),
         version: appVersion
+    };
+    
+    logger.error(logData);
+    
+    // Emit log event for UI subscribers
+    logEmitter.emit('log', {
+        level: 'error',
+        ...logData
     });
 }
 
 /**
  * Logs an info event.
- * @param {string} message
- * @param {Object} [context]
+ * @param {string} message - Log message
+ * @param {Object} [context] - Additional context data
+ * @param {string} [category] - Category for the log (e.g., 'api', 'graph', 'auth')
  */
-function info(message, context = {}) {
+function info(message, context = {}, category = '') {
     if (!logger) initLogger();
-    logger.info({
+    const logData = {
         message,
         context,
+        category,
         timestamp: new Date().toISOString(),
         pid: process.pid,
         hostname: os.hostname(),
         version: appVersion
+    };
+    
+    logger.info(logData);
+    
+    // Emit log event for UI subscribers
+    logEmitter.emit('log', {
+        level: 'info',
+        ...logData
     });
 }
 
 /**
  * Logs a warning event.
- * @param {string} message
- * @param {Object} [context]
+ * @param {string} message - Log message
+ * @param {Object} [context] - Additional context data
+ * @param {string} [category] - Category for the log (e.g., 'api', 'graph', 'auth')
  */
-function warn(message, context = {}) {
+function warn(message, context = {}, category = '') {
     if (!logger) initLogger();
-    logger.warn({
+    const logData = {
         message,
         context,
+        category,
         timestamp: new Date().toISOString(),
         pid: process.pid,
         hostname: os.hostname(),
         version: appVersion
+    };
+    
+    logger.warn(logData);
+    
+    // Emit log event for UI subscribers
+    logEmitter.emit('log', {
+        level: 'warn',
+        ...logData
     });
 }
 
 /**
  * Logs a debug event.
- * @param {string} message
- * @param {Object} [context]
+ * @param {string} message - Log message
+ * @param {Object} [context] - Additional context data
+ * @param {string} [category] - Category for the log (e.g., 'api', 'graph', 'auth')
  */
-function debug(message, context = {}) {
+function debug(message, context = {}, category = '') {
     if (!logger) initLogger();
-    logger.debug({
+    const logData = {
         message,
         context,
+        category,
         timestamp: new Date().toISOString(),
         pid: process.pid,
         hostname: os.hostname(),
         version: appVersion
+    };
+    
+    logger.debug(logData);
+    
+    // Emit log event for UI subscribers
+    logEmitter.emit('log', {
+        level: 'debug',
+        ...logData
+    });
+}
+
+/**
+ * Logs an error event.
+ * @param {string} message - Error message
+ * @param {Object} [context] - Additional context data
+ * @param {string} [category] - Category for the log (e.g., 'api', 'graph', 'auth')
+ */
+function error(message, context = {}, category = '') {
+    if (!logger) initLogger();
+    const logData = {
+        message,
+        context,
+        category,
+        timestamp: new Date().toISOString(),
+        pid: process.pid,
+        hostname: os.hostname(),
+        version: appVersion
+    };
+    
+    logger.error(logData);
+    
+    // Emit log event for UI subscribers
+    logEmitter.emit('log', {
+        level: 'error',
+        ...logData
     });
 }
 
@@ -134,7 +243,7 @@ function debug(message, context = {}) {
  */
 function trackMetric(name, value, context = {}) {
     if (!logger) initLogger();
-    logger.info({
+    const logData = {
         type: 'metric',
         metric: name,
         value,
@@ -143,16 +252,125 @@ function trackMetric(name, value, context = {}) {
         pid: process.pid,
         hostname: os.hostname(),
         version: appVersion
+    };
+    
+    logger.info(logData);
+    
+    // Emit metric event for UI subscribers
+    logEmitter.emit('metric', logData);
+}
+
+/**
+ * Subscribes to log events for UI display.
+ * @param {function} callback - Function to call with log data
+ * @returns {function} Unsubscribe function
+ */
+function subscribeToLogs(callback) {
+    logEmitter.on('log', callback);
+    
+    // Return unsubscribe function
+    return () => {
+        logEmitter.off('log', callback);
+    };
+}
+
+/**
+ * Subscribes to metric events for UI display.
+ * @param {function} callback - Function to call with metric data
+ * @returns {function} Unsubscribe function
+ */
+function subscribeToMetrics(callback) {
+    logEmitter.on('metric', callback);
+    
+    // Return unsubscribe function
+    return () => {
+        logEmitter.off('metric', callback);
+    };
+}
+
+/**
+ * Gets the latest logs from the log files.
+ * @param {number} [limit=100] - Maximum number of log entries to return
+ * @returns {Promise<Array>} Array of log entries
+ */
+async function getLatestLogs(limit = 100) {
+    return new Promise((resolve, reject) => {
+        try {
+            const logsDir = path.dirname(LOG_FILE_PATH);
+            
+            // Check if logs directory exists
+            if (!fs.existsSync(logsDir)) {
+                return resolve([]);
+            }
+            
+            // Get all log files sorted by modification time (newest first)
+            const logFiles = fs.readdirSync(logsDir)
+                .filter(file => file.startsWith('mcp') && file.endsWith('.log'))
+                .map(file => path.join(logsDir, file))
+                .filter(file => fs.statSync(file).isFile())
+                .sort((a, b) => fs.statSync(b).mtime.getTime() - fs.statSync(a).mtime.getTime());
+            
+            if (logFiles.length === 0) {
+                return resolve([]);
+            }
+            
+            const logs = [];
+            
+            // Read from up to 3 most recent log files
+            for (let i = 0; i < Math.min(3, logFiles.length) && logs.length < limit; i++) {
+                try {
+                    const logContent = fs.readFileSync(logFiles[i], 'utf8');
+                    const logLines = logContent.trim().split('\n');
+                    
+                    // Process from the end to get the most recent logs first
+                    for (let j = logLines.length - 1; j >= 0 && logs.length < limit; j--) {
+                        try {
+                            if (logLines[j].trim()) {
+                                const logEntry = JSON.parse(logLines[j]);
+                                logs.push(logEntry);
+                            }
+                        } catch (e) {
+                            // Skip invalid JSON lines
+                            // Just silently ignore parse errors
+                        }
+                    }
+                } catch (err) {
+                    // Skip files that can't be read
+                    // Just silently ignore file read errors
+                }
+            }
+            
+            // Cleanup old log files if there are more than 10
+            if (logFiles.length > 10) {
+                try {
+                    // Remove oldest files, keeping the 10 most recent
+                    for (let i = 10; i < logFiles.length; i++) {
+                        fs.unlinkSync(logFiles[i]);
+                    }
+                } catch (err) {
+                    // Silently ignore cleanup errors
+                }
+            }
+            
+            resolve(logs.reverse()); // Reverse to maintain chronological order
+        } catch (error) {
+            reject(error);
+        }
     });
 }
 
 module.exports = {
     logError,
+    error,
     info,
     warn,
     debug,
     trackMetric,
     LOG_FILE_PATH,
     _resetLoggerForTest,
-    initLogger
+    initLogger,
+    subscribeToLogs,
+    subscribeToMetrics,
+    getLatestLogs,
+    logEmitter // Export for testing/direct access
 };

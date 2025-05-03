@@ -26,6 +26,18 @@ const placeholderRateLimit = (req, res, next) => next(); // Placeholder
  * @param {express.Router} router
  */
 function registerRoutes(router) {
+    // Add CORS headers for all routes to handle browser preflight requests
+    router.use((req, res, next) => {
+        res.header('Access-Control-Allow-Origin', '*');
+        res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+        res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+        
+        // Handle preflight requests
+        if (req.method === 'OPTIONS') {
+            return res.status(200).end();
+        }
+        next();
+    });
     // MCP Tool Manifest for Claude Desktop
     router.get('/tools', (req, res) => {
         // Get tools dynamically from the tools service

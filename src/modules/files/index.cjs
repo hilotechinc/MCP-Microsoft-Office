@@ -5,9 +5,11 @@
 
 const { normalizeFile } = require('../../graph/normalizers.cjs');
 
+// Define the capabilities supported by this module
+// This array is used by the module registry to find appropriate modules for different intents
 const FILES_CAPABILITIES = [
     'listFiles',
-    'searchFiles',
+    'searchFiles',      // File search capability using query strings (required for search API endpoint)
     'downloadFile',
     'uploadFile',
     'getFileMetadata',
@@ -44,11 +46,27 @@ const FilesModule = {
      * @returns {Promise<Array<object>>} List of matching files
      */
     async searchFiles(query, req) {
+        console.log(`[Files Module] Searching files with query: "${query}"`);
+        
         const { graphService } = this.services || {};
-        if (!graphService || typeof graphService.searchFiles !== 'function') {
+        if (!graphService) {
+            console.error('[Files Module] GraphService not available');
+            throw new Error('GraphService not available');
+        }
+        
+        if (typeof graphService.searchFiles !== 'function') {
+            console.error('[Files Module] GraphService.searchFiles not implemented');
             throw new Error('GraphService.searchFiles not implemented');
         }
-        return await graphService.searchFiles(query, req);
+        
+        try {
+            const results = await graphService.searchFiles(query, req);
+            console.log(`[Files Module] Search completed successfully with ${results.length} results`);
+            return results;
+        } catch (error) {
+            console.error(`[Files Module] Error in searchFiles:`, error);
+            throw error; // Rethrow to allow controller's fallback mechanism to work
+        }
     },
     
     /**
@@ -213,14 +231,39 @@ const FilesModule = {
                 return { type: 'fileList', items: files };
             }
             case 'searchFiles': {
-                const query = entities.query || '';
+                const query = entities.query || (typeof entities === 'string' ? entities : '');
+                
+                if (!query) {
+                    console.warn('[Files Module] searchFiles intent called without query parameter');
+                    return { type: 'fileList', items: [] };
+                }
+                
+                console.log(`[Files Module] Handling searchFiles intent with query: "${query}"`);
+                
+                // Try to get from cache first
                 const cacheKey = `files:search:${query}`;
                 let results = cacheService && await cacheService.get(cacheKey);
+                
                 if (!results) {
-                    const raw = await graphService.searchFiles(query);
-                    results = Array.isArray(raw) ? raw.map(normalizeFile) : [];
-                    if (cacheService) await cacheService.set(cacheKey, results, 60);
+                    console.log(`[Files Module] Cache miss for query "${query}", fetching from Graph API`);
+                    try {
+                        // Pass the request context if available
+                        const raw = await graphService.searchFiles(query, context.req);
+                        results = Array.isArray(raw) ? raw.map(normalizeFile) : [];
+                        
+                        // Cache the results
+                        if (cacheService) {
+                            await cacheService.set(cacheKey, results, 60);
+                            console.log(`[Files Module] Cached ${results.length} results for query "${query}"`);
+                        }
+                    } catch (error) {
+                        console.error(`[Files Module] Error in searchFiles intent:`, error);
+                        results = []; // Return empty array on error
+                    }
+                } else {
+                    console.log(`[Files Module] Cache hit for query "${query}" with ${results.length} results`);
                 }
+                
                 return { type: 'fileList', items: results };
             }
             case 'downloadFile': {

@@ -144,18 +144,25 @@ module.exports = ({ filesModule }) => {
     
     /**
      * GET /api/files/search
+     * Searches for files in OneDrive/SharePoint using the query provided
      */
     async searchFiles(req, res) {
         try {
+            // Input validation
             if (!req.query.q) {
+                console.log('[Files Controller] Search request missing query parameter');
                 return res.status(400).json({ error: 'Search query is required' });
             }
             
+            console.log(`[Files Controller] Searching for files with query: "${req.query.q}"`);
+            
+            // Call the module's searchFiles method with fallback to mock data if needed
             const files = await callModuleWithFallback(
                 'searchFiles',
                 [req.query.q, req],
                 () => {
-                    // Mock data generator
+                    // Mock data generator for development/testing
+                    console.log('[Files Controller] Generating mock search results');
                     const searchTerm = req.query.q.toLowerCase();
                     const mockFiles = [
                         { 
@@ -173,20 +180,48 @@ module.exports = ({ filesModule }) => {
                             webUrl: 'https://example.com/files/mock2',
                             createdDateTime: new Date().toISOString(),
                             lastModifiedDateTime: new Date().toISOString()
+                        },
+                        { 
+                            id: 'mock3', 
+                            name: 'Presentation Slides.pptx',
+                            size: 2048 * 1024,
+                            webUrl: 'https://example.com/files/mock3',
+                            createdDateTime: new Date().toISOString(),
+                            lastModifiedDateTime: new Date().toISOString()
+                        },
+                        { 
+                            id: 'mock4', 
+                            name: 'README.md',
+                            size: 5 * 1024,
+                            webUrl: 'https://example.com/files/mock4',
+                            createdDateTime: new Date().toISOString(),
+                            lastModifiedDateTime: new Date().toISOString()
                         }
                     ];
                     
-                    return mockFiles.filter(file => 
+                    // Filter mock files by search term
+                    const filteredMocks = mockFiles.filter(file => 
                         file.name.toLowerCase().includes(searchTerm)
                     );
+                    
+                    console.log(`[Files Controller] Generated ${filteredMocks.length} mock search results for query "${req.query.q}"`);
+                    return filteredMocks;
                 }
             );
             
+            console.log(`[Files Controller] Successfully retrieved ${files.length} files for query "${req.query.q}"`);
             res.json(files);
         } catch (err) {
-            const mcpError = errorService.createError('api', err.message, 'error', { stack: err.stack });
-            console.error('Files controller error:', mcpError);
-            res.status(500).json({ error: 'Internal error', message: err.message });
+            const mcpError = errorService.createError('api', err.message, 'error', { 
+                stack: err.stack,
+                query: req.query.q
+            });
+            console.error('[Files Controller] Search files error:', mcpError);
+            res.status(500).json({ 
+                error: 'Internal error', 
+                message: 'Error while searching files',
+                details: err.message 
+            });
         }
     },
     
@@ -260,6 +295,7 @@ module.exports = ({ filesModule }) => {
     
     /**
      * GET /api/files/content
+     * Gets the content of a file by ID
      */
     async getFileContent(req, res) {
         try {
@@ -267,19 +303,47 @@ module.exports = ({ filesModule }) => {
                 return res.status(400).json({ error: 'File ID is required' });
             }
             
-            const content = await callModuleWithFallback(
-                'getFileContent',
-                [req.query.id, req],
-                () => {
-                    // Mock file content
-                    return {
-                        content: 'This is mock file content for development purposes.',
-                        contentType: 'text/plain'
-                    };
-                }
-            );
+            const fileId = req.query.id;
+            console.log(`[Files Controller] Getting content for file ID: ${fileId}`);
             
-            res.json({ id: req.query.id, content });
+            let fileContent;
+            try {
+                // Call module's getFileContent method
+                if (typeof filesModule.getFileContent === 'function') {
+                    fileContent = await filesModule.getFileContent(fileId, req);
+                    console.log(`[Files Controller] Successfully retrieved content for file ${fileId}`);
+                } else if (typeof filesModule.handleIntent === 'function') {
+                    // Try using the module's handleIntent method instead
+                    const result = await filesModule.handleIntent('getFileContent', { fileId }, { req });
+                    fileContent = result && result.content ? result : null;
+                    console.log(`[Files Controller] Retrieved content via handleIntent`);
+                } else {
+                    throw new Error('No files module method available for content retrieval');
+                }
+            } catch (moduleError) {
+                console.error(`[Files Controller] Error getting file content for ID ${fileId}:`, moduleError);
+                console.log('[Files Controller] Falling back to mock file content');
+                
+                // If module method fails, create mock file content
+                fileContent = {
+                    content: 'This is mock file content for development purposes.',
+                    contentType: 'text/plain'
+                };
+            }
+            
+            // Set the appropriate content type header if returning raw content
+            if (req.query.raw === 'true' && fileContent && fileContent.contentType) {
+                res.setHeader('Content-Type', fileContent.contentType);
+                res.setHeader('Content-Disposition', `attachment; filename=file-${fileId}`);
+                return res.send(fileContent.content);
+            }
+            
+            // Otherwise return a JSON response with the content
+            res.json({
+                id: fileId,
+                content: fileContent.content,
+                contentType: fileContent.contentType
+            });
         } catch (err) {
             const mcpError = errorService.createError('api', err.message, 'error', { stack: err.stack });
             console.error('Files controller error:', mcpError);

@@ -41,9 +41,32 @@ module.exports = ({ mailModule }) => ({
                 console.log('[Mail Controller] Attempting to get messages from module');
                 console.log('[Mail Controller] Is internal MCP call:', req.isInternalMcpCall ? 'Yes' : 'No');
                 
+                // Check if this request is coming from Claude (this is an optional check, but can help isolate Claude's requests)
+                const isClaude = req.headers && (
+                    req.headers['user-agent']?.includes('Claude') || 
+                    req.headers['x-claude-call'] === 'true' ||
+                    req.query.from === 'claude'
+                );
+                
+                if (isClaude) {
+                    console.log('[Mail Controller] Request from Claude detected, using extra safeguards');
+                }
+                
                 if (typeof mailModule.getInbox === 'function') {
                     console.log('[Mail Controller] Using mailModule.getInbox');
-                    messages = await mailModule.getInbox({ top, filter }, req);
+                    try {
+                        messages = await mailModule.getInbox({ top, filter }, req);
+                    } catch (inboxError) {
+                        console.error('[Mail Controller] Error calling mailModule.getInbox:', inboxError);
+                        // Try a second approach before giving up
+                        if (typeof mailModule.handleIntent === 'function') {
+                            console.log('[Mail Controller] Falling back to mailModule.handleIntent');
+                            const result = await mailModule.handleIntent('readMail', { count: top, filter }, { req });
+                            messages = result && result.items ? result.items : [];
+                        } else {
+                            throw inboxError; // Re-throw if we can't recover
+                        }
+                    }
                 } else if (typeof mailModule.handleIntent === 'function') {
                     console.log('[Mail Controller] Using mailModule.handleIntent');
                     // Try using the module's handleIntent method instead

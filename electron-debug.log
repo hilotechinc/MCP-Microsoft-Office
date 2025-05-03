@@ -1,0 +1,133 @@
+[2025-05-03T06:41:05.952Z] MCP Desktop Electron diagnostic starting...
+[2025-05-03T06:41:06.032Z] Electron app ready event fired
+[2025-05-03T06:41:06.033Z] Checking if server is running on port 3000...
+[2025-05-03T06:41:06.054Z] Server connection error: connect ECONNREFUSED ::1:3000
+[2025-05-03T06:41:06.054Z] Server not running, starting it now
+[2025-05-03T06:41:06.056Z] Starting combined server as child process...
+[2025-05-03T06:41:06.162Z] SERVER OUTPUT: [MSAL] Environment variables:
+
+[2025-05-03T06:41:06.162Z] SERVER OUTPUT: [MSAL] CLIENT_ID: Set
+[MSAL] TENANT_ID: facf3dd7-5092-42e2-bea6-1a201d58b8f6
+[MSAL] REDIRECT_URI: http://localhost:3000/api/auth/callback
+[MSAL] Config: {
+  "auth": {
+    "clientId": "6c9b2994-b11f-4a62-83a2-219210cc927c",
+    "authority": "https://login.microsoftonline.com/facf3dd7-5092-42e2-bea6-1a201d58b8f6"
+  },
+  "system": {
+    "loggerOptions": {}
+  }
+}
+
+[2025-05-03T06:41:06.170Z] SERVER OUTPUT: CalendarModule initialized successfully with required services.
+
+[2025-05-03T06:41:06.172Z] SERVER OUTPUT: [LLM] Environment variables:
+[LLM] LLM_PROVIDER: openai
+[LLM] OPENAI_API_KEY: Set
+[LLM] CLAUDE_API_KEY: Not set
+
+[2025-05-03T06:41:06.174Z] SERVER OUTPUT: [MCP SERVER] Combined server running at http://localhost:3000
+
+[2025-05-03T06:41:06.176Z] SERVER OUTPUT: 
+🚀 MCP Desktop combined server running at http://localhost:3000
+📝 Open this URL in your browser to access the application
+📊 Logs written to /Users/aaanerud/Documents/Utviklings_Prosjekter/Microsoft/MCP Microsoft Office/logs/mcp20250503.log
+    
+
+[2025-05-03T06:41:09.064Z] Checking if server is running on port 3000...
+[2025-05-03T06:41:09.080Z] SERVER OUTPUT: [MCP] Request: GET /api/health
+
+[2025-05-03T06:41:09.088Z] SERVER OUTPUT: [0mGET /api/health [32m200[0m 4.842 ms - 15[0m
+
+[2025-05-03T06:41:09.093Z] Server response status: 200
+[2025-05-03T06:41:09.098Z] Server response: {"status":"ok"}
+[2025-05-03T06:41:09.102Z] Server started successfully
+[2025-05-03T06:41:09.106Z] Creating Electron window...
+[2025-05-03T06:41:09.154Z] Loading URL http://localhost:3000
+[2025-05-03T06:41:09.157Z] Window started loading
+[2025-05-03T06:41:09.185Z] SERVER OUTPUT: [MCP] Request: GET /
+
+[2025-05-03T06:41:09.187Z] SERVER OUTPUT: [0mGET / [32m200[0m 1.714 ms - 16407[0m
+
+[2025-05-03T06:41:09.214Z] SERVER OUTPUT: [MCP] Request: GET /compiled/bundle.js
+
+[2025-05-03T06:41:09.245Z] SERVER OUTPUT: [0mGET /compiled/bundle.js [32m200[0m 1.259 ms - 3437[0m
+
+[2025-05-03T06:41:09.254Z] RENDERER CONSOLE [1]: MCP Desktop: Initializing application...
+[2025-05-03T06:41:09.310Z] Window finished loading
+[2025-05-03T06:41:09.322Z] SERVER OUTPUT: [MCP] Request: GET /api/status
+[LLM] Checking if LLM is configured
+[LLM] Provider: openai
+[LLM] API Key present: true
+[LLM] OpenAI API key is present, returning true
+[LLM] Getting status details for provider: openai
+[LLM] Checking OpenAI API status with key: sk-pr...
+
+[2025-05-03T06:41:09.326Z] Window ready to show
+[2025-05-03T06:41:09.367Z] RENDERER CONSOLE [2]: %cElectron Security Warning (Insecure Content-Security-Policy) font-weight: bold; This renderer process has either no Content Security
+  Policy set or a policy with "unsafe-eval" enabled. This exposes users of
+  this app to unnecessary security risks.
+
+For more information and help, consult
+https://electronjs.org/docs/tutorial/security.
+This warning will not show up
+once the app is packaged.
+[2025-05-03T06:41:09.432Z] RENDERER CONSOLE [1]: MCP Desktop: Loading dependencies...
+[2025-05-03T06:41:09.435Z] RENDERER CONSOLE [1]: MCP Desktop: Rendering UI...
+[2025-05-03T06:41:09.438Z] RENDERER CONSOLE [1]: MCP Desktop: Rendering application...
+[2025-05-03T06:41:09.445Z] RENDERER CONSOLE [1]: MCP Desktop: Waiting for dependencies to load...
+[2025-05-03T06:41:09.449Z] SERVER OUTPUT: [MCP] Request: GET /app.js
+[0mGET /app.js [32m200[0m 0.676 ms - 13568[0m
+[MCP] Request: GET /check-connections.js
+[0mGET /check-connections.js [32m200[0m 0.737 ms - 8346[0m
+
+[2025-05-03T06:41:09.455Z] RENDERER CONSOLE [1]: MCP Desktop: Loaded connection check module
+[2025-05-03T06:41:09.458Z] SERVER OUTPUT: [MCP] Request: GET /components/LogViewer.js
+[0mGET /components/LogViewer.js [32m200[0m 0.659 ms - 16308[0m
+
+[2025-05-03T06:41:09.471Z] RENDERER CONSOLE [1]: MCP Desktop: Loaded LogViewer component
+[2025-05-03T06:41:09.474Z] RENDERER CONSOLE [1]: MCP Desktop: All dependencies loaded successfully
+[2025-05-03T06:41:09.961Z] SERVER OUTPUT: [LLM] OpenAI API status response code: 200
+
+[2025-05-03T06:41:09.963Z] SERVER OUTPUT: [0mGET /api/status [32m200[0m 707.488 ms - 342[0m
+
+[2025-05-03T06:41:09.971Z] SERVER OUTPUT: [MCP] Request: GET /api/status
+[LLM] Checking if LLM is configured
+[LLM] Provider: openai
+[LLM] API Key present: true
+[LLM] OpenAI API key is present, returning true
+[LLM] Getting status details for provider: openai
+[LLM] Checking OpenAI API status with key: sk-pr...
+
+[2025-05-03T06:41:10.780Z] SERVER OUTPUT: [LLM] OpenAI API status response code: 200
+
+[2025-05-03T06:41:10.786Z] SERVER OUTPUT: [0mGET /api/status [36m304[0m 819.613 ms - -[0m
+
+[2025-05-03T06:41:10.814Z] RENDERER CONSOLE [1]: MCP Desktop: Initial render complete
+[2025-05-03T06:41:10.833Z] RENDERER CONSOLE [1]: MCP Desktop: Application initialized successfully
+[2025-05-03T06:41:10.837Z] SERVER OUTPUT: [MCP] Request: GET /api/status
+[LLM] Checking if LLM is configured
+[LLM] Provider: openai
+[LLM] API Key present: true
+[LLM] OpenAI API key is present, returning true
+[LLM] Getting status details for provider: openai
+[LLM] Checking OpenAI API status with key: sk-pr...
+
+[2025-05-03T06:41:11.641Z] SERVER OUTPUT: [LLM] OpenAI API status response code: 200
+
+[2025-05-03T06:41:11.643Z] SERVER OUTPUT: [0mGET /api/status [36m304[0m 810.808 ms - -[0m
+
+[2025-05-03T06:41:11.652Z] RENDERER CONSOLE [1]: MCP Desktop: Adding connection checks to UI
+[2025-05-03T06:41:11.659Z] RENDERER CONSOLE [1]: MCP Desktop: Connection checks added successfully
+[2025-05-03T06:41:11.665Z] SERVER OUTPUT: [MCP] Request: GET /api/v1/logs?limit=100
+
+[2025-05-03T06:41:11.672Z] SERVER OUTPUT: [0mGET /api/v1/logs?limit=100 [32m200[0m 1.450 ms - 6513[0m
+
+[2025-05-03T06:41:16.651Z] SERVER OUTPUT: [MCP] Request: GET /api/v1/logs?limit=100
+
+[2025-05-03T06:41:16.652Z] SERVER OUTPUT: [0mGET /api/v1/logs?limit=100 [32m200[0m 1.490 ms - 6799[0m
+
+[2025-05-03T06:41:17.747Z] Window closed
+[2025-05-03T06:41:17.748Z] App will quit event fired
+[2025-05-03T06:41:17.754Z] Terminating server process before quit
+[2025-05-03T06:41:17.762Z] Process exit event fired

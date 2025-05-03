@@ -100,7 +100,15 @@ async function getLoginUrl(req) {
  */
 async function login(req, res) {
     try {
+        console.log('[MSAL] Login attempt received');
         const authUrl = await getLoginUrl(req);
+        console.log('[MSAL] Generated auth URL:', authUrl);
+        
+        // Set CORS headers for the redirect
+        res.header('Access-Control-Allow-Origin', '*');
+        res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+        res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+        
         res.redirect(authUrl);
     } catch (err) {
         console.error('[MSAL] Login error:', err);

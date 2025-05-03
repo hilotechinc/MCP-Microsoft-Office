@@ -1,6 +1,6 @@
-# Microsoft 365 MCP Gateway
+# MCP Desktop - Microsoft Cloud Platform Desktop Client
 
-Microsoft 365 MCP Gateway is a bridge that connects Claude to your Microsoft 365 data through the Model Context Protocol (MCP). It enables natural language access to emails, calendar events, files, and contacts with proper authentication and security.
+MCP Desktop is an Electron-based desktop application that connects Claude to your Microsoft 365 data through the Model Context Protocol (MCP). It enables natural language access to emails, calendar events, files, and contacts with proper authentication and security, all from a native desktop experience.
 
 ## Architecture Overview
 
@@ -93,10 +93,11 @@ This flow ensures clean separation of concerns, consistent error handling, and p
 ## Getting Started
 
 ### Prerequisites
-- Node.js (v16+)
-- npm or yarn
+- Node.js (v18+)
+- npm (v7+)
 - Microsoft 365 account
 - Microsoft Azure App Registration (for Graph API)
+- OpenAI API key (for LLM integration)
 
 ### Installation
 
@@ -117,18 +118,33 @@ This flow ensures clean separation of concerns, consistent error handling, and p
    - Grant the following API permissions: `User.Read`, `Mail.Read`, `Mail.Send`, `Calendars.Read`, `Calendars.ReadWrite`, `Files.Read`
    - Create a `.env` file with your app registration details:
      ```
-     MICROSOFT_CLIENT_ID=your-client-id
-     MICROSOFT_TENANT_ID=your-tenant-id
-     MICROSOFT_REDIRECT_URI=http://localhost:3000/api/auth/callback
+     CLIENT_ID=your-client-id
+     TENANT_ID=your-tenant-id
+     REDIRECT_URI=http://localhost:3000/api/auth/callback
+     LLM_PROVIDER=openai
+     OPENAI_API_KEY=your-openai-api-key
      ```
 
-4. **Start the server**
+4. **Development Options**
+
+   Start the combined server (API + frontend):
    ```bash
    npm run dev
    ```
 
-5. **Open in browser and authenticate**
-   - Visit `http://localhost:3000`
+   Start the Electron app with hot reloading:
+   ```bash
+   npm run dev:electron
+   ```
+
+   Start just the web version:
+   ```bash
+   npm run dev:web
+   ```
+
+5. **Open and authenticate**
+   - For web version: Visit `http://localhost:3000`
+   - For Electron: The app will open automatically
    - Click "Login with Microsoft" and complete the authentication flow
 
 ## Claude Integration
@@ -202,14 +218,19 @@ The MCP Gateway exposes these Microsoft 365 capabilities to Claude:
 /
 ├── mcp-adapter.cjs           # MCP adapter implementation
 ├── dev-server.cjs            # Express server for backend
-├── data/
+├── data/                     # Data storage
 │   └── mcp.sqlite            # SQLite database for authentication
+├── logs/                     # Application logs
+│   └── mcp.log               # Main log file
 ├── src/
 │   ├── api/                  # API endpoints
 │   │   ├── controllers/      # Request handlers
 │   │   └── routes.cjs        # Route definitions
+│   ├── auth/                 # Authentication services
+│   │   └── msal-service.cjs  # Microsoft authentication
 │   ├── core/                 # Core services
 │   │   ├── auth-service.cjs  # Authentication
+│   │   ├── monitoring-service.cjs # Logging and monitoring
 │   │   ├── storage-service.cjs # Data storage
 │   │   └── tools-service.cjs # Tool definitions
 │   ├── graph/                # Microsoft Graph integration
@@ -219,15 +240,30 @@ The MCP Gateway exposes these Microsoft 365 capabilities to Claude:
 │   │   ├── files-service.cjs # Files operations
 │   │   ├── people-service.cjs # People/contacts operations
 │   │   └── normalizers.cjs   # Data normalization
-│   └── modules/              # Functional modules
-│       ├── module-registry.cjs # Module management
-│       ├── mail/             # Mail module
-│       ├── calendar/         # Calendar module
-│       ├── files/            # Files module
-│       └── people/           # People module
+│   ├── llm/                  # LLM integration
+│   │   └── llm-service.cjs   # Language model service
+│   ├── main/                 # Electron main process
+│   │   ├── index.cjs         # Entry point
+│   │   ├── combined-server.cjs # Combined server for Electron
+│   │   ├── menu.cjs          # Application menu
+│   │   └── tray.cjs          # System tray integration
+│   ├── modules/              # Functional modules
+│   │   ├── module-registry.cjs # Module management
+│   │   ├── mail/             # Mail module
+│   │   ├── calendar/         # Calendar module
+│   │   ├── files/            # Files module
+│   │   └── people/           # People module
+│   ├── nlu/                  # Natural language understanding
+│   │   └── intent-router.cjs # Intent routing
+│   └── renderer/             # Electron renderer process
+│       ├── app.js            # Main application
+│       ├── components/       # UI components
+│       ├── index.html        # Main HTML
+│       └── index.js          # Renderer entry point
 └── test/                     # Tests
     ├── unit/                 # Unit tests
-    └── integration/          # Integration tests
+    ├── integration/          # Integration tests
+    └── e2e/                  # End-to-end tests
 ```
 
 ## Development
@@ -266,6 +302,38 @@ npm run test:integration
 - **Modular Architecture**: Independent modules with clear interfaces
 - **Data Normalization**: Standardized response formats for all Graph data
 - **Secure Authentication**: Proper token management and refresh
+- **Centralized Logging**: All components log to a central service with consistent formatting
+- **Electron Integration**: Proper desktop application experience with tray and menu support
+
+## Logging System
+
+MCP Desktop uses a comprehensive logging system based on Winston with the following features:
+
+- **Centralized Logging**: All logs are written to `logs/mcp.log`
+- **Console Output**: Formatted logs appear in the console during development
+- **Log Categories**: Each log entry includes a category (e.g., 'api', 'graph', 'auth')
+- **Log Levels**: Support for error, warn, info, and debug levels
+- **UI Integration**: View logs directly in the application UI
+- **Event-based Architecture**: Components can subscribe to log events
+
+Log format in the console:
+```
+[MCP CATEGORY] Message
+```
+
+Log format in the file (JSON):
+```json
+{
+  "timestamp": "2025-01-01T12:00:00.000Z",
+  "level": "info",
+  "message": "Log message",
+  "category": "graph",
+  "context": { /* Additional data */ },
+  "pid": 1234,
+  "hostname": "computer-name",
+  "version": "0.1.0"
+}
+```
 
 ## Contributing
 

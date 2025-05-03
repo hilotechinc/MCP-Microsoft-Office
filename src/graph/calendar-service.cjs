@@ -704,20 +704,114 @@ function isValidEmail(email) {
  * @returns {Promise<Array<Object>>} Normalized availability information
  */
 async function getAvailability(emails, start, end, options = {}) {
-  if (!emails || !Array.isArray(emails) || emails.length === 0) {
-    throw new Error('At least one email address is required');
+  console.log(`[Calendar Service] Getting availability for ${Array.isArray(emails) ? emails.length : 0} users/rooms`);
+  console.log(`[Calendar Service] Time range: ${start} to ${end}`);
+  console.log(`[Calendar Service] Options:`, JSON.stringify(options, null, 2));
+  
+  // Enhanced validation logic for all parameters
+  // 1. Validate emails array
+  if (!emails || !Array.isArray(emails)) {
+    const error = new Error('getAvailability: emails parameter must be an array');
+    error.code = 'INVALID_PARAMETER';
+    error.paramName = 'emails';
+    throw error;
   }
   
-  if (!start || !end) {
-    throw new Error('Start and end times are required');
+  if (emails.length === 0) {
+    const error = new Error('getAvailability: At least one email address is required');
+    error.code = 'MISSING_REQUIRED_PARAMETER';
+    error.paramName = 'emails';
+    throw error;
   }
   
-  // Validate ISO date format for start and end
+  // Validate each email address in the array
+  for (let i = 0; i < emails.length; i++) {
+    const email = emails[i];
+    if (typeof email !== 'string' || !email.includes('@')) {
+      const error = new Error(`getAvailability: Invalid email address at index ${i}: ${email}`);
+      error.code = 'INVALID_EMAIL';
+      error.paramName = `emails[${i}]`;
+      error.value = email;
+      throw error;
+    }
+  }
+  
+  // 2. Enhanced validation for start and end times
+  // First check if the values are provided
+  if (!start) {
+    const error = new Error('getAvailability: Start time is required');
+    error.code = 'MISSING_REQUIRED_PARAMETER';
+    error.paramName = 'start';
+    throw error;
+  }
+  
+  if (!end) {
+    const error = new Error('getAvailability: End time is required');
+    error.code = 'MISSING_REQUIRED_PARAMETER';
+    error.paramName = 'end';
+    throw error;
+  }
+  
+  // Validate ISO date format for start and end (strict validation)
   const isoDateRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?(Z|[+-]\d{2}:\d{2})?$/;
-  if (!isoDateRegex.test(start) || !isoDateRegex.test(end)) {
-    throw new Error('Start and end times must be in ISO format (YYYY-MM-DDThh:mm:ss)');
+  
+  if (typeof start !== 'string' || !isoDateRegex.test(start)) {
+    const error = new Error('getAvailability: Start time must be in ISO format (YYYY-MM-DDThh:mm:ss)');
+    error.code = 'INVALID_DATE_FORMAT';
+    error.paramName = 'start';
+    error.value = start;
+    throw error;
   }
   
+  if (typeof end !== 'string' || !isoDateRegex.test(end)) {
+    const error = new Error('getAvailability: End time must be in ISO format (YYYY-MM-DDThh:mm:ss)');
+    error.code = 'INVALID_DATE_FORMAT';
+    error.paramName = 'end';
+    error.value = end;
+    throw error;
+  }
+  
+  // 3. Validate that start is before end
+  const startDate = new Date(start);
+  const endDate = new Date(end);
+  
+  if (isNaN(startDate.getTime())) {
+    const error = new Error('getAvailability: Start time is not a valid date');
+    error.code = 'INVALID_DATE';
+    error.paramName = 'start';
+    error.value = start;
+    throw error;
+  }
+  
+  if (isNaN(endDate.getTime())) {
+    const error = new Error('getAvailability: End time is not a valid date');
+    error.code = 'INVALID_DATE';
+    error.paramName = 'end';
+    error.value = end;
+    throw error;
+  }
+  
+  if (startDate >= endDate) {
+    const error = new Error('getAvailability: Start time must be before end time');
+    error.code = 'INVALID_DATE_RANGE';
+    error.paramName = 'start/end';
+    error.value = { start, end };
+    throw error;
+  }
+  
+  // 4. Validate the interval minutes if provided
+  if (options.intervalMinutes !== undefined) {
+    const interval = Number(options.intervalMinutes);
+    if (isNaN(interval) || interval <= 0 || interval > 1440) { // 1440 = minutes in a day
+      const error = new Error('getAvailability: intervalMinutes must be a positive number less than or equal to 1440');
+      error.code = 'INVALID_PARAMETER';
+      error.paramName = 'options.intervalMinutes';
+      error.value = options.intervalMinutes;
+      throw error;
+    }
+  }
+  
+  // All validation passed, proceed with getting the client
   const client = await graphClientFactory.createClient();
   
   // Get the user's preferred time zone if not specified
@@ -725,22 +819,17 @@ async function getAvailability(emails, start, end, options = {}) {
   if (!timeZone) {
     try {
       timeZone = await getUserPreferredTimeZone(client);
-      if (process.env.NODE_ENV !== 'production') {
-        console.log(`Using user's preferred time zone for availability: ${timeZone}`);
-      }
+      console.log(`[Calendar Service] Using user's preferred time zone for availability: ${timeZone}`);
     } catch (error) {
-      if (process.env.NODE_ENV !== 'production') {
-        console.warn('Could not get user\'s preferred time zone for availability', error);
-      }
+      console.warn('[Calendar Service] Could not get user\'s preferred time zone for availability', error);
       timeZone = process.env.DEFAULT_TIMEZONE || 'UTC';
+      console.log(`[Calendar Service] Falling back to default timezone: ${timeZone}`);
     }
   } else if (CONFIG.TIMEZONE_MAPPING[timeZone]) {
     // Map to standard IANA time zone if it's using Microsoft format
     const oldTimeZone = timeZone;
     timeZone = CONFIG.TIMEZONE_MAPPING[timeZone];
-    if (process.env.NODE_ENV !== 'production') {
-      console.log(`Mapped time zone from "${oldTimeZone}" to "${timeZone}"`);
-    }
+    console.log(`[Calendar Service] Mapped time zone from "${oldTimeZone}" to "${timeZone}"`);
   }
   
   // Microsoft Graph API has a limit of 100 emails per request
@@ -753,9 +842,7 @@ async function getAvailability(emails, start, end, options = {}) {
     batches.push(emails.slice(i, i + batchSize));
   }
   
-  if (process.env.NODE_ENV !== 'production') {
-    console.log(`Split ${emails.length} emails into ${batches.length} batches for availability check`);
-  }
+  console.log(`[Calendar Service] Split ${emails.length} emails into ${batches.length} batches for availability check`);
   
   // Process each batch
   const availabilityResults = [];
@@ -763,40 +850,54 @@ async function getAvailability(emails, start, end, options = {}) {
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i];
     
-    if (process.env.NODE_ENV !== 'production') {
-      console.log(`Processing batch ${i + 1}/${batches.length} with ${batch.length} emails`);
-    }
+    console.log(`[Calendar Service] Processing batch ${i + 1}/${batches.length} with ${batch.length} emails`);
+    
+    // Make sure interval minutes is a valid number
+    const intervalMinutes = options.intervalMinutes ? 
+      Math.max(5, Math.min(1440, Number(options.intervalMinutes) || 30)) : 30;
     
     const body = {
       schedules: batch,
       startTime: { dateTime: start, timeZone },
       endTime: { dateTime: end, timeZone },
-      availabilityViewInterval: options.intervalMinutes || 30
+      availabilityViewInterval: intervalMinutes
     };
     
     try {
+      console.log(`[Calendar Service] Calling Microsoft Graph API for batch ${i + 1}`);
       const res = await client.api('/me/calendar/getSchedule').post(body);
+      
       if (res.value && Array.isArray(res.value)) {
+        console.log(`[Calendar Service] Received ${res.value.length} availability results for batch ${i + 1}`);
         availabilityResults.push(...res.value);
+      } else {
+        console.warn(`[Calendar Service] No value array in response for batch ${i + 1}`);
       }
     } catch (error) {
-      // TODO: Use ErrorService when available
-      // ErrorService.createError('graph', `Failed to get availability for batch ${i + 1}: ${error.message}`, 'error', { error, batch });
+      console.error(`[Calendar Service] Error getting availability for batch ${i + 1}:`, error);
       
-      if (process.env.NODE_ENV !== 'production') {
-        console.error(`Error getting availability for batch ${i + 1}:`, error);
-      }
-      
+      // Create a detailed error object with diagnostic information
       const graphError = new Error(`Failed to get availability for batch ${i + 1}: ${error.message}`);
       graphError.name = 'GraphApiError';
+      graphError.code = error.code || 'GRAPH_API_ERROR';
+      graphError.statusCode = error.statusCode || 500;
       graphError.originalError = error;
-      graphError.affectedEmails = batch;
+      graphError.request = {
+        endpoint: '/me/calendar/getSchedule',
+        body: { ...body, schedules: `${batch.length} email addresses` } // Don't include actual emails in logs
+      };
+      graphError.affectedEmails = batch.length; // Just log the count, not the actual emails
+      
       throw graphError;
     }
   }
   
   // Normalize the results
-  return normalizeAvailabilityResults(availabilityResults);
+  console.log(`[Calendar Service] Normalizing ${availabilityResults.length} availability results`);
+  const normalizedResults = normalizeAvailabilityResults(availabilityResults);
+  console.log(`[Calendar Service] Successfully retrieved and normalized availability data`);
+  
+  return normalizedResults;
 }
 
 /**
@@ -1301,60 +1402,238 @@ const ROOMS_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
  * @param {string|number} [options.floor] - Filter rooms by floor number or name
  * @param {boolean} [options.skipCache=false] - Whether to skip the cache and force a fresh API call
  * @param {number} [options.cacheTTL=86400000] - Cache TTL in milliseconds (default 24 hours)
- * @returns {Promise<Array>} List of available rooms, filtered if options are provided
+ * @returns {Promise<{rooms: Array, nextLink: string|null}>} Object containing list of rooms and optional nextLink for pagination
  */
 async function getRooms(options = {}) {
+  console.log(`[Calendar Service] Getting rooms with options:`, JSON.stringify(options, null, 2));
+  
   const client = await graphClientFactory.createClient();
   const skipCache = options.skipCache === true;
   const cacheTTL = options.cacheTTL || ROOMS_CACHE_TTL;
+  const includeCapacity = options.includeCapacity !== false; // Default to true
   
   // Check if we have a valid cache and should use it
   const now = Date.now();
   if (!skipCache && roomsCache && roomsCacheExpiry && roomsCacheExpiry > now) {
-    if (process.env.NODE_ENV !== 'production') {
-      console.log(`Using cached rooms list (expires in ${Math.round((roomsCacheExpiry - now) / 1000 / 60)} minutes)`);
-    }
+    console.log(`[Calendar Service] Using cached rooms list (expires in ${Math.round((roomsCacheExpiry - now) / 1000 / 60)} minutes)`);
     
     // Apply filters to the cached data
-    return filterRooms(roomsCache, options);
+    const filteredRooms = filterRooms(roomsCache, options);
+    return {
+      rooms: filteredRooms,
+      nextLink: null // No pagination for cached results
+    };
   }
   
   try {
-    // Fetch rooms from Microsoft Graph API
-    const response = await client.api('/me/findRooms').get();
-    const rooms = response.value || [];
+    console.log(`[Calendar Service] Cache miss or forced refresh, fetching rooms from Microsoft Graph API`);
     
-    // Cache the results
+    // Determine which API endpoint to use based on requested data
+    // Microsoft Graph offers different endpoints for room lists vs. detailed room info
+    let endpoint = '/me/findRooms';
+    
+    // Add query parameters for pagination if provided
+    const queryParams = [];
+    if (options.$top) queryParams.push(`$top=${options.$top}`);
+    if (options.$skip) queryParams.push(`$skip=${options.$skip}`);
+    
+    // Add the query parameters to the endpoint
+    if (queryParams.length > 0) {
+      endpoint += `?${queryParams.join('&')}`;
+    }
+    
+    console.log(`[Calendar Service] Using endpoint: ${endpoint}`);
+    
+    // Fetch rooms from Microsoft Graph API
+    const response = await client.api(endpoint).get();
+    
+    // Extract rooms array and nextLink for pagination
+    const rooms = response.value || [];
+    const nextLink = response['@odata.nextLink'] || null;
+    
+    console.log(`[Calendar Service] Successfully fetched ${rooms.length} rooms from API`);
+    
+    // Normalize the room data to ensure consistent format
+    const normalizedRooms = normalizeRooms(rooms, includeCapacity);
+    
+    // Cache the results (store the raw data to preserve all fields for future filtering)
     roomsCache = rooms;
     roomsCacheExpiry = now + cacheTTL;
     
-    if (process.env.NODE_ENV !== 'production') {
-      console.log(`Fetched ${rooms.length} rooms from API and cached for ${cacheTTL / 1000 / 60} minutes`);
-    }
+    console.log(`[Calendar Service] Rooms cached for ${cacheTTL / 1000 / 60} minutes`);
     
     // Apply filters and return
-    return filterRooms(rooms, options);
+    const filteredRooms = filterRooms(normalizedRooms, options);
+    
+    return {
+      rooms: filteredRooms,
+      nextLink: nextLink
+    };
   } catch (error) {
-    if (process.env.NODE_ENV !== 'production') {
-      console.error('Error fetching rooms:', error);
-    }
+    console.error('[Calendar Service] Error fetching rooms:', error);
     
     // If we have a cache, use it as fallback even if expired
     if (roomsCache) {
-      if (process.env.NODE_ENV !== 'production') {
-        console.warn('Using expired cache as fallback due to API error');
-      }
-      return filterRooms(roomsCache, options);
+      console.warn('[Calendar Service] Using expired cache as fallback due to API error');
+      const filteredRooms = filterRooms(roomsCache, options);
+      return {
+        rooms: filteredRooms,
+        nextLink: null, // No pagination for cached results
+        fromCache: true,
+        cacheExpired: true
+      };
     }
     
-    // TODO: Use ErrorService when available
-    // ErrorService.createError('graph', `Failed to fetch rooms: ${error.message}`, 'error', { error });
-    
+    // If no cache available, return detailed error
     const graphError = new Error(`Failed to fetch rooms: ${error.message}`);
     graphError.name = 'GraphApiError';
+    graphError.statusCode = error.statusCode || 500;
     graphError.originalError = error;
+    
+    // Add detailed diagnostic information
+    graphError.diagnostics = {
+      endpoint: '/me/findRooms', 
+      options: { ...options }, // Clone to avoid reference issues
+      timestamp: new Date().toISOString()
+    };
+    
     throw graphError;
   }
+}
+
+/**
+ * Normalizes room data from Microsoft Graph API
+ * @param {Array} rooms - Raw room data from Graph API
+ * @param {boolean} includeCapacity - Whether to include capacity information
+ * @returns {Array} Normalized room data
+ */
+function normalizeRooms(rooms, includeCapacity = true) {
+  if (!rooms || !Array.isArray(rooms)) {
+    return [];
+  }
+  
+  return rooms.map(room => {
+    // Create base room object with essential fields
+    const normalizedRoom = {
+      id: room.id || generateRoomId(room),
+      displayName: room.displayName || room.name || 'Unnamed Room',
+      emailAddress: room.emailAddress || room.address,
+      building: extractBuildingInfo(room),
+      floor: extractFloorInfo(room)
+    };
+    
+    // Add capacity if available and requested
+    if (includeCapacity && room.capacity !== undefined) {
+      normalizedRoom.capacity = room.capacity;
+    }
+    
+    // Add location fields if available
+    if (room.address) {
+      normalizedRoom.address = room.address;
+    }
+    
+    // Add equipment/capabilities info if available
+    if (room.audioDeviceName || room.videoDeviceName || room.displayDeviceName) {
+      normalizedRoom.equipment = {
+        hasAudio: !!room.audioDeviceName,
+        hasVideo: !!room.videoDeviceName,
+        hasDisplay: !!room.displayDeviceName
+      };
+    }
+    
+    return normalizedRoom;
+  });
+}
+
+/**
+ * Generate a consistent room ID if one is not provided
+ * @param {object} room - Room data
+ * @returns {string} Generated room ID
+ */
+function generateRoomId(room) {
+  // Use email as ID if available, otherwise hash the display name
+  if (room.emailAddress) {
+    return `room-${room.emailAddress.replace(/[@.]/g, '-')}`;
+  } else if (room.name || room.displayName) {
+    // Simple hash from the name
+    const name = room.name || room.displayName;
+    let hash = 0;
+    for (let i = 0; i < name.length; i++) {
+      hash = ((hash << 5) - hash) + name.charCodeAt(i);
+      hash |= 0; // Convert to 32-bit integer
+    }
+    return `room-${Math.abs(hash)}`;
+  }
+  return `room-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+}
+
+/**
+ * Extract building information from room data
+ * @param {object} room - Room data
+ * @returns {string|null} Building name or null if not found
+ */
+function extractBuildingInfo(room) {
+  // Direct building property if available
+  if (room.building) {
+    return room.building;
+  }
+  
+  // Try to extract from name or other properties
+  const name = room.displayName || room.name || '';
+  
+  // Common building patterns in room names
+  const buildingPatterns = [
+    /building\s+(\w+)/i,
+    /bldg\s+(\w+)/i,
+    /(\w+)\s+building/i,
+    /^(\w+)\s+-/i // E.g., "Building A - Room 101"
+  ];
+  
+  for (const pattern of buildingPatterns) {
+    const match = name.match(pattern);
+    if (match && match[1]) {
+      return match[1];
+    }
+  }
+  
+  return null;
+}
+
+/**
+ * Extract floor information from room data
+ * @param {object} room - Room data
+ * @returns {string|number|null} Floor number/name or null if not found
+ */
+function extractFloorInfo(room) {
+  // Direct floor property if available
+  if (room.floorNumber !== undefined) {
+    return room.floorNumber;
+  } else if (room.floor) {
+    return room.floor;
+  }
+  
+  // Try to extract from name or other properties
+  const name = room.displayName || room.name || '';
+  
+  // Common floor patterns in room names
+  const floorPatterns = [
+    /floor\s+(\d+)/i,
+    /(\d+)(?:st|nd|rd|th)\s+floor/i,
+    /fl\s+(\d+)/i,
+    /level\s+(\d+)/i,
+    /f(\d+)/i // E.g., "F3-Conference Room"
+  ];
+  
+  for (const pattern of floorPatterns) {
+    const match = name.match(pattern);
+    if (match && match[1]) {
+      // Convert to number if possible
+      const floorNum = parseInt(match[1], 10);
+      return isNaN(floorNum) ? match[1] : floorNum;
+    }
+  }
+  
+  return null;
 }
 
 /**
@@ -1363,6 +1642,7 @@ async function getRooms(options = {}) {
  * @param {object} options - Filter options
  * @param {string} [options.building] - Building name to filter by
  * @param {string|number} [options.floor] - Floor number or name to filter by
+ * @param {number} [options.minCapacity] - Minimum room capacity
  * @returns {Array} Filtered list of rooms
  */
 function filterRooms(rooms, options = {}) {
@@ -1376,10 +1656,15 @@ function filterRooms(rooms, options = {}) {
   if (options.building) {
     const buildingFilter = options.building.toLowerCase();
     filteredRooms = filteredRooms.filter(room => {
-      // Check if building info is in the name, address, or other fields
-      const name = (room.name || '').toLowerCase();
+      // Check for building in the normalized building field
+      if (room.building && room.building.toLowerCase().includes(buildingFilter)) {
+        return true;
+      }
+      
+      // Fallback to checking various fields
+      const name = (room.displayName || room.name || '').toLowerCase();
       const address = (room.address || '').toLowerCase();
-      const email = (room.address || '').toLowerCase();
+      const email = (room.emailAddress || '').toLowerCase();
       
       return name.includes(buildingFilter) || 
              address.includes(buildingFilter) || 
@@ -1391,10 +1676,16 @@ function filterRooms(rooms, options = {}) {
   if (options.floor !== undefined) {
     const floorFilter = String(options.floor).toLowerCase();
     filteredRooms = filteredRooms.filter(room => {
-      // Check if floor info is in the name or other fields
-      const name = (room.name || '').toLowerCase();
+      // Check for floor in the normalized floor field
+      if (room.floor !== undefined && room.floor !== null) {
+        const floorStr = String(room.floor).toLowerCase();
+        return floorStr === floorFilter;
+      }
       
-      // Common floor indicators in room names (e.g., '3rd floor', 'floor 3', 'fl 3', 'f3')
+      // Fallback to checking in the name
+      const name = (room.displayName || room.name || '').toLowerCase();
+      
+      // Common floor indicators in room names
       return name.includes(`floor ${floorFilter}`) || 
              name.includes(`${floorFilter} floor`) || 
              name.includes(`fl ${floorFilter}`) || 
@@ -1405,6 +1696,27 @@ function filterRooms(rooms, options = {}) {
              name.includes(`${floorFilter}rd floor`) || 
              name.includes(`${floorFilter}st floor`);
     });
+  }
+  
+  // Filter by minimum capacity if specified
+  if (options.minCapacity !== undefined && !isNaN(parseInt(options.minCapacity, 10))) {
+    const minCapacity = parseInt(options.minCapacity, 10);
+    filteredRooms = filteredRooms.filter(room => {
+      return room.capacity !== undefined && room.capacity >= minCapacity;
+    });
+  }
+  
+  // Filter by equipment/capabilities if specified
+  if (options.hasAudio === true) {
+    filteredRooms = filteredRooms.filter(room => room.equipment?.hasAudio === true);
+  }
+  
+  if (options.hasVideo === true) {
+    filteredRooms = filteredRooms.filter(room => room.equipment?.hasVideo === true);
+  }
+  
+  if (options.hasDisplay === true) {
+    filteredRooms = filteredRooms.filter(room => room.equipment?.hasDisplay === true);
   }
   
   return filteredRooms;
