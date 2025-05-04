@@ -27,5 +27,40 @@ const api = {
     ping: async () => ipcRenderer.invoke('ping')
 };
 
+// Expose the API to the renderer process
 contextBridge.exposeInMainWorld('api', api);
+
+// Expose IPC renderer for monitoring and error services
+contextBridge.exposeInMainWorld('electron', {
+    ipcRenderer: {
+        // Expose only the specific IPC channels we need
+        send: (channel, data) => {
+            // Whitelist channels for security
+            const validChannels = [
+                'monitoring:info',
+                'monitoring:warn',
+                'monitoring:error',
+                'monitoring:logError',
+                'monitoring:trackMetric',
+                'error:create',
+                'services:load'
+            ];
+            if (validChannels.includes(channel)) {
+                ipcRenderer.send(channel, data);
+            }
+        },
+        // For receiving responses from the main process
+        on: (channel, func) => {
+            const validChannels = ['services:loaded'];
+            if (validChannels.includes(channel)) {
+                // Strip event as it includes `sender` which exposes IPC objects
+                const subscription = (event, ...args) => func(...args);
+                ipcRenderer.on(channel, subscription);
+                return () => {
+                    ipcRenderer.removeListener(channel, subscription);
+                };
+            }
+        }
+    }
+});
 

@@ -10,6 +10,9 @@ const { startCombinedServer } = require(path.join(__dirname, 'combined-server.cj
 const monitoringService = require('../core/monitoring-service.cjs');
 const errorService = require('../core/error-service.cjs');
 
+// Import IPC handlers
+const { initIpcHandlers } = require(path.join(__dirname, 'ipc-handlers.cjs'));
+
 // Add error handlers for Electron
 app.on('render-process-gone', (event, webContents, details) => {
   monitoringService.error(`Renderer process gone: ${details.reason}`, { details }, 'electron');
@@ -84,6 +87,14 @@ const { setupTray } = require(path.join(__dirname, 'tray.cjs'));
 let tray;
 
 app.on('ready', async () => {
+    // Initialize IPC handlers for monitoring and error services
+    const ipcInitialized = initIpcHandlers();
+    if (ipcInitialized) {
+        monitoringService.info('IPC handlers initialized successfully', {}, 'electron');
+    } else {
+        monitoringService.error('Failed to initialize IPC handlers', {}, 'electron');
+    }
+    
     let serverStarted = false;
     
     // Check if server was started by start-mcp.sh (environment variable)

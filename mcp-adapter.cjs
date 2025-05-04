@@ -33,19 +33,9 @@ const API_PORT = process.env.API_PORT || 3000;
 const API_BASE_PATH = process.env.API_BASE_PATH || '/api';
 const API_TIMEOUT = process.env.API_TIMEOUT || 30000; // 30 seconds
 
-// Configuration
-const LOG_DIR = process.env.MCP_LOG_DIR || path.join(os.tmpdir(), 'mcp-logs');
-const LOG_FILE = process.env.MCP_LOG_PATH || path.join(LOG_DIR, 'mcp-adapter.log');
-
-// Create log directory if it doesn't exist
-try {
-    if (!fs.existsSync(LOG_DIR)) {
-        fs.mkdirSync(LOG_DIR, { recursive: true });
-    }
-} catch (err) {
-    // Use process.stderr directly to avoid circular dependencies with logging functions
-    process.stderr.write(`[ERROR] Failed to create log directory: ${err.message}\n`);
-}
+// MCP adapters should not attempt to write to files directly as they may not have permissions
+// All file logging should be handled by the backend via the monitoring service
+// Only use stderr for direct logging from the adapter
 
 // Monkey-patch console methods to prevent JSON-RPC stream pollution
 // Store original console methods
@@ -57,10 +47,9 @@ const originalConsole = {
     error: console.error
 };
 
-// Helper: Write to the appropriate log file based on level
+// Helper: Write logs to stderr and use monitoring service for backend logging
 function writeToLogFile(level, ...args) {
     try {
-        const timestamp = new Date().toISOString();
         const prefix = `[MCP ADAPTER ${level.toUpperCase()}]`;
         const formattedArgs = args.map(arg => {
             if (typeof arg === 'object') {
@@ -74,12 +63,12 @@ function writeToLogFile(level, ...args) {
         }).join(' ');
         
         // CRITICAL: NEVER write to stdout in an MCP adapter - it corrupts the JSON-RPC stream
-        // Only write to stderr or use monitoring service
+        // Only write to stderr and use monitoring service for backend logging
         
-        // In Claude Desktop environment, we can't write to files, so use stderr and monitoring
+        // Write to stderr (safe for MCP protocol)
         process.stderr.write(`${prefix} ${formattedArgs}\n`);
         
-        // Try to use monitoring service asynchronously
+        // Use monitoring service to log through the backend (where file permissions are available)
         try {
             setImmediate(() => {
                 if (level === 'error') {
@@ -258,34 +247,39 @@ async function callApi(method, path, data = null) {
 
 // Helper: log debug messages safely (never to stdout)
 function logDebug(message, ...args) {
-    // CRITICAL: NEVER write to stdout in an MCP adapter - it corrupts the JSON-RPC stream
     try {
-        // Format args for better readability
-        const context = args.length > 0 ? { args: args.map(arg => {
-            if (typeof arg === 'object') {
-                try {
-                    return JSON.stringify(arg);
-                } catch (e) {
-                    return `[Object: ${Object.prototype.toString.call(arg)}]`;
-                }
+        // Format the message with args
+        let formattedMessage = message;
+        if (args.length > 0) {
+            try {
+                const formattedArgs = args.map(arg => {
+                    if (arg instanceof Error) {
+                        return `${arg.message}\n${arg.stack || 'No stack trace'}`;
+                    } else if (typeof arg === 'object') {
+                        try {
+                            return JSON.stringify(arg, null, 2);
+                        } catch (e) {
+                            return `[Object: ${Object.prototype.toString.call(arg)}]`;
+                        }
+                    }
+                    return String(arg);
+                }).join(' ');
+                formattedMessage = `${message} ${formattedArgs}`;
+            } catch (formatErr) {
+                formattedMessage = `${message} [Error formatting args: ${formatErr.message}]`;
             }
-            return String(arg);
-        })} : {};
+        }
         
-        // Only write directly to stderr, never to stdout
-        process.stderr.write(`[DEBUG] ${message}\n`);
+        // CRITICAL: NEVER write to stdout in an MCP adapter - it corrupts the JSON-RPC stream
+        // Only write to stderr or use the monitoring service
         
-        // Attempt to log to monitoring service, but catch any errors
+        // Write to stderr (safe for MCP)
+        process.stderr.write(`[DEBUG] ${formattedMessage}\n`);
+        
+        // Also log to monitoring service if available
         try {
-            // Use setImmediate to ensure this doesn't block the main thread
-            // and wrap in try/catch to prevent any errors from bubbling up
             setImmediate(() => {
-                try {
-                    monitoringService.debug(`[MCP ADAPTER] ${message}`, context);
-                } catch (innerErr) {
-                    // Prevent any errors from escaping setImmediate
-                    process.stderr.write(`[MONITORING ERROR] ${innerErr.message}\n`);
-                }
+                monitoringService.debug(formattedMessage, {});
             });
         } catch (monitoringErr) {
             // Silently ignore monitoring errors - we already logged to stderr
@@ -296,187 +290,85 @@ function logDebug(message, ...args) {
     }
 }
 
-// Helper: log to separate file only (never to stdout)
-// Uses MonitoringService for centralized logging
+// Helper: log protocol messages via monitoring service (never to stdout)
+// Uses MonitoringService for centralized logging through the backend
 function logToFile(prefix, method, data) {
     try {
-        // Format data for better readability
-        const context = {
-            prefix,
-            method,
-            data: data ? (typeof data === 'object' ? data : { value: data }) : null
-        };
+        // Format the data for logging
+        const formattedData = typeof data === 'object' ? JSON.stringify(data) : String(data);
         
-        // CRITICAL: Use setImmediate to ensure this doesn't block the main thread
-        // and wrap in try/catch to prevent any errors from bubbling up
-        setImmediate(() => {
-            try {
-                // Send to monitoring service as info level (can be filtered in logs)
-                monitoringService.info(`[MCP ADAPTER] ${prefix} ${method}`, context);
-            } catch (innerErr) {
-                // Prevent any errors from escaping setImmediate
-                process.stderr.write(`[MONITORING ERROR] ${innerErr.message}\n`);
-                
-                // Try to create an error record using the error service
+        // Use monitoring service for centralized logging through the backend
+        try {
+            // Use setImmediate to avoid blocking the main thread
+            setImmediate(() => {
                 try {
-                    errorService.createError(
-                        errorService.CATEGORIES.SYSTEM,
-                        `Failed to log MCP adapter message: ${innerErr.message}`,
-                        errorService.SEVERITIES.WARNING,
-                        { prefix, method }
-                    );
-                } catch (e) {
-                    // If even that fails, last resort is stderr
-                    process.stderr.write(`[CRITICAL] Error service failure: ${e.message}\n`);
+                    // Use debug level for protocol logs
+                    monitoringService.debug(`[MCP PROTOCOL] ${prefix} ${method}`, {
+                        protocol: true,
+                        prefix,
+                        method,
+                        data: typeof data === 'object' ? data : { value: data }
+                    });
+                } catch (innerErr) {
+                    // Log monitoring errors to stderr only
+                    process.stderr.write(`[MONITORING ERROR] ${innerErr.message}\n`);
                 }
-            }
-        });
+            });
+        } catch (err) {
+            // Last resort: log to stderr
+            process.stderr.write(`[MCP PROTOCOL LOG ERROR] ${err.message}\n`);
+        }
     } catch (err) {
-        // Last resort fallback - write directly to stderr
-        process.stderr.write(`[ERROR LOGGING] Failed to log to monitoring service: ${err.message}\n`);
+        // Last resort: log to stderr
+        process.stderr.write(`[MCP PROTOCOL LOG ERROR] ${err.message}\n`);
     }
 }
 
 // Helper: send JSON-RPC response
 function sendResponse(id, result, error) {
-    // CRITICAL: This function must ONLY write valid JSON-RPC to stdout
-    // All logging must go to stderr or monitoring service
-    
-    // Create a valid JSON-RPC 2.0 response
-    const msg = { jsonrpc: '2.0', id };
-    
-    // Sanitize and validate the response
-    if (error) {
-        // Ensure error has required fields according to JSON-RPC 2.0 spec
-        if (typeof error === 'object') {
-            // Ensure error code is present and is a number
-            if (!('code' in error) || typeof error.code !== 'number') {
-                error.code = -32603; // Internal error
-            }
-            
-            // Ensure error message is present and is a string
-            if (!('message' in error) || typeof error.message !== 'string') {
-                error.message = 'Unknown error';
-            }
-            
-            // Sanitize large error data if present
-            if (error.data) {
-                try {
-                    const errorDataStr = JSON.stringify(error.data);
-                    if (errorDataStr.length > 1000) {
-                        // Truncate large error data
-                        error.data = {
-                            truncated: true,
-                            message: 'Error data too large, truncated',
-                            preview: errorDataStr.substring(0, 500) + '...'
-                        };
-                    }
-                } catch (dataErr) {
-                    // If error data can't be serialized, replace it
-                    error.data = {
-                        error: 'Error data could not be serialized',
-                        message: dataErr.message
-                    };
-                }
-            }
-        } else {
-            // Convert non-object errors to standard format
-            error = {
-                code: -32603,
-                message: String(error)
-            };
-        }
-        
-        msg.error = error;
-        
-        // Log error to monitoring service (but not to stdout)
-        setImmediate(() => {
-            try {
-                errorService.createError(
-                    errorService.CATEGORIES.API,
-                    `JSON-RPC error response: ${error.message}`,
-                    errorService.SEVERITIES.WARNING,
-                    { id, error }
-                );
-            } catch (e) {
-                // Silently ignore - we'll still send the response
-                process.stderr.write(`[ERROR SERVICE] Failed to log error: ${e.message}\n`);
-            }
-        });
-    } else if (result !== undefined) {
-        // Sanitize large result payloads
-        try {
-            const resultStr = JSON.stringify(result);
-            // Check if result is too large (over 10MB)
-            if (resultStr.length > 10 * 1024 * 1024) {
-                // Log the issue but don't modify the result
-                // This avoids breaking functionality while still providing a warning
-                process.stderr.write(`[WARNING] Large result payload detected: ${resultStr.length} bytes\n`);
-                
-                // Log asynchronously to avoid blocking
-                setImmediate(() => {
-                    try {
-                        monitoringService.warn('[MCP Adapter] Large result payload', { size: resultStr.length, id });
-                    } catch (e) {
-                        // Silently ignore monitoring errors
-                    }
-                });
-            }
-            msg.result = result;
-        } catch (err) {
-            // Handle case where result can't be serialized
-            process.stderr.write(`[ERROR] Error serializing result: ${err.message}\n`);
-            
-            // Create proper error response
-            msg.error = {
-                code: -32603,
-                message: 'Internal error: Could not serialize result',
-                data: { error: err.message }
-            };
-            delete msg.result; // Ensure we don't have both result and error
-        }
-    } else {
-        // Ensure result is always present when no error
-        msg.result = null;
-    }
-    
-    // Send the response as a single line of JSON
     try {
-        const responseStr = JSON.stringify(msg);
+        // Build JSON-RPC response
+        const response = {
+            jsonrpc: '2.0',
+            id
+        };
         
-        // CRITICAL: This is the ONLY place in the entire adapter that should write to stdout
-        process.stdout.write(responseStr + '\n');
+        if (error) {
+            response.error = error;
+        } else {
+            response.result = result || null;
+        }
         
-        // Log the response metadata (but not to stdout)
-        // Use setImmediate to ensure this doesn't block the main thread
-        setImmediate(() => {
-            try {
-                logToFile('Response:', id ? `id=${id}` : 'notification', {
-                    size: responseStr.length,
-                    hasError: !!error
-                });
-            } catch (e) {
-                // Silently ignore logging errors
-            }
-        });
+        // Convert to JSON
+        const jsonResponse = JSON.stringify(response);
+        
+        // Send to stdout (the only place we should write to stdout)
+        // CRITICAL: Use process.stdout.write directly instead of console.log
+        // to avoid any potential interference from console monkey-patching
+        process.stdout.write(jsonResponse + '\n');
     } catch (err) {
-        // Last resort error handling - write directly to stderr
-        process.stderr.write(`[ERROR] Failed to stringify JSON-RPC response: ${err.message}\n`);
+        // Log error to stderr (never stdout)
+        process.stderr.write(`[ERROR] Failed to send response: ${err.message}\n`);
         
-        // Try to send a basic error response
+        // Try to send a simplified error response
         try {
-            const fallbackResponse = JSON.stringify({
+            const fallbackResponse = {
                 jsonrpc: '2.0',
                 id,
                 error: {
                     code: -32603,
-                    message: 'Internal error: Failed to stringify response'
+                    message: 'Internal error while sending response'
                 }
-            });
-            process.stdout.write(fallbackResponse + '\n');
-        } catch (e) {
-            // If even that fails, we can't do anything more
-            process.stderr.write(`[CRITICAL] Cannot send any response: ${e.message}\n`);
+            };
+            // Use process.stdout.write directly
+            process.stdout.write(JSON.stringify(fallbackResponse) + '\n');
+        } catch (fallbackErr) {
+            // Last resort: write directly to stdout
+            process.stdout.write(JSON.stringify({
+                jsonrpc: '2.0',
+                id,
+                error: { code: -32603, message: 'Critical error' }
+            }) + '\n');
         }
     }
 }
@@ -1698,6 +1590,13 @@ process.on('SIGTERM', () => {
     logDebug('[MCP Adapter] Received SIGTERM. Exiting.');
     shutdown().then(() => process.exit(0));
 });
+
+// Properly apply the console monkey-patching to ensure no logs go to stdout
+console.log = (...args) => writeToLogFile('log', ...args);
+console.debug = (...args) => writeToLogFile('debug', ...args);
+console.info = (...args) => writeToLogFile('info', ...args);
+console.warn = (...args) => writeToLogFile('warn', ...args);
+console.error = (...args) => writeToLogFile('error', ...args);
 
 // Run initialization (proxy approach)
 initialize();
