@@ -22,48 +22,111 @@ let server = null;
 // If this file is being run directly (not imported), start the server
 if (require.main === module) {
   startCombinedServer().then(() => {
-    console.log(`
-🚀 MCP Desktop combined server running at http://localhost:3000
-📝 Open this URL in your browser to access the application
-📊 Logs written to ${monitoringService.LOG_FILE_PATH}
-    `);
+    // Server startup is already logged in startCombinedServer function
+    // Just log the log file path for user convenience when running directly
+    if (monitoringService?.LOG_FILE_PATH) {
+      console.log(`📊 Logs written to ${monitoringService?.LOG_FILE_PATH}`);
+    }
   }).catch(err => {
-    console.error('Failed to start combined server:', err);
+    const error = errorService?.createError(
+      errorService?.CATEGORIES.SYSTEM,
+      `Failed to start combined server: ${err.message}`,
+      errorService?.SEVERITIES.CRITICAL,
+      { stack: err.stack }
+    );
+    monitoringService?.logError(error);
     process.exit(1);
   });
 }
 
 // Add global error handlers but allow process termination with SIGINT
 process.on('uncaughtException', (err) => {
-  const mcpError = errorService.createError(
-    errorService.CATEGORIES.SYSTEM,
+  const mcpError = errorService?.createError(
+    errorService?.CATEGORIES.SYSTEM,
     `Uncaught Exception: ${err.message}`,
-    errorService.SEVERITIES.CRITICAL,
+    errorService?.SEVERITIES.CRITICAL,
     { stack: err.stack }
   );
-  monitoringService.error(`Uncaught Exception: ${err.message}`, { stack: err.stack }, 'system');
+  
+  if (monitoringService) {
+    monitoringService.logError(mcpError);
+  } else {
+    console.error('[monitoringService missing] Failed to log error:', {
+      category: 'system',
+      message: `Uncaught Exception: ${err.message}`,
+      severity: 'critical',
+      stack: err.stack
+    });
+  }
+  
+  // Emit event for UI subscribers if available
+  const logData = {
+    level: 'error',
+    message: `Uncaught Exception: ${err.message}`,
+    timestamp: new Date().toISOString(),
+    category: 'system',
+    id: mcpError?.id
+  };
+  
+  if (monitoringService?.logEmitter) {
+    monitoringService.logEmitter.emit('log', logData);
+  } else {
+    // Fallback if logEmitter not available
+    console.error('[LogEmitter not available] Emitting log fallback:', logData, err.stack);
+  }
   // Log the error but still allow normal termination
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  const mcpError = errorService.createError(
-    errorService.CATEGORIES.SYSTEM,
-    `Unhandled Promise Rejection: ${reason}`,
-    errorService.SEVERITIES.ERROR,
-    { reason }
+  // Convert reason to string safely
+  const reasonStr = reason instanceof Error ? reason.message : String(reason);
+  const stack = reason instanceof Error ? reason.stack : undefined;
+  
+  const mcpError = errorService?.createError(
+    errorService?.CATEGORIES.SYSTEM,
+    `Unhandled Promise Rejection: ${reasonStr}`,
+    errorService?.SEVERITIES.ERROR,
+    { stack, reason: reasonStr }
   );
-  monitoringService.error(`Unhandled Promise Rejection: ${reason}`, { reason }, 'system');
+  
+  if (monitoringService) {
+    monitoringService.logError(mcpError);
+  } else {
+    console.error('[monitoringService missing] Failed to log error:', {
+      category: 'system',
+      message: `Unhandled Promise Rejection: ${reasonStr}`,
+      severity: 'error',
+      stack,
+      reason: reasonStr
+    });
+  }
+  
+  // Emit event for UI subscribers if available
+  const logData = {
+    level: 'error',
+    message: `Unhandled Promise Rejection: ${reasonStr}`,
+    timestamp: new Date().toISOString(),
+    category: 'system',
+    id: mcpError?.id
+  };
+  
+  if (monitoringService?.logEmitter) {
+    monitoringService.logEmitter.emit('log', logData);
+  } else {
+    // Fallback if logEmitter not available
+    console.error('[LogEmitter not available] Emitting log fallback:', logData, stack);
+  }
   // Log the error but still allow normal termination
 });
 
 // Add proper SIGINT handler to allow Ctrl+C termination
 process.on('SIGINT', async () => {
-  console.log('\nReceived SIGINT (Ctrl+C). Shutting down gracefully...');
+  monitoringService?.info('Received SIGINT (Ctrl+C). Shutting down gracefully...', {}, 'system');
   if (server) {
-    console.log('Closing server...');
+    monitoringService?.info('Closing server...', {}, 'system');
     await stopCombinedServer();
   }
-  console.log('Exiting process...');
+  monitoringService?.info('Exiting process...', {}, 'system');
   process.exit(0);
 });
 
@@ -75,6 +138,45 @@ process.on('SIGINT', async () => {
 async function startCombinedServer(port = 3000) {
   // Set up middleware from the server module
   setupMiddleware(app);
+  
+  // Add request logging middleware
+  app.use((req, res, next) => {
+    // Skip logging for static assets to reduce noise
+    if (!req.path.startsWith('/api/') && (req.path.includes('.') || req.path === '/')) {
+      return next();
+    }
+    
+    // Skip logging OPTIONS requests (CORS preflight)
+    if (req.method === 'OPTIONS') {
+      return next();
+    }
+    
+    const requestStart = Date.now();
+    const requestId = require('crypto').randomUUID();
+    
+    // Log the incoming request
+    monitoringService?.info(`Incoming ${req.method} request to ${req.path}`, 
+      { requestId, method: req.method, path: req.path, query: req.query, ip: req.ip }, 'api');
+    
+    // Track response time and status on completion
+    res.on('finish', () => {
+      const duration = Date.now() - requestStart;
+      const statusCode = res.statusCode;
+      
+      // Log the response
+      const logLevel = statusCode >= 400 ? 'warn' : 'info';
+      if (monitoringService && typeof monitoringService[logLevel] === 'function') {
+        monitoringService[logLevel](`${req.method} ${req.path} completed with status ${statusCode}`, 
+          { requestId, method: req.method, path: req.path, statusCode, duration }, 'api');
+      }
+      
+      // Track metrics
+      monitoringService?.trackMetric('api.request.duration', duration, 
+        { method: req.method, path: req.path, statusCode });
+    });
+    
+    next();
+  });
   
   // Add CORS headers for Electron web requests
   app.use((req, res, next) => {
@@ -90,12 +192,26 @@ async function startCombinedServer(port = 3000) {
   });
   
   // Set up session middleware for authentication
+  const isProduction = process.env.NODE_ENV === 'production';
   app.use(session({
-    secret: 'mcp-session-secret',
+    secret: process.env.SESSION_SECRET || 'mcp-session-secret',
     resave: false,
     saveUninitialized: true,
-    cookie: { secure: false } // Set to true if using HTTPS
+    cookie: { 
+      secure: isProduction, // Use secure cookies in production (requires HTTPS)
+      sameSite: isProduction ? 'strict' : 'lax' // Stricter same-site policy in production
+    }
   }));
+  
+  // Log session configuration but redact sensitive data
+  monitoringService?.debug('Session middleware configured', {
+    secureCookie: isProduction,
+    sameSite: isProduction ? 'strict' : 'lax',
+    usingEnvSecret: !!process.env.SESSION_SECRET,
+    environment: process.env.NODE_ENV || 'development'
+  }, 'server');
+  
+  // NOTE: In production, ensure your server is using HTTPS for secure cookies to work properly
   
   // Import required modules for API
   const statusRouter = require('../api/status.cjs');
@@ -109,10 +225,16 @@ async function startCombinedServer(port = 3000) {
     try {
       const msalService = require('../auth/msal-service.cjs');
       await msalService.login(req, res);
-      console.log('Login process initiated');
+      monitoringService?.info('Login process initiated', { method: 'POST', ip: req.ip }, 'auth');
     } catch (error) {
-      console.error('Login failed:', error);
-      res.status(500).json({ error: 'Login failed', message: error.message });
+      const mcpError = errorService?.createError(
+        errorService?.CATEGORIES.AUTH,
+        `Login failed: ${error.message}`,
+        errorService?.SEVERITIES.ERROR,
+        { method: 'POST', ip: req.ip, stack: error.stack }
+      );
+      monitoringService?.logError(mcpError);
+      res.status(500).json({ error: 'Login failed', message: error.message, id: mcpError?.id || 'unknown' });
     }
   });
   
@@ -121,10 +243,16 @@ async function startCombinedServer(port = 3000) {
     try {
       const msalService = require('../auth/msal-service.cjs');
       await msalService.login(req, res);
-      console.log('Login process initiated (GET)');
+      monitoringService?.info('Login process initiated', { method: 'GET', ip: req.ip }, 'auth');
     } catch (error) {
-      console.error('Login failed (GET):', error);
-      res.status(500).json({ error: 'Login failed', message: error.message });
+      const mcpError = errorService?.createError(
+        errorService?.CATEGORIES.AUTH,
+        `Login failed: ${error.message}`,
+        errorService?.SEVERITIES.ERROR,
+        { method: 'GET', ip: req.ip, stack: error.stack }
+      );
+      monitoringService?.logError(mcpError);
+      res.status(500).json({ error: 'Login failed', message: error.message, id: mcpError?.id || 'unknown' });
     }
   });
   
@@ -132,10 +260,16 @@ async function startCombinedServer(port = 3000) {
     try {
       const msalService = require('../auth/msal-service.cjs');
       await msalService.logout(req, res);
-      console.log('User logged out successfully');
+      monitoringService?.info('User logged out successfully', { ip: req.ip }, 'auth');
     } catch (error) {
-      console.error('Logout failed:', error);
-      res.status(500).json({ error: 'Logout failed', message: error.message });
+      const mcpError = errorService?.createError(
+        errorService?.CATEGORIES.AUTH,
+        `Logout failed: ${error.message}`,
+        errorService?.SEVERITIES.ERROR,
+        { ip: req.ip, stack: error.stack }
+      );
+      monitoringService?.logError(mcpError);
+      res.status(500).json({ error: 'Logout failed', message: error.message, id: mcpError?.id || 'unknown' });
     }
   });
   
@@ -144,10 +278,18 @@ async function startCombinedServer(port = 3000) {
     try {
       const msalService = require('../auth/msal-service.cjs');
       await msalService.handleAuthCallback(req, res);
-      console.log('OAuth callback processed successfully');
+      monitoringService?.info('OAuth callback processed successfully', { ip: req.ip }, 'auth');
     } catch (error) {
-      console.error('OAuth callback failed:', error);
-      res.redirect('/?error=' + encodeURIComponent('Authentication failed: ' + error.message));
+      const mcpError = errorService?.createError(
+        errorService?.CATEGORIES.AUTH,
+        `OAuth callback failed: ${error.message}`,
+        errorService?.SEVERITIES.ERROR,
+        { ip: req.ip, stack: error.stack }
+      );
+      monitoringService?.logError(mcpError);
+      // Include error ID in the redirect if available
+      const errorId = mcpError?.id ? `&errorId=${mcpError.id}` : '';
+      res.redirect('/?error=' + encodeURIComponent('Authentication failed: ' + error.message) + errorId);
     }
   });
   
@@ -172,21 +314,65 @@ async function startCombinedServer(port = 3000) {
   
   // Add direct health endpoint
   app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', ts: new Date().toISOString() });
+    const timestamp = new Date().toISOString();
+    monitoringService?.debug('Health check requested', { timestamp, ip: req.ip }, 'api');
+    res.json({ status: 'ok', ts: timestamp });
+    // Track health check as a metric for monitoring
+    monitoringService?.trackMetric('api.health.check', 1, { ip: req.ip });
   });
   
   // Explicitly define MIME types
   const mimeTypes = {
+    // HTML and document types
     '.html': 'text/html',
+    '.htm': 'text/html',
+    '.xml': 'text/xml',
+    '.pdf': 'application/pdf',
+    
+    // JavaScript and module types
     '.js': 'application/javascript',
+    '.mjs': 'application/javascript', // ES modules
+    '.cjs': 'application/javascript', // CommonJS modules
+    
+    // Stylesheet types
     '.css': 'text/css',
+    '.scss': 'text/css',
+    '.less': 'text/css',
+    
+    // Data interchange formats
     '.json': 'application/json',
+    '.map': 'application/json', // Source maps
+    
+    // Image types
     '.png': 'image/png',
-    '.jpg': 'image/jpg',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
     '.gif': 'image/gif',
+    '.webp': 'image/webp',
     '.svg': 'image/svg+xml',
-    '.ico': 'image/x-icon'
+    '.ico': 'image/x-icon',
+    '.bmp': 'image/bmp',
+    
+    // Font types
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+    '.ttf': 'font/ttf',
+    '.otf': 'font/otf',
+    '.eot': 'application/vnd.ms-fontobject',
+    
+    // Audio/Video types
+    '.mp3': 'audio/mpeg',
+    '.wav': 'audio/wav',
+    '.mp4': 'video/mp4',
+    '.webm': 'video/webm',
+    
+    // Other types
+    '.txt': 'text/plain',
+    '.csv': 'text/csv',
+    '.md': 'text/markdown'
   };
+  
+  // Extend this map as needed for new asset types
 
   // Serve static files for frontend with proper MIME types
   app.use(express.static(path.join(__dirname, '../renderer'), {
@@ -205,16 +391,56 @@ async function startCombinedServer(port = 3000) {
     // Skip if it's an API route
     if (req.path.startsWith('/api/')) {
       // If it's an API route that wasn't matched, return 404 instead of the HTML
-      return res.status(404).json({ error: 'API endpoint not found', path: req.path });
+      const mcpError = errorService?.createError(
+        errorService?.CATEGORIES.API,
+        `API endpoint not found: ${req.path}`,
+        errorService?.SEVERITIES.WARNING,
+        { path: req.path, method: req.method, ip: req.ip }
+      );
+      monitoringService?.logError(mcpError);
+      return res.status(404).json({ 
+        error: 'API endpoint not found', 
+        path: req.path,
+        id: mcpError?.id || 'unknown'
+      });
     }
     // For all other routes, serve the SPA
+    monitoringService?.debug(`Serving SPA for route: ${req.path}`, { path: req.path }, 'server');
     res.sendFile(path.join(__dirname, '../renderer/index.html'));
   });
   
   // Start the server
+  const startTime = Date.now();
   return new Promise((resolve) => {
     server = app.listen(port, () => {
-      monitoringService.info(`Combined server running at http://localhost:${port}`, {}, 'server');
+      const startupTime = Date.now() - startTime;
+      if (monitoringService) {
+        monitoringService.info(`Combined server running at http://localhost:${port}`, { startupTime, port, startup: true }, 'server');
+        monitoringService.trackMetric('server.startup.time', startupTime, { port });
+      } else {
+        console.log(`[monitoringService missing] Server running at http://localhost:${port}`, {
+          startupTime,
+          port,
+          startup: true
+        });
+      }
+      
+      // Emit event for UI subscribers if available
+      const logData = {
+        level: 'info',
+        message: `Combined server running at http://localhost:${port}`,
+        timestamp: new Date().toISOString(),
+        category: 'server',
+        context: { startupTime, port, startup: true }
+      };
+      
+      if (monitoringService?.logEmitter) {
+        monitoringService.logEmitter.emit('log', logData);
+      } else {
+        // Fallback if logEmitter not available
+        console.log('[LogEmitter not available] Emitting log fallback:', logData);
+      }
+      
       resolve(server);
     });
   });
@@ -227,18 +453,51 @@ async function startCombinedServer(port = 3000) {
 function stopCombinedServer() {
   return new Promise((resolve, reject) => {
     if (server) {
-      monitoringService.info('Stopping combined server...', {}, 'server');
+      const startTime = Date.now();
+      monitoringService?.info('Stopping combined server...', {}, 'server');
       server.close((err) => {
+        const shutdownTime = Date.now() - startTime;
         if (err) {
-          monitoringService.error(`Error stopping server: ${err.message}`, { stack: err.stack }, 'server');
+          const mcpError = errorService?.createError(
+            errorService?.CATEGORIES.SYSTEM,
+            `Error stopping server: ${err.message}`,
+            errorService?.SEVERITIES.ERROR,
+            { stack: err.stack, shutdownTime }
+          );
+          monitoringService?.logError(mcpError);
           reject(err);
         } else {
-          monitoringService.info('Server stopped successfully', {}, 'server');
+          if (monitoringService) {
+            monitoringService.info('Server stopped successfully', { shutdownTime, shutdown: true }, 'server');
+            monitoringService.trackMetric('server.shutdown.time', shutdownTime, {});
+          } else {
+            console.log('[monitoringService missing] Server stopped successfully', {
+              shutdownTime,
+              shutdown: true
+            });
+          }
+          
+          // Emit event for UI subscribers if available
+          const logData = {
+            level: 'info',
+            message: 'Server stopped successfully',
+            timestamp: new Date().toISOString(),
+            category: 'server',
+            context: { shutdownTime, shutdown: true }
+          };
+          
+          if (monitoringService?.logEmitter) {
+            monitoringService.logEmitter.emit('log', logData);
+          } else {
+            // Fallback if logEmitter not available
+            console.log('[LogEmitter not available] Emitting log fallback:', logData);
+          }
+          
           resolve();
         }
       });
     } else {
-      monitoringService.info('No server running to stop', {}, 'server');
+      monitoringService?.info('No server running to stop', {}, 'server');
       resolve();
     }
   });
