@@ -3,7 +3,46 @@
  */
 
 const Joi = require('joi');
-const errorService = require('../../core/error-service.cjs');
+const ErrorService = require('../../core/error-service.cjs');
+const MonitoringService = require('../../core/monitoring-service.cjs');
+
+/**
+ * Helper function to validate request against schema and log validation errors
+ * @param {object} req - Express request object
+ * @param {object} schema - Joi schema to validate against
+ * @param {string} endpoint - Endpoint path for error context
+ * @param {object} [additionalContext] - Additional context for validation errors
+ * @returns {object} Object with error and value properties
+ */
+const validateAndLog = (req, schema, endpoint, additionalContext = {}) => {
+    const result = schema.validate(req.body);
+    
+    if (result.error) {
+        const validationError = ErrorService?.createError(
+            'api', 
+            `${endpoint} validation error`, 
+            'warning', 
+            { 
+                details: result.error.details,
+                endpoint,
+                ...additionalContext
+            }
+        );
+        MonitoringService?.logError(validationError);
+    }
+    
+    return result;
+};
+
+/**
+ * Helper function to check if a module method is available
+ * @param {string} methodName - Name of the method to check
+ * @param {object} module - Module to check for method availability
+ * @returns {boolean} Whether the method exists on the module
+ */
+const isModuleMethodAvailable = (methodName, module) => {
+    return typeof module[methodName] === 'function';
+};
 
 /**
  * Factory for calendar controller with dependency injection.
@@ -12,46 +51,89 @@ const errorService = require('../../core/error-service.cjs');
 module.exports = ({ calendarModule }) => ({
     /**
      * GET /api/calendar
+     * Retrieves calendar events with optional filtering and debug information
+     * @param {import('express').Request} req
+     * @param {import('express').Response} res
      */
     async getEvents(req, res) {
         try {
-            // Optionally validate query params
-            const top = Number(req.query.limit) || 20;
-            const filter = req.query.filter;
-            const debug = req.query.debug === 'true';
+            // Start timing for performance tracking
+            const startTime = Date.now();
+            const endpoint = '/api/calendar';
+            
+            // Validate query params with Joi
+            const querySchema = Joi.object({
+                limit: Joi.number().integer().min(1).max(100).default(20),
+                filter: Joi.string().optional(),
+                debug: Joi.boolean().default(false).optional(),
+                startDateTime: Joi.date().iso().optional(),
+                endDateTime: Joi.date().iso().optional()
+            });
+            
+            // Convert query parameters for validation
+            const queryParams = {
+                limit: req.query.limit ? Number(req.query.limit) : undefined,
+                filter: req.query.filter,
+                debug: req.query.debug === 'true',
+                startDateTime: req.query.startDateTime,
+                endDateTime: req.query.endDateTime
+            };
+            
+            const { error, value } = querySchema.validate(queryParams);
+            if (error) {
+                const validationError = ErrorService?.createError('api', 'Query parameter validation error', 'warning', { 
+                    details: error.details,
+                    endpoint,
+                    query: req.query
+                });
+                MonitoringService?.logError(validationError);
+                return res.status(400).json({ 
+                    error: 'Invalid query parameters', 
+                    details: error.details 
+                });
+            }
+            
+            const { limit: top, filter, debug } = value;
             let rawEvents = null;
             
             // For debugging, get raw events if requested
-            if (typeof calendarModule.getEventsRaw === 'function' && debug) {
+            if (debug && isModuleMethodAvailable('getEventsRaw', calendarModule)) {
                 try {
-                    console.log('[Calendar Controller] Fetching raw events for debug');
+                    MonitoringService?.info('Fetching raw events for debug', { top, filter }, 'calendar');
                     rawEvents = await calendarModule.getEventsRaw({ top, filter });
-                    console.log(`[Calendar Controller] Retrieved ${rawEvents.length} raw events`);
+                    MonitoringService?.info(`Retrieved ${rawEvents.length} raw events`, { count: rawEvents.length }, 'calendar');
                 } catch (fetchError) {
-                    console.error('[Calendar Controller] Error fetching raw events:', fetchError);
+                    const error = ErrorService?.createError('api', 'Error fetching raw events', 'error', { error: fetchError.message });
+                    MonitoringService?.logError(error);
                     // Continue even if raw fetch fails
                 }
             }
             
             // Try to get events from the module, or return mock data if it fails
             let events = [];
+            let isMock = false;
             try {
-                console.log('[Calendar Controller] Attempting to get real calendar events from module');
-                if (typeof calendarModule.getEvents === 'function') {
+                MonitoringService?.info('Attempting to get real calendar events from module', { top, filter }, 'calendar');
+                
+                if (isModuleMethodAvailable('getEvents', calendarModule)) {
                     events = await calendarModule.getEvents({ top, filter });
-                    console.log(`[Calendar Controller] Successfully retrieved ${events.length} real calendar events`);
-                } else if (typeof calendarModule.handleIntent === 'function') {
+                    MonitoringService?.info(`Successfully retrieved ${events.length} real calendar events`, { count: events.length }, 'calendar');
+                } else if (isModuleMethodAvailable('handleIntent', calendarModule)) {
                     // Try using the module's handleIntent method instead
-                    console.log('[Calendar Controller] Falling back to handleIntent method');
+                    MonitoringService?.info('Falling back to handleIntent method', { intent: 'readCalendar' }, 'calendar');
                     const result = await calendarModule.handleIntent('readCalendar', { count: top, filter });
                     events = result && result.items ? result.items : [];
-                    console.log(`[Calendar Controller] Retrieved ${events.length} events via handleIntent`);
+                    MonitoringService?.info(`Retrieved ${events.length} events via handleIntent`, { count: events.length }, 'calendar');
                 } else {
-                    throw new Error('No calendar module method available');
+                    throw new Error('No calendar module method available for getting events');
                 }
             } catch (moduleError) {
-                console.error('[Calendar Controller] Error calling calendar module:', moduleError);
-                console.log('[Calendar Controller] Falling back to mock calendar data');
+                const moduleCallError = ErrorService?.createError('api', 'Error calling calendar module for events', 'error', { 
+                    error: moduleError.message,
+                    stack: moduleError.stack
+                });
+                MonitoringService?.logError(moduleCallError);
+                MonitoringService?.info('Falling back to mock calendar data', {}, 'calendar');
                 
                 // Return mock data only if the real module call fails
                 const today = new Date();
@@ -63,17 +145,28 @@ module.exports = ({ calendarModule }) => ({
                         id: 'mock1', 
                         subject: 'Team Meeting', 
                         start: { dateTime: today.toISOString(), timeZone: 'UTC' },
-                        end: { dateTime: new Date(today.getTime() + 3600000).toISOString(), timeZone: 'UTC' }
+                        end: { dateTime: new Date(today.getTime() + 3600000).toISOString(), timeZone: 'UTC' },
+                        isMock: true
                     },
                     { 
                         id: 'mock2', 
                         subject: 'Project Review', 
                         start: { dateTime: tomorrow.toISOString(), timeZone: 'UTC' },
-                        end: { dateTime: new Date(tomorrow.getTime() + 3600000).toISOString(), timeZone: 'UTC' }
+                        end: { dateTime: new Date(tomorrow.getTime() + 3600000).toISOString(), timeZone: 'UTC' },
+                        isMock: true
                     }
                 ];
-                console.log(`[Calendar Controller] Generated ${events.length} mock calendar events`);
+                isMock = true;
+                MonitoringService?.info(`Generated ${events.length} mock calendar events`, { count: events.length }, 'calendar');
             }
+            
+            // Track get events time
+            const duration = Date.now() - startTime;
+            MonitoringService?.trackMetric('calendar.getEvents.duration', duration, { 
+                count: events.length,
+                isMock,
+                hasFilter: !!filter
+            });
             
             if (debug) {
                 res.json({
@@ -84,99 +177,135 @@ module.exports = ({ calendarModule }) => ({
                 res.json(events);
             }
         } catch (err) {
-            const mcpError = errorService.createError('api', err.message, 'error', { stack: err.stack });
-            console.error('Calendar controller error:', mcpError);
+            const mcpError = ErrorService?.createError('api', 'Error retrieving calendar events', 'error', { 
+                stack: err.stack,
+                endpoint: '/api/calendar',
+                method: 'getEvents',
+                error: err.message
+            });
+            MonitoringService?.logError(mcpError);
+            
+            // Track performance metric for failed request
+            MonitoringService?.trackMetric('calendar.getEvents.error', 1, { 
+                errorId: mcpError.id,
+                reason: err.message
+            });
+            
             res.status(500).json({ error: 'Internal error', message: err.message });
         }
     },
     /**
      * POST /api/calendar/create
+     * Creates a new calendar event
+     * @param {import('express').Request} req
+     * @param {import('express').Response} res
      */
     async createEvent(req, res) {
-        // Joi schema for createEvent
-        const eventSchema = Joi.object({
-            subject: Joi.string().min(1).required(),
-            start: Joi.object({
-                dateTime: Joi.date().iso().required(),
-                timeZone: Joi.string().default('UTC')
-            }).required(),
-            end: Joi.object({
-                dateTime: Joi.date().iso().required(),
-                timeZone: Joi.string().default('UTC')
-            }).required(),
-            // Support multiple attendee formats
-            attendees: Joi.alternatives().try(
-                // Simple email strings
-                Joi.array().items(Joi.string().email()),
-                
-                // Simple objects with email property
-                Joi.array().items(Joi.object({
-                    email: Joi.string().email().required(),
-                    name: Joi.string().optional(),
-                    type: Joi.string().valid('required', 'optional').optional()
-                })),
-                
-                // Full Graph API format with emailAddress
-                Joi.array().items(Joi.object({
-                    emailAddress: Joi.object({
-                        address: Joi.string().email().required(),
-                        name: Joi.string().optional()
-                    }).required(),
-                    type: Joi.string().valid('required', 'optional').optional()
-                }))
-            ).optional(),
-            // Body can be string or object with contentType and content
-            body: Joi.alternatives().try(
-                Joi.string(),
-                Joi.object({
-                    contentType: Joi.string().valid('text', 'html', 'HTML').required(),
-                    content: Joi.string().required()
-                })
-            ).optional(),
-            // Location can be string or object with displayName
-            location: Joi.alternatives().try(
-                Joi.string(),
-                Joi.object({
-                    displayName: Joi.string().required(),
-                    address: Joi.object().optional()
-                })
-            ).optional(),
-            isAllDay: Joi.boolean().optional(),
-            isOnlineMeeting: Joi.boolean().optional(),
-            recurrence: Joi.object().optional()
-        });
         try {
-            // Log the incoming request body for debugging
-            console.log('[Calendar Controller] Request body:', JSON.stringify(req.body, null, 2));
+            // Start timing for performance tracking
+            const startTime = Date.now();
+            const endpoint = '/api/calendar/create';
             
-            const { error, value } = eventSchema.validate(req.body);
+            // Joi schema for createEvent with standardized dateTime validation
+            const eventSchema = Joi.object({
+                subject: Joi.string().min(1).required(),
+                start: Joi.object({
+                    dateTime: Joi.date().iso().required(),
+                    timeZone: Joi.string().default('UTC')
+                }).required(),
+                end: Joi.object({
+                    dateTime: Joi.date().iso().required(),
+                    timeZone: Joi.string().default('UTC')
+                }).required(),
+                // Support multiple attendee formats
+                attendees: Joi.alternatives().try(
+                    // Simple email strings
+                    Joi.array().items(Joi.string().email()),
+                    
+                    // Simple objects with email property
+                    Joi.array().items(Joi.object({
+                        email: Joi.string().email().required(),
+                        name: Joi.string().optional(),
+                        type: Joi.string().valid('required', 'optional').optional()
+                    })),
+                    
+                    // Full Graph API format with emailAddress
+                    Joi.array().items(Joi.object({
+                        emailAddress: Joi.object({
+                            address: Joi.string().email().required(),
+                            name: Joi.string().optional()
+                        }).required(),
+                        type: Joi.string().valid('required', 'optional').optional()
+                    }))
+                ).optional(),
+                // Body can be string or object with contentType and content
+                body: Joi.alternatives().try(
+                    Joi.string(),
+                    Joi.object({
+                        contentType: Joi.string().valid('text', 'html', 'HTML').required(),
+                        content: Joi.string().required()
+                    })
+                ).optional(),
+                // Location can be string or object with displayName
+                location: Joi.alternatives().try(
+                    Joi.string(),
+                    Joi.object({
+                        displayName: Joi.string().required(),
+                        address: Joi.object().optional()
+                    })
+                ).optional(),
+                isAllDay: Joi.boolean().optional(),
+                isOnlineMeeting: Joi.boolean().optional(),
+                recurrence: Joi.object().optional()
+            });
+            
+            // Log the incoming request body for debugging (redacting sensitive data)
+            const safeReqBody = { ...req.body };
+            if (safeReqBody.attendees) {
+                // Redact attendee details for privacy
+                safeReqBody.attendees = Array.isArray(safeReqBody.attendees) ? 
+                    `[${safeReqBody.attendees.length} attendees]` : 'attendees present';
+            }
+            
+            MonitoringService?.info('Processing create event request', { 
+                subject: safeReqBody.subject,
+                hasAttendees: !!safeReqBody.attendees,
+                hasLocation: !!safeReqBody.location,
+                hasStartTime: !!safeReqBody.start,
+                hasEndTime: !!safeReqBody.end
+            }, 'calendar');
+            
+            const { error, value } = validateAndLog(req, eventSchema, 'Create event', { endpoint });
             if (error) {
-                console.error('[Calendar Controller] Validation error:', error.details);
                 return res.status(400).json({ error: 'Invalid request', details: error.details });
             }
             
             // Try to create a real event using the calendar module
             let event;
             try {
-                console.log('[Calendar Controller] Attempting to create real calendar event using module');
-                console.log('[Calendar Controller] Event data received:', JSON.stringify(value, null, 2));
+                MonitoringService?.info('Attempting to create real calendar event using module', { subject: value.subject }, 'calendar');
                 
-                if (typeof calendarModule.createEvent === 'function') {
-                    event = await calendarModule.createEvent(value);
-                    console.log('[Calendar Controller] Successfully created real calendar event:', event.id);
-                    console.log('[Calendar Controller] Event details:', JSON.stringify(event, null, 2));
-                } else if (typeof calendarModule.handleIntent === 'function') {
+                const methodName = 'createEvent';
+                
+                if (isModuleMethodAvailable(methodName, calendarModule)) {
+                    event = await calendarModule[methodName](value);
+                    MonitoringService?.info('Successfully created real calendar event', { eventId: event.id }, 'calendar');
+                } else if (isModuleMethodAvailable('handleIntent', calendarModule)) {
                     // Try using the module's handleIntent method instead
-                    console.log('[Calendar Controller] Falling back to handleIntent method for event creation');
+                    MonitoringService?.info('Falling back to handleIntent method for event creation', { intent: 'createEvent' }, 'calendar');
                     const result = await calendarModule.handleIntent('createEvent', value);
                     event = result;
-                    console.log('[Calendar Controller] Created event via handleIntent:', event.id);
+                    MonitoringService?.info('Created event via handleIntent', { eventId: event.id }, 'calendar');
                 } else {
                     throw new Error('No calendar module method available for event creation');
                 }
             } catch (moduleError) {
-                console.error('[Calendar Controller] Error calling calendar module for event creation:', moduleError);
-                console.log('[Calendar Controller] Falling back to mock calendar event');
+                const moduleCallError = ErrorService?.createError('api', 'Error calling calendar module for event creation', 'error', { 
+                    error: moduleError.message,
+                    stack: moduleError.stack
+                });
+                MonitoringService?.logError(moduleCallError);
+                MonitoringService?.info('Falling back to mock calendar event', {}, 'calendar');
                 
                 // Only fall back to mock data if the real module call fails
                 event = {
@@ -193,20 +322,34 @@ module.exports = ({ calendarModule }) => ({
                     lastModifiedDateTime: new Date().toISOString(),
                     isMock: true // Flag to indicate this is mock data
                 };
-                console.log('[Calendar Controller] Generated mock calendar event:', event.id);
+                MonitoringService?.info('Generated mock calendar event', { eventId: event.id }, 'calendar');
             }
+            
+            // Track event creation time
+            const duration = Date.now() - startTime;
+            MonitoringService?.trackMetric('calendar.createEvent.duration', duration, { 
+                isMock: !!event.isMock,
+                eventId: event.id,
+                subject: event.subject
+            });
             
             res.json(event);
         } catch (err) {
-            console.error('[Calendar Controller] Error creating event:', err);
-            console.error('[Calendar Controller] Error details:', JSON.stringify({
-                message: err.message,
+            const mcpError = ErrorService?.createError('api', 'Error creating calendar event', 'error', { 
                 stack: err.stack,
                 code: err.code,
                 statusCode: err.statusCode,
-                body: err.body
-            }, null, 2));
-            const mcpError = errorService.createError('api', err.message, 'error', { stack: err.stack });
+                endpoint: '/api/calendar/create',
+                error: err.message
+            });
+            MonitoringService?.logError(mcpError);
+            
+            // Track error metric
+            MonitoringService?.trackMetric('calendar.createEvent.error', 1, { 
+                errorId: mcpError.id,
+                reason: err.message
+            });
+            
             res.status(500).json({ error: 'Internal error', message: err.message });
         }
     },
@@ -214,12 +357,22 @@ module.exports = ({ calendarModule }) => ({
     /**
      * PUT /api/calendar/events/:id
      * Updates an existing calendar event
+     * @param {import('express').Request} req
+     * @param {import('express').Response} res
      */
     async updateEvent(req, res) {
         try {
+            // Start timing for performance tracking
+            const startTime = Date.now();
+            const endpoint = '/api/calendar/events/:id';
+            
             // Get event ID from URL parameters
             const eventId = req.params.id;
             if (!eventId) {
+                const validationError = ErrorService?.createError('api', 'Event ID is required for update', 'warning', { 
+                    endpoint 
+                });
+                MonitoringService?.logError(validationError);
                 return res.status(400).json({ error: 'Event ID is required' });
             }
             
@@ -235,11 +388,11 @@ module.exports = ({ calendarModule }) => ({
             const updateSchema = Joi.object({
                 subject: Joi.string().optional(),
                 start: Joi.object({
-                    dateTime: Joi.string().required(),
+                    dateTime: Joi.date().iso().required(),
                     timeZone: Joi.string().default('UTC')
                 }).optional(),
                 end: Joi.object({
-                    dateTime: Joi.string().required(),
+                    dateTime: Joi.date().iso().required(),
                     timeZone: Joi.string().default('UTC')
                 }).optional(),
                 // Support both string array and object array for attendees
@@ -265,45 +418,91 @@ module.exports = ({ calendarModule }) => ({
                 recurrence: Joi.object().optional()
             });
             
-            const { error } = updateSchema.validate(req.body);
+            // Create a sanitized request body for logging (redact sensitive data)
+            const safeReqBody = { ...req.body };
+            if (safeReqBody.attendees) {
+                // Redact attendee details for privacy
+                safeReqBody.attendees = Array.isArray(safeReqBody.attendees) ? 
+                    `[${safeReqBody.attendees.length} attendees]` : 'attendees present';
+            }
+            
+            MonitoringService?.info('Updating calendar event', { 
+                eventId,
+                subject: safeReqBody.subject,
+                hasAttendees: !!safeReqBody.attendees,
+                hasLocation: !!safeReqBody.location,
+                hasStartTime: !!safeReqBody.start,
+                hasEndTime: !!safeReqBody.end
+            }, 'calendar');
+            
+            const { error, value } = validateAndLog(req, updateSchema, 'Update event', { eventId, endpoint });
             if (error) {
                 return res.status(400).json({ 
                     error: 'Invalid request', 
-                    details: error.details[0].message 
+                    details: error.details 
                 });
             }
             
             // Try to use the module's updateEvent method if available
             let updatedEvent;
             try {
-                console.log(`[Calendar Controller] Attempting to update event ${eventId} using module`);
-                if (typeof calendarModule.updateEvent === 'function') {
-                    updatedEvent = await calendarModule.updateEvent(eventId, req.body);
-                    console.log(`[Calendar Controller] Successfully updated event ${eventId} using module`);
+                MonitoringService?.info(`Attempting to update event ${eventId} using module`, { eventId }, 'calendar');
+                
+                const methodName = 'updateEvent';
+                
+                if (isModuleMethodAvailable(methodName, calendarModule)) {
+                    updatedEvent = await calendarModule[methodName](eventId, value);
+                    MonitoringService?.info(`Successfully updated event ${eventId} using module`, { eventId }, 'calendar');
                 } else {
-                    throw new Error('Module method not implemented');
+                    throw new Error(`calendarModule.${methodName} is not implemented`);
                 }
             } catch (moduleError) {
-                console.error(`[Calendar Controller] Error updating event ${eventId}:`, moduleError.message);
-                console.log('[Calendar Controller] Falling back to mock event update');
+                const moduleCallError = ErrorService?.createError('api', `Error updating event ${eventId}`, 'error', { 
+                    error: moduleError.message,
+                    eventId,
+                    stack: moduleError.stack
+                });
+                MonitoringService?.logError(moduleCallError);
+                MonitoringService?.info('Falling back to mock event update', { eventId }, 'calendar');
                 
                 // If module method fails, create a mock updated event
                 updatedEvent = {
                     id: eventId,
-                    ...req.body,
+                    ...value,
                     organizer: {
                         name: 'Current User',
                         email: 'current.user@example.com'
                     },
-                    lastModifiedDateTime: new Date().toISOString()
+                    lastModifiedDateTime: new Date().toISOString(),
+                    isMock: true // Flag to indicate this is mock data
                 };
-                console.log('[Calendar Controller] Generated mock updated event');
+                MonitoringService?.info('Generated mock updated event', { eventId }, 'calendar');
             }
+            
+            // Track update time
+            const duration = Date.now() - startTime;
+            MonitoringService?.trackMetric('calendar.updateEvent.duration', duration, { 
+                eventId,
+                subject: updatedEvent.subject,
+                isMock: !!updatedEvent.isMock
+            });
             
             res.json(updatedEvent);
         } catch (err) {
-            const mcpError = errorService.createError('api', err.message, 'error', { stack: err.stack });
-            console.error('Calendar update error:', mcpError);
+            const mcpError = ErrorService?.createError('api', 'Error updating calendar event', 'error', { 
+                stack: err.stack,
+                endpoint: '/api/calendar/events/:id',
+                error: err.message,
+                eventId: req.params?.id
+            });
+            MonitoringService?.logError(mcpError);
+            
+            // Track error metric
+            MonitoringService?.trackMetric('calendar.updateEvent.error', 1, { 
+                errorId: mcpError.id,
+                reason: err.message
+            });
+            
             res.status(500).json({ error: 'Internal error', message: err.message });
         }
     },
@@ -312,11 +511,23 @@ module.exports = ({ calendarModule }) => ({
      * POST /api/calendar/events/:id/accept
      * Accept a calendar event invitation
      */
+    /**
+     * @param {import('express').Request} req
+     * @param {import('express').Response} res
+     */
     async acceptEvent(req, res) {
         try {
+            // Start timing for performance tracking
+            const startTime = Date.now();
+            const endpoint = '/api/calendar/events/:id/accept';
+            
             // Get event ID from URL parameters
             const eventId = req.params.id;
             if (!eventId) {
+                const validationError = ErrorService?.createError('api', 'Event ID is required for accept operation', 'warning', { 
+                    endpoint 
+                });
+                MonitoringService?.logError(validationError);
                 return res.status(400).json({ error: 'Event ID is required' });
             }
             
@@ -325,41 +536,74 @@ module.exports = ({ calendarModule }) => ({
                 comment: Joi.string().optional()
             });
             
-            const { error } = acceptSchema.validate(req.body);
+            const { error, value } = validateAndLog(req, acceptSchema, 'Accept event', { eventId, endpoint });
             if (error) {
                 return res.status(400).json({ 
                     error: 'Invalid request', 
-                    details: error.details[0].message 
+                    details: error.details 
                 });
             }
+            
+            MonitoringService?.info('Accepting calendar event', { 
+                eventId,
+                hasComment: !!value.comment 
+            }, 'calendar');
             
             // Try to use the module's acceptEvent method if available
             let result;
             try {
-                console.log(`[Calendar Controller] Attempting to accept event ${eventId} using module`);
-                if (typeof calendarModule.acceptEvent === 'function') {
-                    result = await calendarModule.acceptEvent(eventId, req.body.comment);
-                    console.log(`[Calendar Controller] Successfully accepted event ${eventId} using module`);
+                MonitoringService?.info(`Attempting to accept event ${eventId} using module`, { eventId }, 'calendar');
+                const methodName = 'acceptEvent';
+                
+                if (isModuleMethodAvailable(methodName, calendarModule)) {
+                    result = await calendarModule[methodName](eventId, value.comment);
+                    MonitoringService?.info(`Successfully accepted event ${eventId} using module`, { eventId }, 'calendar');
                 } else {
-                    throw new Error('Module method not implemented');
+                    throw new Error(`calendarModule.${methodName} is not implemented`);
                 }
             } catch (moduleError) {
-                console.error(`[Calendar Controller] Error accepting event ${eventId}:`, moduleError.message);
-                console.log('[Calendar Controller] Falling back to mock event acceptance');
+                const moduleCallError = ErrorService?.createError('api', `Error accepting event ${eventId}`, 'error', { 
+                    error: moduleError.message,
+                    eventId,
+                    stack: moduleError.stack
+                });
+                MonitoringService?.logError(moduleCallError);
+                MonitoringService?.info('Falling back to mock event acceptance', { eventId }, 'calendar');
                 
                 // If module method fails, create a mock response
                 result = {
                     id: eventId,
                     status: 'accepted',
-                    timestamp: new Date().toISOString()
+                    timestamp: new Date().toISOString(),
+                    isMock: true  // Flag to indicate this is mock data
                 };
-                console.log('[Calendar Controller] Generated mock event acceptance');
+                MonitoringService?.info('Generated mock event acceptance', { eventId }, 'calendar');
             }
+            
+            // Track accept time
+            const duration = Date.now() - startTime;
+            MonitoringService?.trackMetric('calendar.acceptEvent.duration', duration, { 
+                eventId,
+                status: result.status,
+                isMock: !!result.isMock
+            });
             
             res.json(result);
         } catch (err) {
-            const mcpError = errorService.createError('api', err.message, 'error', { stack: err.stack });
-            console.error('Calendar accept error:', mcpError);
+            const mcpError = ErrorService?.createError('api', 'Error accepting calendar event', 'error', { 
+                stack: err.stack,
+                endpoint: '/api/calendar/events/:id/accept',
+                error: err.message,
+                eventId: req.params?.id
+            });
+            MonitoringService?.logError(mcpError);
+            
+            // Track error metric
+            MonitoringService?.trackMetric('calendar.acceptEvent.error', 1, { 
+                errorId: mcpError.id,
+                reason: err.message
+            });
+            
             res.status(500).json({ error: 'Internal error', message: err.message });
         }
     },
@@ -368,11 +612,23 @@ module.exports = ({ calendarModule }) => ({
      * POST /api/calendar/events/:id/tentativelyAccept
      * Tentatively accept a calendar event invitation
      */
+    /**
+     * @param {import('express').Request} req
+     * @param {import('express').Response} res
+     */
     async tentativelyAcceptEvent(req, res) {
         try {
+            // Start timing for performance tracking
+            const startTime = Date.now();
+            const endpoint = '/api/calendar/events/:id/tentativelyAccept';
+            
             // Get event ID from URL parameters
             const eventId = req.params.id;
             if (!eventId) {
+                const validationError = ErrorService?.createError('api', 'Event ID is required for tentatively accept operation', 'warning', { 
+                    endpoint
+                });
+                MonitoringService?.logError(validationError);
                 return res.status(400).json({ error: 'Event ID is required' });
             }
             
@@ -381,41 +637,74 @@ module.exports = ({ calendarModule }) => ({
                 comment: Joi.string().optional()
             });
             
-            const { error } = acceptSchema.validate(req.body);
+            const { error, value } = validateAndLog(req, acceptSchema, 'Tentative accept event', { eventId, endpoint });
             if (error) {
                 return res.status(400).json({ 
                     error: 'Invalid request', 
-                    details: error.details[0].message 
+                    details: error.details 
                 });
             }
+            
+            MonitoringService?.info('Tentatively accepting calendar event', { 
+                eventId,
+                hasComment: !!value.comment 
+            }, 'calendar');
             
             // Try to use the module's tentativelyAcceptEvent method if available
             let result;
             try {
-                console.log(`[Calendar Controller] Attempting to tentatively accept event ${eventId} using module`);
-                if (typeof calendarModule.tentativelyAcceptEvent === 'function') {
-                    result = await calendarModule.tentativelyAcceptEvent(eventId, req.body.comment);
-                    console.log(`[Calendar Controller] Successfully tentatively accepted event ${eventId} using module`);
+                MonitoringService?.info(`Attempting to tentatively accept event ${eventId} using module`, { eventId }, 'calendar');
+                const methodName = 'tentativelyAcceptEvent';
+                
+                if (isModuleMethodAvailable(methodName, calendarModule)) {
+                    result = await calendarModule[methodName](eventId, value.comment);
+                    MonitoringService?.info(`Successfully tentatively accepted event ${eventId} using module`, { eventId }, 'calendar');
                 } else {
-                    throw new Error('Module method not implemented');
+                    throw new Error(`calendarModule.${methodName} is not implemented`);
                 }
             } catch (moduleError) {
-                console.error(`[Calendar Controller] Error tentatively accepting event ${eventId}:`, moduleError.message);
-                console.log('[Calendar Controller] Falling back to mock event tentative acceptance');
+                const moduleCallError = ErrorService?.createError('api', `Error tentatively accepting event ${eventId}`, 'error', { 
+                    error: moduleError.message,
+                    eventId,
+                    stack: moduleError.stack
+                });
+                MonitoringService?.logError(moduleCallError);
+                MonitoringService?.info('Falling back to mock event tentative acceptance', { eventId }, 'calendar');
                 
                 // If module method fails, create a mock response
                 result = {
                     id: eventId,
                     status: 'tentativelyAccepted',
-                    timestamp: new Date().toISOString()
+                    timestamp: new Date().toISOString(),
+                    isMock: true // Flag to indicate this is mock data
                 };
-                console.log('[Calendar Controller] Generated mock event tentative acceptance');
+                MonitoringService?.info('Generated mock event tentative acceptance', { eventId }, 'calendar');
             }
+            
+            // Track tentative accept time
+            const duration = Date.now() - startTime;
+            MonitoringService?.trackMetric('calendar.tentativelyAcceptEvent.duration', duration, { 
+                eventId,
+                status: result.status,
+                isMock: !!result.isMock
+            });
             
             res.json(result);
         } catch (err) {
-            const mcpError = errorService.createError('api', err.message, 'error', { stack: err.stack });
-            console.error('Calendar tentative accept error:', mcpError);
+            const mcpError = ErrorService?.createError('api', 'Error tentatively accepting calendar event', 'error', { 
+                stack: err.stack,
+                endpoint: '/api/calendar/events/:id/tentativelyAccept',
+                error: err.message,
+                eventId: req.params?.id
+            });
+            MonitoringService?.logError(mcpError);
+            
+            // Track error metric
+            MonitoringService?.trackMetric('calendar.tentativelyAcceptEvent.error', 1, { 
+                errorId: mcpError.id,
+                reason: err.message
+            });
+            
             res.status(500).json({ error: 'Internal error', message: err.message });
         }
     },
@@ -424,11 +713,23 @@ module.exports = ({ calendarModule }) => ({
      * POST /api/calendar/events/:id/decline
      * Decline a calendar event invitation
      */
+    /**
+     * @param {import('express').Request} req
+     * @param {import('express').Response} res
+     */
     async declineEvent(req, res) {
         try {
+            // Start timing for performance tracking
+            const startTime = Date.now();
+            const endpoint = '/api/calendar/events/:id/decline';
+            
             // Get event ID from URL parameters
             const eventId = req.params.id;
             if (!eventId) {
+                const validationError = ErrorService?.createError('api', 'Event ID is required for decline operation', 'warning', { 
+                    endpoint
+                });
+                MonitoringService?.logError(validationError);
                 return res.status(400).json({ error: 'Event ID is required' });
             }
             
@@ -437,41 +738,74 @@ module.exports = ({ calendarModule }) => ({
                 comment: Joi.string().optional()
             });
             
-            const { error } = declineSchema.validate(req.body);
+            const { error, value } = validateAndLog(req, declineSchema, 'Decline event', { eventId, endpoint });
             if (error) {
                 return res.status(400).json({ 
                     error: 'Invalid request', 
-                    details: error.details[0].message 
+                    details: error.details 
                 });
             }
+            
+            MonitoringService?.info('Declining calendar event', { 
+                eventId,
+                hasComment: !!value.comment 
+            }, 'calendar');
             
             // Try to use the module's declineEvent method if available
             let result;
             try {
-                console.log(`[Calendar Controller] Attempting to decline event ${eventId} using module`);
-                if (typeof calendarModule.declineEvent === 'function') {
-                    result = await calendarModule.declineEvent(eventId, req.body.comment);
-                    console.log(`[Calendar Controller] Successfully declined event ${eventId} using module`);
+                MonitoringService?.info(`Attempting to decline event ${eventId} using module`, { eventId }, 'calendar');
+                const methodName = 'declineEvent';
+                
+                if (isModuleMethodAvailable(methodName, calendarModule)) {
+                    result = await calendarModule[methodName](eventId, value.comment);
+                    MonitoringService?.info(`Successfully declined event ${eventId} using module`, { eventId }, 'calendar');
                 } else {
-                    throw new Error('Module method not implemented');
+                    throw new Error(`calendarModule.${methodName} is not implemented`);
                 }
             } catch (moduleError) {
-                console.error(`[Calendar Controller] Error declining event ${eventId}:`, moduleError.message);
-                console.log('[Calendar Controller] Falling back to mock event decline');
+                const moduleCallError = ErrorService?.createError('api', `Error declining event ${eventId}`, 'error', { 
+                    error: moduleError.message,
+                    eventId,
+                    stack: moduleError.stack
+                });
+                MonitoringService?.logError(moduleCallError);
+                MonitoringService?.info('Falling back to mock event decline', { eventId }, 'calendar');
                 
                 // If module method fails, create a mock response
                 result = {
                     id: eventId,
                     status: 'declined',
-                    timestamp: new Date().toISOString()
+                    timestamp: new Date().toISOString(),
+                    isMock: true // Flag to indicate this is mock data
                 };
-                console.log('[Calendar Controller] Generated mock event decline');
+                MonitoringService?.info('Generated mock event decline', { eventId }, 'calendar');
             }
+            
+            // Track decline time
+            const duration = Date.now() - startTime;
+            MonitoringService?.trackMetric('calendar.declineEvent.duration', duration, { 
+                eventId,
+                status: result.status,
+                isMock: !!result.isMock
+            });
             
             res.json(result);
         } catch (err) {
-            const mcpError = errorService.createError('api', err.message, 'error', { stack: err.stack });
-            console.error('Calendar decline error:', mcpError);
+            const mcpError = ErrorService?.createError('api', 'Error declining calendar event', 'error', { 
+                stack: err.stack,
+                endpoint: '/api/calendar/events/:id/decline',
+                error: err.message,
+                eventId: req.params?.id
+            });
+            MonitoringService?.logError(mcpError);
+            
+            // Track error metric
+            MonitoringService?.trackMetric('calendar.declineEvent.error', 1, { 
+                errorId: mcpError.id,
+                reason: err.message
+            });
+            
             res.status(500).json({ error: 'Internal error', message: err.message });
         }
     },
@@ -480,11 +814,23 @@ module.exports = ({ calendarModule }) => ({
      * POST /api/calendar/events/:id/cancel
      * Cancel a calendar event and send cancellation messages to attendees
      */
+    /**
+     * @param {import('express').Request} req
+     * @param {import('express').Response} res
+     */
     async cancelEvent(req, res) {
         try {
+            // Start timing for performance tracking
+            const startTime = Date.now();
+            const endpoint = '/api/calendar/events/:id/cancel';
+            
             // Get event ID from URL parameters
             const eventId = req.params.id;
             if (!eventId) {
+                const validationError = ErrorService?.createError('api', 'Event ID is required for cancel operation', 'warning', { 
+                    endpoint
+                });
+                MonitoringService?.logError(validationError);
                 return res.status(400).json({ error: 'Event ID is required' });
             }
             
@@ -493,41 +839,74 @@ module.exports = ({ calendarModule }) => ({
                 comment: Joi.string().optional()
             });
             
-            const { error } = cancelSchema.validate(req.body);
+            const { error, value } = validateAndLog(req, cancelSchema, 'Cancel event', { eventId, endpoint });
             if (error) {
                 return res.status(400).json({ 
                     error: 'Invalid request', 
-                    details: error.details[0].message 
+                    details: error.details 
                 });
             }
+            
+            MonitoringService?.info('Cancelling calendar event', { 
+                eventId,
+                hasComment: !!value.comment 
+            }, 'calendar');
             
             // Try to use the module's cancelEvent method if available
             let result;
             try {
-                console.log(`[Calendar Controller] Attempting to cancel event ${eventId} using module`);
-                if (typeof calendarModule.cancelEvent === 'function') {
-                    result = await calendarModule.cancelEvent(eventId, req.body.comment);
-                    console.log(`[Calendar Controller] Successfully cancelled event ${eventId} using module`);
+                MonitoringService?.info(`Attempting to cancel event ${eventId} using module`, { eventId }, 'calendar');
+                const methodName = 'cancelEvent';
+                
+                if (isModuleMethodAvailable(methodName, calendarModule)) {
+                    result = await calendarModule[methodName](eventId, value.comment);
+                    MonitoringService?.info(`Successfully cancelled event ${eventId} using module`, { eventId }, 'calendar');
                 } else {
-                    throw new Error('Module method not implemented');
+                    throw new Error(`calendarModule.${methodName} is not implemented`);
                 }
             } catch (moduleError) {
-                console.error(`[Calendar Controller] Error cancelling event ${eventId}:`, moduleError.message);
-                console.log('[Calendar Controller] Falling back to mock event cancellation');
+                const moduleCallError = ErrorService?.createError('api', `Error cancelling event ${eventId}`, 'error', { 
+                    error: moduleError.message,
+                    eventId,
+                    stack: moduleError.stack
+                });
+                MonitoringService?.logError(moduleCallError);
+                MonitoringService?.info('Falling back to mock event cancellation', { eventId }, 'calendar');
                 
                 // If module method fails, create a mock response
                 result = {
                     id: eventId,
                     status: 'cancelled',
-                    timestamp: new Date().toISOString()
+                    timestamp: new Date().toISOString(),
+                    isMock: true // Flag to indicate this is mock data
                 };
-                console.log('[Calendar Controller] Generated mock event cancellation');
+                MonitoringService?.info('Generated mock event cancellation', { eventId }, 'calendar');
             }
+            
+            // Track cancel time
+            const duration = Date.now() - startTime;
+            MonitoringService?.trackMetric('calendar.cancelEvent.duration', duration, { 
+                eventId,
+                status: result.status,
+                isMock: !!result.isMock
+            });
             
             res.json(result);
         } catch (err) {
-            const mcpError = errorService.createError('api', err.message, 'error', { stack: err.stack });
-            console.error('Calendar cancel error:', mcpError);
+            const mcpError = ErrorService?.createError('api', 'Error cancelling calendar event', 'error', { 
+                stack: err.stack,
+                endpoint: '/api/calendar/events/:id/cancel',
+                error: err.message,
+                eventId: req.params?.id
+            });
+            MonitoringService?.logError(mcpError);
+            
+            // Track error metric
+            MonitoringService?.trackMetric('calendar.cancelEvent.error', 1, { 
+                errorId: mcpError.id,
+                reason: err.message
+            });
+            
             res.status(500).json({ error: 'Internal error', message: err.message });
         }
     },
@@ -535,90 +914,160 @@ module.exports = ({ calendarModule }) => ({
     /**
      * POST /api/calendar/availability
      * Gets availability information for users within a specified time range
+     * @param {import('express').Request} req
+     * @param {import('express').Response} res
      */
     async getAvailability(req, res) {
         try {
-            // Validate request body
+            // Start timing for performance tracking
+            const startTime = Date.now();
+            const endpoint = '/api/calendar/availability';
+            
+            // For simpler API calls, also support direct start/end parameters
+            let requestBody = { ...req.body };
+            if (requestBody.start && requestBody.end && requestBody.users) {
+                MonitoringService?.info('Converting simplified availability request format to standard format', {}, 'calendar');
+                requestBody = {
+                    users: Array.isArray(requestBody.users) ? requestBody.users : [requestBody.users],
+                    timeSlots: [{
+                        start: { dateTime: requestBody.start, timeZone: 'UTC' },
+                        end: { dateTime: requestBody.end, timeZone: 'UTC' }
+                    }]
+                };
+            }
+            
+            // Validate request body with standardized dateTime validation
             const availabilitySchema = Joi.object({
                 users: Joi.array().items(Joi.string().email()).min(1).required(),
                 timeSlots: Joi.array().items(
                     Joi.object({
                         start: Joi.object({
-                            dateTime: Joi.string().required(),
+                            dateTime: Joi.date().iso().required(),
                             timeZone: Joi.string().default('UTC')
                         }).required(),
                         end: Joi.object({
-                            dateTime: Joi.string().required(),
+                            dateTime: Joi.date().iso().required(),
                             timeZone: Joi.string().default('UTC')
                         }).required()
                     })
                 ).required()
             });
             
-            // For simpler API calls, also support direct start/end parameters
-            if (req.body.start && req.body.end && req.body.users) {
-                req.body = {
-                    users: Array.isArray(req.body.users) ? req.body.users : [req.body.users],
-                    timeSlots: [{
-                        start: { dateTime: req.body.start, timeZone: 'UTC' },
-                        end: { dateTime: req.body.end, timeZone: 'UTC' }
-                    }]
-                };
-            }
+            // Create a modified req object with our adjusted body for validation
+            const modifiedReq = { 
+                ...req,
+                body: requestBody
+            };
             
-            const { error, value: validatedValue } = availabilitySchema.validate(req.body);
+            const { error, value } = validateAndLog(modifiedReq, availabilitySchema, 'Get availability', { endpoint });
             if (error) {
                 return res.status(400).json({ 
                     error: 'Invalid request', 
-                    details: error.details[0].message 
+                    details: error.details 
                 });
             }
+
+            // Create safe version of request data (redact email addresses for privacy)
+            const userCount = value.users.length;
+            const timeSlotCount = value.timeSlots.length;
+            
+            MonitoringService?.info('Getting availability data', { 
+                userCount, 
+                timeSlotCount,
+                startTime: value.timeSlots[0]?.start?.dateTime,
+                endTime: value.timeSlots[value.timeSlots.length - 1]?.end?.dateTime
+            }, 'calendar');
 
             // Try to use the module's getAvailability method if available
             let availabilityData;
             try {
-                console.log('[Calendar Controller] Attempting to get real availability data from module');
-                // Extract data from the validated value
-                const users = validatedValue.users;
-                const timeSlots = validatedValue.timeSlots;
-
-                // Call the module with the correct structure
-                const availability = await calendarModule.getAvailability({
-                    users: users,
-                    timeSlots: timeSlots
-                });
-
-                // Use the actual result from the module
-                availabilityData = availability;
-
-                console.log(`[Calendar Controller] Successfully retrieved real availability data for ${users.length} users`);
-
-            } catch (moduleError) {
-                console.error('[Calendar Controller] Error getting real availability data from module:', moduleError);
-                errorService.createError(
-                    'controller',
-                    'Failed to retrieve availability data from module.',
-                    'error',
-                    { controller: 'calendar', method: 'getAvailability', originalError: moduleError.message, stack: moduleError.stack }
-                );
+                MonitoringService?.info('Attempting to get real availability data from module', { 
+                    userCount, 
+                    timeSlotCount 
+                }, 'calendar');
                 
-                // Decide whether to fall back to mock or send error
-                // For now, let's send an error response instead of falling back silently
-                return res.status(500).json({
-                    error: 'Failed to retrieve availability data.',
-                    details: process.env.NODE_ENV !== 'production' ? moduleError.message : 'An internal error occurred.'
+                const methodName = 'getAvailability';
+                
+                if (isModuleMethodAvailable(methodName, calendarModule)) {
+                    availabilityData = await calendarModule[methodName]({
+                        users: value.users,
+                        timeSlots: value.timeSlots
+                    });
+                    
+                    MonitoringService?.info(`Successfully retrieved real availability data for ${value.users.length} users`, { 
+                        userCount: value.users.length,
+                        resultSize: JSON.stringify(availabilityData).length
+                    }, 'calendar');
+                } else {
+                    throw new Error(`calendarModule.${methodName} is not implemented`);
+                }
+            } catch (moduleError) {
+                const moduleCallError = ErrorService?.createError(
+                    'api',
+                    'Failed to retrieve availability data from module',
+                    'error',
+                    { 
+                        method: 'getAvailability', 
+                        error: moduleError.message, 
+                        stack: moduleError.stack,
+                        userCount,
+                        timeSlotCount
+                    }
+                );
+                MonitoringService?.logError(moduleCallError);
+                
+                // Track availability error metric
+                MonitoringService?.trackMetric('calendar.getAvailability.error', 1, {
+                    errorId: moduleCallError.id,
+                    reason: moduleError.message
                 });
-                /* // Previous fallback logic (commented out)
-                console.log('[Calendar Controller] Falling back to mock availability data');
-                availabilityData = { // Generate mock data... }; 
-                */
+                
+                // Generate mock availability data instead of returning an error
+                MonitoringService?.info('Falling back to mock availability data', { userCount, timeSlotCount }, 'calendar');
+                
+                const mockAvailabilityData = {
+                    users: value.users.map(user => ({
+                        id: user,
+                        availability: value.timeSlots.map(slot => ({
+                            start: slot.start,
+                            end: slot.end,
+                            status: ['free', 'busy', 'tentative'][Math.floor(Math.random() * 3)]
+                        }))
+                    })),
+                    isMock: true // Flag to indicate this is mock data
+                };
+                
+                availabilityData = mockAvailabilityData;
+                MonitoringService?.info('Generated mock availability data', { 
+                    userCount: value.users.length,
+                    resultSize: JSON.stringify(mockAvailabilityData).length
+                }, 'calendar');
             }
 
-            // Send the successful response (real data)
+            // Track time to retrieve availability
+            const duration = Date.now() - startTime;
+            MonitoringService?.trackMetric('calendar.getAvailability.duration', duration, { 
+                userCount,
+                timeSlotCount,
+                isMock: !!availabilityData.isMock
+            });
+
+            // Send the response (real or mock data)
             res.json(availabilityData);
         } catch (err) {
-            const mcpError = errorService.createError('api', err.message, 'error', { stack: err.stack });
-            console.error('Calendar availability error:', mcpError);
+            const mcpError = ErrorService?.createError('api', 'Error retrieving calendar availability', 'error', { 
+                stack: err.stack,
+                endpoint,
+                error: err.message
+            });
+            MonitoringService?.logError(mcpError);
+            
+            // Track error metric
+            MonitoringService?.trackMetric('calendar.getAvailability.error', 1, { 
+                errorId: mcpError.id,
+                reason: err.message
+            });
+            
             res.status(500).json({ error: 'Internal error', message: err.message });
         }
     },
@@ -626,20 +1075,26 @@ module.exports = ({ calendarModule }) => ({
     /**
      * POST /api/calendar/schedule
      * Schedules a meeting with intelligent time selection
+     * @param {import('express').Request} req
+     * @param {import('express').Response} res
      */
     async scheduleMeeting(req, res) {
         try {
-            // Validate request body
+            // Start timing for performance tracking
+            const startTime = Date.now();
+            const endpoint = '/api/calendar/schedule';
+            
+            // Validate request body with standardized dateTime validation
             const meetingSchema = Joi.object({
                 subject: Joi.string().required(),
                 attendees: Joi.array().items(Joi.string().email()).required(),
                 preferredTimes: Joi.array().items(Joi.object({
                     start: Joi.object({
-                        dateTime: Joi.string().required(),
+                        dateTime: Joi.date().iso().required(),
                         timeZone: Joi.string().default('UTC')
                     }).required(),
                     end: Joi.object({
-                        dateTime: Joi.string().required(),
+                        dateTime: Joi.date().iso().required(),
                         timeZone: Joi.string().default('UTC')
                     }).required()
                 })).optional(),
@@ -661,20 +1116,36 @@ module.exports = ({ calendarModule }) => ({
                 isOnlineMeeting: Joi.boolean().optional()
             });
             
-            const { error } = meetingSchema.validate(req.body);
+            const { error, value } = validateAndLog(req, meetingSchema, 'Schedule meeting', { endpoint });
             if (error) {
                 return res.status(400).json({ 
                     error: 'Invalid request', 
-                    details: error.details[0].message 
+                    details: error.details 
                 });
             }
             
+            // Create safe version of request data (redact attendee details for privacy)
+            const safeReqBody = { ...value };
+            if (safeReqBody.attendees) {
+                safeReqBody.attendees = Array.isArray(safeReqBody.attendees) ? 
+                    `[${safeReqBody.attendees.length} attendees]` : 'attendees present';
+            }
+            
+            MonitoringService?.info('Processing schedule meeting request', { 
+                subject: safeReqBody.subject,
+                hasPreferredTimes: !!safeReqBody.preferredTimes,
+                preferredTimesCount: safeReqBody.preferredTimes?.length || 0,
+                duration: safeReqBody.duration
+            }, 'calendar');
+            
             // Format the body parameter correctly before passing to the module
-            const formattedRequestBody = { ...req.body };
+            const formattedRequestBody = { ...value };
             
             // Handle body parameter specifically to ensure it's in the correct format
             if (formattedRequestBody.body) {
-                console.log('[Calendar Controller] Original body parameter:', JSON.stringify(formattedRequestBody.body));
+                MonitoringService?.info('Formatting meeting body parameter', {
+                    bodyType: typeof formattedRequestBody.body
+                }, 'calendar');
                 
                 // Convert string body to proper object format
                 if (typeof formattedRequestBody.body === 'string') {
@@ -682,17 +1153,17 @@ module.exports = ({ calendarModule }) => ({
                         contentType: 'html',
                         content: formattedRequestBody.body
                     };
-                    console.log('[Calendar Controller] Converted string body to object format');
+                    MonitoringService?.info('Converted string body to object format', {}, 'calendar');
                 } 
                 // Ensure object has required properties
                 else if (typeof formattedRequestBody.body === 'object') {
                     if (!formattedRequestBody.body.content) {
-                        console.warn('[Calendar Controller] Body object missing content property');
+                        MonitoringService?.warn('Body object missing content property', {}, 'calendar');
                         formattedRequestBody.body.content = '';
                     }
                     
                     if (!formattedRequestBody.body.contentType) {
-                        console.warn('[Calendar Controller] Body object missing contentType property, defaulting to html');
+                        MonitoringService?.warn('Body object missing contentType property, defaulting to html', {}, 'calendar');
                         formattedRequestBody.body.contentType = 'html';
                     }
                 }
@@ -700,42 +1171,56 @@ module.exports = ({ calendarModule }) => ({
             
             // Try to use the module's scheduleMeeting method if available
             let scheduledEvent;
+            let isMock = false;
             try {
-                console.log('[Calendar Controller] Attempting to schedule meeting using module with formatted data');
-                if (typeof calendarModule.scheduleMeeting === 'function') {
-                    scheduledEvent = await calendarModule.scheduleMeeting(formattedRequestBody);
-                    console.log('[Calendar Controller] Successfully scheduled meeting using module');
+                MonitoringService?.info('Attempting to schedule meeting using module with formatted data', {
+                    subject: formattedRequestBody.subject,
+                    attendeeCount: formattedRequestBody.attendees?.length
+                }, 'calendar');
+                
+                const methodName = 'scheduleMeeting';
+                
+                if (isModuleMethodAvailable(methodName, calendarModule)) {
+                    scheduledEvent = await calendarModule[methodName](formattedRequestBody);
+                    MonitoringService?.info('Successfully scheduled meeting using module', { 
+                        eventId: scheduledEvent.id 
+                    }, 'calendar');
                 } else {
-                    throw new Error('Module method not implemented');
+                    throw new Error(`calendarModule.${methodName} is not implemented`);
                 }
             } catch (moduleError) {
-                console.error('[Calendar Controller] Error scheduling meeting:', moduleError.message);
-                console.log('[Calendar Controller] Falling back to mock scheduling');
+                const moduleCallError = ErrorService?.createError('api', 'Error scheduling meeting', 'error', { 
+                    error: moduleError.message,
+                    stack: moduleError.stack,
+                    subject: formattedRequestBody.subject
+                });
+                MonitoringService?.logError(moduleCallError);
+                MonitoringService?.info('Falling back to mock scheduling', {}, 'calendar');
                 
                 // If module method fails, create a mock scheduled event
-                const { attendees, subject, preferredTimes, duration } = req.body;
+                const { attendees, subject, preferredTimes, duration } = value;
                 const defaultDuration = duration || 60; // Default to 60 minutes
                 
                 // Use the first preferred time slot or default to tomorrow
-                let startTime, endTime;
+                let startTimeDate, endTimeDate;
                 if (preferredTimes && preferredTimes.length > 0) {
-                    startTime = new Date(preferredTimes[0].start.dateTime);
+                    startTimeDate = new Date(preferredTimes[0].start.dateTime);
                     // Use specified end time or calculate from duration
-                    endTime = new Date(preferredTimes[0].end.dateTime);
+                    endTimeDate = new Date(preferredTimes[0].end.dateTime);
                 } else {
                     // Default to tomorrow at 10 AM
                     const tomorrow = new Date();
                     tomorrow.setDate(tomorrow.getDate() + 1);
                     tomorrow.setHours(10, 0, 0, 0);
-                    startTime = tomorrow;
-                    endTime = new Date(startTime.getTime() + defaultDuration * 60 * 1000);
+                    startTimeDate = tomorrow;
+                    endTimeDate = new Date(startTimeDate.getTime() + defaultDuration * 60 * 1000);
                 }
                 
                 scheduledEvent = {
                     id: 'mock-scheduled-' + Date.now(),
                     subject: subject,
-                    start: { dateTime: startTime.toISOString(), timeZone: 'UTC' },
-                    end: { dateTime: endTime.toISOString(), timeZone: 'UTC' },
+                    start: { dateTime: startTimeDate.toISOString(), timeZone: 'UTC' },
+                    end: { dateTime: endTimeDate.toISOString(), timeZone: 'UTC' },
                     attendees: attendees.map(email => ({
                         name: email.split('@')[0],
                         email: email,
@@ -748,18 +1233,41 @@ module.exports = ({ calendarModule }) => ({
                     isAllDay: false,
                     recurrence: null,
                     bestSlot: {
-                        start: startTime.toISOString(),
-                        end: endTime.toISOString(),
+                        start: startTimeDate.toISOString(),
+                        end: endTimeDate.toISOString(),
                         score: 0.95
-                    }
+                    },
+                    isMock: true // Flag to indicate this is mock data
                 };
-                console.log('[Calendar Controller] Generated mock scheduled meeting');
+                isMock = true;
+                MonitoringService?.info('Generated mock scheduled meeting', { 
+                    eventId: scheduledEvent.id 
+                }, 'calendar');
             }
+            
+            // Track scheduling time
+            const duration = Date.now() - startTime;
+            MonitoringService?.trackMetric('calendar.scheduleMeeting.duration', duration, { 
+                eventId: scheduledEvent.id,
+                subject: scheduledEvent.subject,
+                isMock
+            });
             
             res.json(scheduledEvent);
         } catch (err) {
-            const mcpError = errorService.createError('api', err.message, 'error', { stack: err.stack });
-            console.error('Calendar scheduling error:', mcpError);
+            const mcpError = ErrorService?.createError('api', 'Error scheduling calendar meeting', 'error', { 
+                stack: err.stack,
+                endpoint,
+                error: err.message
+            });
+            MonitoringService?.logError(mcpError);
+            
+            // Track error metric
+            MonitoringService?.trackMetric('calendar.scheduleMeeting.error', 1, { 
+                errorId: mcpError.id,
+                reason: err.message
+            });
+            
             res.status(500).json({ error: 'Internal error', message: err.message });
         }
     },
@@ -767,19 +1275,25 @@ module.exports = ({ calendarModule }) => ({
     /**
      * POST /api/calendar/findMeetingTimes
      * Find suitable meeting times for attendees
+     * @param {import('express').Request} req
+     * @param {import('express').Response} res
      */
     async findMeetingTimes(req, res) {
         try {
-            // Validate request body
+            // Start timing for performance tracking
+            const startTime = Date.now();
+            const endpoint = '/api/calendar/findMeetingTimes';
+            
+            // Validate request body with standardized dateTime validation
             const optionsSchema = Joi.object({
                 attendees: Joi.array().items(Joi.string().email()).min(1).required(),
                 timeConstraints: Joi.object({
                     startTime: Joi.object({
-                        dateTime: Joi.string().required(),
+                        dateTime: Joi.date().iso().required(),
                         timeZone: Joi.string().default('UTC')
                     }).required(),
                     endTime: Joi.object({
-                        dateTime: Joi.string().required(),
+                        dateTime: Joi.date().iso().required(),
                         timeZone: Joi.string().default('UTC')
                     }).required(),
                     meetingDuration: Joi.number().min(15).max(480).default(60) // Duration in minutes
@@ -795,43 +1309,68 @@ module.exports = ({ calendarModule }) => ({
                 maxCandidates: Joi.number().min(1).max(100).default(10)
             });
             
-            const { error } = optionsSchema.validate(req.body);
+            const { error, value } = validateAndLog(req, optionsSchema, 'Find meeting times', { endpoint });
             if (error) {
                 return res.status(400).json({ 
                     error: 'Invalid request', 
-                    details: error.details[0].message 
+                    details: error.details 
                 });
             }
             
+            // Create safe request data for logging (redact attendee details)
+            const attendeeCount = value.attendees?.length || 0;
+            const timeConstraints = value.timeConstraints;
+            const meetingDuration = timeConstraints?.meetingDuration || 60;
+            
+            MonitoringService?.info('Finding meeting times', { 
+                attendeeCount,
+                startTime: timeConstraints?.startTime?.dateTime,
+                endTime: timeConstraints?.endTime?.dateTime,
+                meetingDuration
+            }, 'calendar');
+
             // Try to use the module's findMeetingTimes method if available
             let suggestions;
+            let isMock = false;
             try {
-                console.log('[Calendar Controller] Attempting to find meeting times using module');
-                if (typeof calendarModule.findMeetingTimes === 'function') {
-                    suggestions = await calendarModule.findMeetingTimes(req.body);
-                    console.log('[Calendar Controller] Successfully found meeting times using module');
+                MonitoringService?.info('Attempting to find meeting times using module', {
+                    attendeeCount,
+                    meetingDuration
+                }, 'calendar');
+                
+                const methodName = 'findMeetingTimes';
+                
+                if (isModuleMethodAvailable(methodName, calendarModule)) {
+                    suggestions = await calendarModule[methodName](value);
+                    MonitoringService?.info('Successfully found meeting times using module', {
+                        suggestionCount: suggestions.meetingTimeSuggestions?.length || 0
+                    }, 'calendar');
                 } else {
-                    throw new Error('Module method not implemented');
+                    throw new Error(`calendarModule.${methodName} is not implemented`);
                 }
             } catch (moduleError) {
-                console.error('[Calendar Controller] Error finding meeting times:', moduleError.message);
-                console.log('[Calendar Controller] Falling back to mock meeting time suggestions');
+                const moduleCallError = ErrorService?.createError('api', 'Error finding meeting times', 'error', { 
+                    error: moduleError.message,
+                    stack: moduleError.stack,
+                    attendeeCount
+                });
+                MonitoringService?.logError(moduleCallError);
+                MonitoringService?.info('Falling back to mock meeting time suggestions', {}, 'calendar');
                 
                 // If module method fails, create mock meeting time suggestions
-                const { attendees, timeConstraints } = req.body;
-                const startTime = new Date(timeConstraints.startTime.dateTime);
-                const endTime = new Date(timeConstraints.endTime.dateTime);
-                const meetingDuration = timeConstraints.meetingDuration || 60; // minutes
+                const { attendees, timeConstraints } = value;
+                const startTimeDate = new Date(timeConstraints.startTime.dateTime);
+                const endTimeDate = new Date(timeConstraints.endTime.dateTime);
                 
                 // Generate a few mock suggestions within the time constraints
                 const mockSuggestions = [];
-                const totalMinutes = (endTime - startTime) / (1000 * 60);
+                const totalMinutes = (endTimeDate - startTimeDate) / (1000 * 60);
                 const possibleSlots = Math.floor(totalMinutes / meetingDuration);
                 const maxSuggestions = Math.min(possibleSlots, 5); // Generate up to 5 suggestions
                 
                 for (let i = 0; i < maxSuggestions; i++) {
-                    const slotStart = new Date(startTime.getTime() + (i * meetingDuration * 60 * 1000));
-                    const slotEnd = new Date(Math.min(slotStart.getTime() + (meetingDuration * 60 * 1000), endTime.getTime()));
+                    const slotStart = new Date(startTimeDate.getTime() + (i * meetingDuration * 60 * 1000));
+                    const slotEnd = new Date(Math.min(slotStart.getTime() + (meetingDuration * 60 * 1000), endTimeDate.getTime()));
                     
                     mockSuggestions.push({
                         confidence: 1.0 - (i * 0.1), // Decreasing confidence for later slots
@@ -861,156 +1400,38 @@ module.exports = ({ calendarModule }) => ({
                 
                 suggestions = {
                     meetingTimeSuggestions: mockSuggestions,
-                    emptySuggestionsReason: mockSuggestions.length === 0 ? 'No suitable times found' : null
+                    emptySuggestionsReason: mockSuggestions.length === 0 ? 'No suitable times found' : null,
+                    isMock: true // Flag to indicate this is mock data
                 };
-                console.log('[Calendar Controller] Generated mock meeting time suggestions');
+                isMock = true;
+                MonitoringService?.info('Generated mock meeting time suggestions', { 
+                    count: mockSuggestions.length 
+                }, 'calendar');
             }
+            
+            // Track find meeting times duration
+            const duration = Date.now() - startTime;
+            MonitoringService?.trackMetric('calendar.findMeetingTimes.duration', duration, { 
+                suggestionCount: suggestions.meetingTimeSuggestions?.length || 0,
+                attendeeCount,
+                isMock
+            });
             
             res.json(suggestions);
         } catch (err) {
-            const mcpError = errorService.createError('api', err.message, 'error', { stack: err.stack });
-            console.error('Calendar find meeting times error:', mcpError);
-            res.status(500).json({ error: 'Internal error', message: err.message });
-        }
-    },
-    
-    /**
-     * POST /api/calendar/schedule
-     * Schedules a meeting with intelligent time selection
-     */
-    async scheduleMeeting(req, res) {
-        try {
-            // Validate request body
-            const meetingSchema = Joi.object({
-                subject: Joi.string().required(),
-                attendees: Joi.array().items(Joi.string().email()).required(),
-                preferredTimes: Joi.array().items(Joi.object({
-                    start: Joi.object({
-                        dateTime: Joi.string().required(),
-                        timeZone: Joi.string().default('UTC')
-                    }).required(),
-                    end: Joi.object({
-                        dateTime: Joi.string().required(),
-                        timeZone: Joi.string().default('UTC')
-                    }).required()
-                })).optional(),
-                duration: Joi.number().min(15).max(480).optional(), // Duration in minutes
-                body: Joi.alternatives().try(
-                    Joi.string(),
-                    Joi.object({
-                        contentType: Joi.string().valid('text', 'html', 'HTML').default('text'),
-                        content: Joi.string().required()
-                    })
-                ).optional(),
-                location: Joi.alternatives().try(
-                    Joi.string(),
-                    Joi.object({
-                        displayName: Joi.string().required(),
-                        address: Joi.object().optional()
-                    })
-                ).optional(),
-                isOnlineMeeting: Joi.boolean().optional()
+            const mcpError = ErrorService?.createError('api', 'Error finding calendar meeting times', 'error', { 
+                stack: err.stack,
+                endpoint,
+                error: err.message
+            });
+            MonitoringService?.logError(mcpError);
+            
+            // Track error metric
+            MonitoringService?.trackMetric('calendar.findMeetingTimes.error', 1, { 
+                errorId: mcpError.id,
+                reason: err.message
             });
             
-            const { error } = meetingSchema.validate(req.body);
-            if (error) {
-                return res.status(400).json({ 
-                    error: 'Invalid request', 
-                    details: error.details[0].message 
-                });
-            }
-            
-            // Format the body parameter correctly before passing to the module
-            const formattedRequestBody = { ...req.body };
-            
-            // Handle body parameter specifically to ensure it's in the correct format
-            if (formattedRequestBody.body) {
-                console.log('[Calendar Controller] Original body parameter:', JSON.stringify(formattedRequestBody.body));
-                
-                // Convert string body to proper object format
-                if (typeof formattedRequestBody.body === 'string') {
-                    formattedRequestBody.body = {
-                        contentType: 'html',
-                        content: formattedRequestBody.body
-                    };
-                    console.log('[Calendar Controller] Converted string body to object format');
-                } 
-                // Ensure object has required properties
-                else if (typeof formattedRequestBody.body === 'object') {
-                    if (!formattedRequestBody.body.content) {
-                        console.warn('[Calendar Controller] Body object missing content property');
-                        formattedRequestBody.body.content = '';
-                    }
-                    
-                    if (!formattedRequestBody.body.contentType) {
-                        console.warn('[Calendar Controller] Body object missing contentType property, defaulting to html');
-                        formattedRequestBody.body.contentType = 'html';
-                    }
-                }
-            }
-            
-            // Try to use the module's scheduleMeeting method if available
-            let scheduledEvent;
-            try {
-                console.log('[Calendar Controller] Attempting to schedule meeting using module with formatted data');
-                if (typeof calendarModule.scheduleMeeting === 'function') {
-                    scheduledEvent = await calendarModule.scheduleMeeting(formattedRequestBody);
-                    console.log('[Calendar Controller] Successfully scheduled meeting using module');
-                } else {
-                    throw new Error('Module method not implemented');
-                }
-            } catch (moduleError) {
-                console.error('[Calendar Controller] Error scheduling meeting:', moduleError.message);
-                console.log('[Calendar Controller] Falling back to mock scheduling');
-                
-                // If module method fails, create a mock scheduled event
-                const { attendees, subject, preferredTimes, duration } = req.body;
-                const defaultDuration = duration || 60; // Default to 60 minutes
-                
-                // Use the first preferred time slot or default to tomorrow
-                let startTime, endTime;
-                if (preferredTimes && preferredTimes.length > 0) {
-                    startTime = new Date(preferredTimes[0].start.dateTime);
-                    // Use specified end time or calculate from duration
-                    endTime = new Date(preferredTimes[0].end.dateTime);
-                } else {
-                    // Default to tomorrow at 10 AM
-                    const tomorrow = new Date();
-                    tomorrow.setDate(tomorrow.getDate() + 1);
-                    tomorrow.setHours(10, 0, 0, 0);
-                    startTime = tomorrow;
-                    endTime = new Date(startTime.getTime() + defaultDuration * 60 * 1000);
-                }
-                
-                scheduledEvent = {
-                    id: 'mock-scheduled-' + Date.now(),
-                    subject: subject,
-                    start: { dateTime: startTime.toISOString(), timeZone: 'UTC' },
-                    end: { dateTime: endTime.toISOString(), timeZone: 'UTC' },
-                    attendees: attendees.map(email => ({
-                        name: email.split('@')[0],
-                        email: email,
-                        status: 'needsAction'
-                    })),
-                    organizer: {
-                        name: 'Current User',
-                        email: 'current.user@example.com'
-                    },
-                    isAllDay: false,
-                    recurrence: null,
-                    bestSlot: {
-                        start: startTime.toISOString(),
-                        end: endTime.toISOString(),
-                        score: 0.95
-                    }
-                };
-                console.log('[Calendar Controller] Generated mock scheduled meeting');
-            }
-            
-            res.json(scheduledEvent);
-        } catch (err) {
-            const mcpError = errorService.createError('api', err.message, 'error', { stack: err.stack });
-            console.error('Calendar scheduling error:', mcpError);
             res.status(500).json({ error: 'Internal error', message: err.message });
         }
     },
@@ -1018,22 +1439,61 @@ module.exports = ({ calendarModule }) => ({
     /**
      * GET /api/calendar/rooms
      * Get available rooms for meetings
+     * @param {import('express').Request} req
+     * @param {import('express').Response} res
      */
     async getRooms(req, res) {
         try {
+            // Start timing for performance tracking
+            const startTime = Date.now();
+            const endpoint = '/api/calendar/rooms';
+            
+            // Validate query parameters
+            const querySchema = Joi.object({
+                building: Joi.string().optional(),
+                capacity: Joi.number().integer().min(1).optional(),
+                hasAudio: Joi.boolean().optional(),
+                hasVideo: Joi.boolean().optional(),
+                floor: Joi.number().integer().optional(),
+                limit: Joi.number().integer().min(1).max(100).default(50).optional()
+            });
+            
+            const { error, value } = querySchema.validate(req.query);
+            if (error) {
+                const validationError = ErrorService?.createError('api', 'Room query validation error', 'warning', { 
+                    details: error.details,
+                    endpoint
+                });
+                MonitoringService?.logError(validationError);
+                return res.status(400).json({ 
+                    error: 'Invalid query parameters', 
+                    details: error.details 
+                });
+            }
+            
+            MonitoringService?.info('Getting available meeting rooms', { query: value }, 'calendar');
+            
             // Try to use the module's getRooms method if available
             let rooms;
+            let isMock = false;
             try {
-                console.log('[Calendar Controller] Attempting to get rooms using module');
-                if (typeof calendarModule.getRooms === 'function') {
-                    rooms = await calendarModule.getRooms(req.query);
-                    console.log('[Calendar Controller] Successfully got rooms using module');
+                MonitoringService?.info('Attempting to get rooms using module', {}, 'calendar');
+                
+                const methodName = 'getRooms';
+                
+                if (isModuleMethodAvailable(methodName, calendarModule)) {
+                    rooms = await calendarModule[methodName](value);
+                    MonitoringService?.info('Successfully got rooms using module', { count: rooms.length }, 'calendar');
                 } else {
-                    throw new Error('Module method not implemented');
+                    throw new Error(`calendarModule.${methodName} is not implemented`);
                 }
             } catch (moduleError) {
-                console.error('[Calendar Controller] Error getting rooms:', moduleError.message);
-                console.log('[Calendar Controller] Falling back to mock rooms');
+                const moduleCallError = ErrorService?.createError('api', 'Error getting meeting rooms', 'error', { 
+                    error: moduleError.message,
+                    stack: moduleError.stack
+                });
+                MonitoringService?.logError(moduleCallError);
+                MonitoringService?.info('Falling back to mock rooms', {}, 'calendar');
                 
                 // If module method fails, create mock rooms
                 rooms = [
@@ -1045,7 +1505,8 @@ module.exports = ({ calendarModule }) => ({
                         building: 'Building 1',
                         floorNumber: 2,
                         hasAudio: true,
-                        hasVideo: true
+                        hasVideo: true,
+                        isMock: true
                     },
                     {
                         id: 'room2',
@@ -1055,7 +1516,8 @@ module.exports = ({ calendarModule }) => ({
                         building: 'Building 1',
                         floorNumber: 3,
                         hasAudio: true,
-                        hasVideo: false
+                        hasVideo: false,
+                        isMock: true
                     },
                     {
                         id: 'room3',
@@ -1065,16 +1527,64 @@ module.exports = ({ calendarModule }) => ({
                         building: 'Building 2',
                         floorNumber: 5,
                         hasAudio: true,
-                        hasVideo: true
+                        hasVideo: true,
+                        isMock: true
                     }
                 ];
-                console.log('[Calendar Controller] Generated mock rooms');
+                isMock = true;
+                
+                // Filter mock rooms based on query parameters
+                if (value.building) {
+                    rooms = rooms.filter(room => 
+                        room.building.toLowerCase() === value.building.toLowerCase());
+                }
+                
+                if (value.capacity) {
+                    rooms = rooms.filter(room => room.capacity >= value.capacity);
+                }
+                
+                if (value.hasAudio !== undefined) {
+                    rooms = rooms.filter(room => room.hasAudio === value.hasAudio);
+                }
+                
+                if (value.hasVideo !== undefined) {
+                    rooms = rooms.filter(room => room.hasVideo === value.hasVideo);
+                }
+                
+                if (value.floor) {
+                    rooms = rooms.filter(room => room.floorNumber === value.floor);
+                }
+                
+                // Apply limit if specified
+                if (value.limit && rooms.length > value.limit) {
+                    rooms = rooms.slice(0, value.limit);
+                }
+                
+                MonitoringService?.info('Generated mock rooms', { count: rooms.length }, 'calendar');
             }
+            
+            // Track room retrieval time
+            const duration = Date.now() - startTime;
+            MonitoringService?.trackMetric('calendar.getRooms.duration', duration, { 
+                count: rooms.length,
+                isMock
+            });
             
             res.json(rooms);
         } catch (err) {
-            const mcpError = errorService.createError('api', err.message, 'error', { stack: err.stack });
-            console.error('Calendar get rooms error:', mcpError);
+            const mcpError = ErrorService?.createError('api', 'Error retrieving meeting rooms', 'error', { 
+                stack: err.stack,
+                endpoint,
+                error: err.message
+            });
+            MonitoringService?.logError(mcpError);
+            
+            // Track error metric
+            MonitoringService?.trackMetric('calendar.getRooms.error', 1, { 
+                errorId: mcpError.id,
+                reason: err.message
+            });
+            
             res.status(500).json({ error: 'Internal error', message: err.message });
         }
     },
@@ -1082,22 +1592,56 @@ module.exports = ({ calendarModule }) => ({
     /**
      * GET /api/calendar/calendars
      * Get user calendars
+     * @param {import('express').Request} req
+     * @param {import('express').Response} res
      */
     async getCalendars(req, res) {
         try {
+            // Start timing for performance tracking
+            const startTime = Date.now();
+            const endpoint = '/api/calendar/calendars';
+            
+            // Validate query parameters
+            const querySchema = Joi.object({
+                includeShared: Joi.boolean().default(true).optional()
+            });
+            
+            const { error, value } = querySchema.validate(req.query);
+            if (error) {
+                const validationError = ErrorService?.createError('api', 'Calendar query validation error', 'warning', { 
+                    details: error.details,
+                    endpoint
+                });
+                MonitoringService?.logError(validationError);
+                return res.status(400).json({ 
+                    error: 'Invalid query parameters', 
+                    details: error.details 
+                });
+            }
+            
+            MonitoringService?.info('Getting user calendars', value, 'calendar');
+            
             // Try to use the module's getCalendars method if available
             let calendars;
+            let isMock = false;
             try {
-                console.log('[Calendar Controller] Attempting to get calendars using module');
-                if (typeof calendarModule.getCalendars === 'function') {
-                    calendars = await calendarModule.getCalendars();
-                    console.log('[Calendar Controller] Successfully got calendars using module');
+                MonitoringService?.info('Attempting to get calendars using module', {}, 'calendar');
+                
+                const methodName = 'getCalendars';
+                
+                if (isModuleMethodAvailable(methodName, calendarModule)) {
+                    calendars = await calendarModule[methodName](value);
+                    MonitoringService?.info('Successfully got calendars using module', { count: calendars.length }, 'calendar');
                 } else {
-                    throw new Error('Module method not implemented');
+                    throw new Error(`calendarModule.${methodName} is not implemented`);
                 }
             } catch (moduleError) {
-                console.error('[Calendar Controller] Error getting calendars:', moduleError.message);
-                console.log('[Calendar Controller] Falling back to mock calendars');
+                const moduleCallError = ErrorService?.createError('api', 'Error getting user calendars', 'error', { 
+                    error: moduleError.message,
+                    stack: moduleError.stack
+                });
+                MonitoringService?.logError(moduleCallError);
+                MonitoringService?.info('Falling back to mock calendars', {}, 'calendar');
                 
                 // If module method fails, create mock calendars
                 calendars = [
@@ -1112,7 +1656,8 @@ module.exports = ({ calendarModule }) => ({
                         owner: {
                             name: 'Current User',
                             address: 'current.user@example.com'
-                        }
+                        },
+                        isMock: true
                     },
                     {
                         id: 'calendar2',
@@ -1125,7 +1670,8 @@ module.exports = ({ calendarModule }) => ({
                         owner: {
                             name: 'Current User',
                             address: 'current.user@example.com'
-                        }
+                        },
+                        isMock: true
                     },
                     {
                         id: 'calendar3',
@@ -1138,16 +1684,44 @@ module.exports = ({ calendarModule }) => ({
                         owner: {
                             name: 'Current User',
                             address: 'current.user@example.com'
-                        }
+                        },
+                        isMock: true
                     }
                 ];
-                console.log('[Calendar Controller] Generated mock calendars');
+                isMock = true;
+                
+                // If includeShared is false, filter out shared calendars
+                if (value.includeShared === false) {
+                    calendars = calendars.filter(calendar => 
+                        calendar.owner.address === 'current.user@example.com' || 
+                        calendar.isDefaultCalendar === true);
+                }
+                
+                MonitoringService?.info('Generated mock calendars', { count: calendars.length }, 'calendar');
             }
+            
+            // Track calendar retrieval time
+            const duration = Date.now() - startTime;
+            MonitoringService?.trackMetric('calendar.getCalendars.duration', duration, { 
+                count: calendars.length,
+                isMock
+            });
             
             res.json(calendars);
         } catch (err) {
-            const mcpError = errorService.createError('api', err.message, 'error', { stack: err.stack });
-            console.error('Calendar get calendars error:', mcpError);
+            const mcpError = ErrorService?.createError('api', 'Error retrieving user calendars', 'error', { 
+                stack: err.stack,
+                endpoint,
+                error: err.message
+            });
+            MonitoringService?.logError(mcpError);
+            
+            // Track error metric
+            MonitoringService?.trackMetric('calendar.getCalendars.error', 1, { 
+                errorId: mcpError.id,
+                reason: err.message
+            });
+            
             res.status(500).json({ error: 'Internal error', message: err.message });
         }
     },
@@ -1155,12 +1729,22 @@ module.exports = ({ calendarModule }) => ({
     /**
      * POST /api/calendar/events/:id/attachments
      * Add an attachment to an event
+     * @param {import('express').Request} req
+     * @param {import('express').Response} res
      */
     async addAttachment(req, res) {
         try {
+            // Start timing for performance tracking
+            const startTime = Date.now();
+            const endpoint = '/api/calendar/events/:id/attachments';
+            
             // Get event ID from URL parameters
             const eventId = req.params.id;
             if (!eventId) {
+                const validationError = ErrorService?.createError('api', 'Event ID is required for adding attachment', 'warning', { 
+                    endpoint 
+                });
+                MonitoringService?.logError(validationError);
                 return res.status(400).json({ error: 'Event ID is required' });
             }
             
@@ -1172,44 +1756,96 @@ module.exports = ({ calendarModule }) => ({
                 isInline: Joi.boolean().default(false)
             });
             
-            const { error } = attachmentSchema.validate(req.body);
+            const { error, value } = validateAndLog(req, attachmentSchema, 'Add attachment', { eventId, endpoint });
             if (error) {
                 return res.status(400).json({ 
                     error: 'Invalid request', 
-                    details: error.details[0].message 
+                    details: error.details 
                 });
             }
+            
+            // Create safe version of request body for logging
+            const safeAttachmentInfo = {
+                name: value.name,
+                contentType: value.contentType,
+                contentSize: value.contentBytes ? value.contentBytes.length : 0,
+                isInline: value.isInline || false
+            };
+            
+            MonitoringService?.info('Adding attachment to calendar event', { 
+                eventId,
+                attachment: safeAttachmentInfo 
+            }, 'calendar');
             
             // Try to use the module's addAttachment method if available
             let attachment;
             try {
-                console.log(`[Calendar Controller] Attempting to add attachment to event ${eventId} using module`);
-                if (typeof calendarModule.addAttachment === 'function') {
-                    attachment = await calendarModule.addAttachment(eventId, req.body);
-                    console.log(`[Calendar Controller] Successfully added attachment to event ${eventId} using module`);
+                MonitoringService?.info(`Attempting to add attachment to event ${eventId} using module`, { 
+                    eventId,
+                    attachmentName: value.name
+                }, 'calendar');
+                
+                const methodName = 'addAttachment';
+                
+                if (isModuleMethodAvailable(methodName, calendarModule)) {
+                    attachment = await calendarModule[methodName](eventId, value);
+                    MonitoringService?.info(`Successfully added attachment to event ${eventId} using module`, { 
+                        eventId,
+                        attachmentId: attachment.id
+                    }, 'calendar');
                 } else {
-                    throw new Error('Module method not implemented');
+                    throw new Error(`calendarModule.${methodName} is not implemented`);
                 }
             } catch (moduleError) {
-                console.error(`[Calendar Controller] Error adding attachment to event ${eventId}:`, moduleError.message);
-                console.log('[Calendar Controller] Falling back to mock attachment');
+                const moduleCallError = ErrorService?.createError('api', `Error adding attachment to event ${eventId}`, 'error', { 
+                    error: moduleError.message,
+                    eventId,
+                    stack: moduleError.stack
+                });
+                MonitoringService?.logError(moduleCallError);
+                MonitoringService?.info('Falling back to mock attachment', { eventId }, 'calendar');
                 
                 // If module method fails, create a mock attachment
                 attachment = {
                     id: 'attachment-' + Date.now(),
-                    name: req.body.name,
-                    contentType: req.body.contentType,
-                    size: req.body.contentBytes.length * 0.75, // Approximate size after base64 decoding
-                    isInline: req.body.isInline || false,
-                    lastModifiedDateTime: new Date().toISOString()
+                    name: value.name,
+                    contentType: value.contentType,
+                    size: value.contentBytes.length * 0.75, // Approximate size after base64 decoding
+                    isInline: value.isInline || false,
+                    lastModifiedDateTime: new Date().toISOString(),
+                    isMock: true // Flag to indicate this is mock data
                 };
-                console.log('[Calendar Controller] Generated mock attachment');
+                MonitoringService?.info('Generated mock attachment', { 
+                    eventId,
+                    attachmentId: attachment.id
+                }, 'calendar');
             }
+            
+            // Track add attachment time
+            const duration = Date.now() - startTime;
+            MonitoringService?.trackMetric('calendar.addAttachment.duration', duration, { 
+                eventId,
+                attachmentId: attachment.id,
+                contentType: attachment.contentType,
+                isMock: !!attachment.isMock
+            });
             
             res.json(attachment);
         } catch (err) {
-            const mcpError = errorService.createError('api', err.message, 'error', { stack: err.stack });
-            console.error('Calendar add attachment error:', mcpError);
+            const mcpError = ErrorService?.createError('api', 'Error adding attachment to calendar event', 'error', { 
+                stack: err.stack,
+                endpoint: '/api/calendar/events/:id/attachments',
+                error: err.message,
+                eventId: req.params?.id
+            });
+            MonitoringService?.logError(mcpError);
+            
+            // Track error metric
+            MonitoringService?.trackMetric('calendar.addAttachment.error', 1, { 
+                errorId: mcpError.id,
+                reason: err.message
+            });
+            
             res.status(500).json({ error: 'Internal error', message: err.message });
         }
     },
@@ -1217,44 +1853,112 @@ module.exports = ({ calendarModule }) => ({
     /**
      * DELETE /api/calendar/events/:id/attachments/:attachmentId
      * Remove an attachment from an event
+     * @param {import('express').Request} req
+     * @param {import('express').Response} res
      */
     async removeAttachment(req, res) {
         try {
+            // Start timing for performance tracking
+            const startTime = Date.now();
+            const endpoint = '/api/calendar/events/:id/attachments/:attachmentId';
+            
             // Get event ID and attachment ID from URL parameters
             const eventId = req.params.id;
             const attachmentId = req.params.attachmentId;
             
             if (!eventId) {
+                const validationError = ErrorService?.createError('api', 'Event ID is required for removing attachment', 'warning', { 
+                    endpoint 
+                });
+                MonitoringService?.logError(validationError);
                 return res.status(400).json({ error: 'Event ID is required' });
             }
             
             if (!attachmentId) {
+                const validationError = ErrorService?.createError('api', 'Attachment ID is required for removing attachment', 'warning', { 
+                    endpoint,
+                    eventId
+                });
+                MonitoringService?.logError(validationError);
                 return res.status(400).json({ error: 'Attachment ID is required' });
             }
+            
+            MonitoringService?.info('Removing attachment from calendar event', { 
+                eventId,
+                attachmentId 
+            }, 'calendar');
             
             // Try to use the module's removeAttachment method if available
             let result;
             try {
-                console.log(`[Calendar Controller] Attempting to remove attachment ${attachmentId} from event ${eventId} using module`);
-                if (typeof calendarModule.removeAttachment === 'function') {
-                    result = await calendarModule.removeAttachment(eventId, attachmentId);
-                    console.log(`[Calendar Controller] Successfully removed attachment ${attachmentId} from event ${eventId} using module`);
+                MonitoringService?.info(`Attempting to remove attachment ${attachmentId} from event ${eventId} using module`, { 
+                    eventId,
+                    attachmentId
+                }, 'calendar');
+                
+                const methodName = 'removeAttachment';
+                
+                if (isModuleMethodAvailable(methodName, calendarModule)) {
+                    result = await calendarModule[methodName](eventId, attachmentId);
+                    MonitoringService?.info(`Successfully removed attachment ${attachmentId} from event ${eventId} using module`, { 
+                        eventId,
+                        attachmentId,
+                        success: !!result
+                    }, 'calendar');
                 } else {
-                    throw new Error('Module method not implemented');
+                    throw new Error(`calendarModule.${methodName} is not implemented`);
                 }
             } catch (moduleError) {
-                console.error(`[Calendar Controller] Error removing attachment ${attachmentId} from event ${eventId}:`, moduleError.message);
-                console.log('[Calendar Controller] Falling back to mock attachment removal');
+                const moduleCallError = ErrorService?.createError('api', `Error removing attachment ${attachmentId} from event ${eventId}`, 'error', { 
+                    error: moduleError.message,
+                    eventId,
+                    attachmentId,
+                    stack: moduleError.stack
+                });
+                MonitoringService?.logError(moduleCallError);
+                MonitoringService?.info('Falling back to mock attachment removal', { 
+                    eventId,
+                    attachmentId
+                }, 'calendar');
                 
                 // If module method fails, create a mock result
-                result = true;
-                console.log('[Calendar Controller] Generated mock attachment removal result');
+                result = {
+                    success: true,
+                    isMock: true // Flag to indicate this is mock data
+                };
+                MonitoringService?.info('Generated mock attachment removal result', { 
+                    eventId,
+                    attachmentId,
+                    success: true
+                }, 'calendar');
             }
             
-            res.json({ success: result });
+            // Track remove attachment time
+            const duration = Date.now() - startTime;
+            MonitoringService?.trackMetric('calendar.removeAttachment.duration', duration, { 
+                eventId,
+                attachmentId,
+                success: typeof result === 'object' ? result.success : !!result,
+                isMock: typeof result === 'object' ? !!result.isMock : false
+            });
+            
+            res.json(typeof result === 'object' ? result : { success: result });
         } catch (err) {
-            const mcpError = errorService.createError('api', err.message, 'error', { stack: err.stack });
-            console.error('Calendar remove attachment error:', mcpError);
+            const mcpError = ErrorService?.createError('api', 'Error removing attachment from calendar event', 'error', { 
+                stack: err.stack,
+                endpoint,
+                error: err.message,
+                eventId: req.params?.id,
+                attachmentId: req.params?.attachmentId
+            });
+            MonitoringService?.logError(mcpError);
+            
+            // Track error metric
+            MonitoringService?.trackMetric('calendar.removeAttachment.error', 1, { 
+                errorId: mcpError.id,
+                reason: err.message
+            });
+            
             res.status(500).json({ error: 'Internal error', message: err.message });
         }
     }
