@@ -118,50 +118,86 @@ async function addLogEntry(req, res) {
  */
 async function getLogEntries(req, res) {
     try {
-        monitoringService.debug(`Getting log entries. Cached count: ${logEntries.length}`, {}, 'log-controller');
+        const { limit = 100, category, level, source } = req.query;
+        const parsedLimit = parseInt(limit);
         
-        // Parse query parameters
-        const limit = parseInt(req.query.limit) || 100;
-        const source = req.query.source; // 'cache', 'file', or undefined for both
-        const level = req.query.level; // Filter by log level
+        // Debug log the request parameters
+        monitoringService.debug('Getting log entries with filters', { 
+            limit: parsedLimit, 
+            category, 
+            level, 
+            source,
+            totalCachedEntries: logEntries.length,
+            categoriesInCache: [...new Set(logEntries.map(entry => entry.category))]
+        }, 'log-controller');
         
-        let result = [];
+        // Initialize result array
+        let result = [...logEntries];
+        const existingTimestamps = new Set(result.map(entry => entry.timestamp));
         
-        // Get logs from in-memory cache if requested
-        if (!source || source === 'cache') {
-            let filteredCacheEntries = [...logEntries];
-            
-            // Apply level filter if provided
-            if (level) {
-                filteredCacheEntries = filteredCacheEntries.filter(entry => entry.level === level);
-            }
-            
-            // Limit the number of entries
-            filteredCacheEntries = filteredCacheEntries.slice(0, limit);
-            
-            result = [...filteredCacheEntries];
+        // Apply category filter if provided - with improved matching
+        if (category) {
+            const beforeCount = result.length;
+            result = result.filter(entry => {
+                // More flexible category matching (case insensitive, partial match)
+                if (typeof entry.category === 'string' && typeof category === 'string') {
+                    return entry.category.toLowerCase().includes(category.toLowerCase());
+                }
+                return entry.category === category;
+            });
+            monitoringService.debug(`Category filter applied: ${category}`, { 
+                beforeCount, 
+                afterCount: result.length,
+                matchRate: `${(result.length / (beforeCount || 1) * 100).toFixed(1)}%`
+            }, 'log-controller');
         }
         
-        // Get logs from file if requested
-        if ((!source || source === 'file') && result.length < limit) {
+        // Apply level filter if provided - with improved matching
+        if (level) {
+            const beforeCount = result.length;
+            result = result.filter(entry => {
+                // More flexible level matching (case insensitive)
+                if (typeof entry.level === 'string' && typeof level === 'string') {
+                    return entry.level.toLowerCase() === level.toLowerCase();
+                }
+                return entry.level === level;
+            });
+            monitoringService.debug(`Level filter applied: ${level}`, { 
+                beforeCount, 
+                afterCount: result.length,
+                matchRate: `${(result.length / (beforeCount || 1) * 100).toFixed(1)}%`
+            }, 'log-controller');
+        }
+        
+        // If we need more entries than we have in memory and source isn't explicitly 'cache'
+        if (result.length < parsedLimit && (!source || source !== 'cache')) {
             try {
-                // Get remaining entries to fetch
-                const remainingLimit = limit - result.length;
-                
                 // Get logs from the monitoring service
-                const fileEntries = await monitoringService.getLatestLogs(remainingLimit);
+                const fileEntries = await monitoringService.getLatestLogs(parsedLimit - result.length);
                 
-                // Apply level filter if provided
+                // Apply filters to file entries too with the same improved matching
                 let filteredFileEntries = fileEntries;
-                if (level) {
-                    filteredFileEntries = filteredFileEntries.filter(entry => entry.level === level);
+                if (category) {
+                    filteredFileEntries = filteredFileEntries.filter(entry => {
+                        if (typeof entry.category === 'string' && typeof category === 'string') {
+                            return entry.category.toLowerCase().includes(category.toLowerCase());
+                        }
+                        return entry.category === category;
+                    });
                 }
                 
-                // Combine results, ensuring no duplicates
-                // Use timestamp as a key to detect duplicates
-                const existingTimestamps = new Set(result.map(entry => entry.timestamp));
+                if (level) {
+                    filteredFileEntries = filteredFileEntries.filter(entry => {
+                        if (typeof entry.level === 'string' && typeof level === 'string') {
+                            return entry.level.toLowerCase() === level.toLowerCase();
+                        }
+                        return entry.level === level;
+                    });
+                }
+                
+                // Add file entries that aren't already in memory
                 for (const entry of filteredFileEntries) {
-                    if (!existingTimestamps.has(entry.timestamp) && result.length < limit) {
+                    if (!existingTimestamps.has(entry.timestamp) && result.length < parsedLimit) {
                         result.push({
                             timestamp: entry.timestamp,
                             level: entry.level || 'info',
@@ -182,7 +218,16 @@ async function getLogEntries(req, res) {
         result.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
         
         // Limit final result to requested limit
-        result = result.slice(0, limit);
+        result = result.slice(0, parsedLimit);
+        
+        // Log the request result for debugging
+        monitoringService.debug('Returning log entries', { 
+            requestedLimit: parsedLimit,
+            returnedCount: result.length,
+            oldestEntryTime: result.length > 0 ? result[result.length-1].timestamp : 'none',
+            newestEntryTime: result.length > 0 ? result[0].timestamp : 'none',
+            categories: [...new Set(result.map(entry => entry.category))]
+        }, 'log-controller');
         
         res.status(200).json(result);
     } catch (error) {

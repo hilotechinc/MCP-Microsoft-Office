@@ -781,6 +781,32 @@ function isValidEmail(email) {
  * @returns {Promise<Array<Object>>} Normalized availability information
  */
 async function getAvailability(emails, start, end, options = {}) {
+  // ENHANCED LOGGING: Log detailed parameter information for debugging
+  MonitoringService?.debug('getAvailability service called with parameters:', {
+    userCount: Array.isArray(emails) ? emails.length : 0,
+    emailsType: typeof emails,
+    emailsIsArray: Array.isArray(emails),
+    emailsValue: Array.isArray(emails) ? emails.map(e => typeof e === 'string' ? e : JSON.stringify(e)) : emails,
+    startType: typeof start,
+    startValue: start,
+    endType: typeof end,
+    endValue: end,
+    optionsType: typeof options,
+    optionsKeys: options ? Object.keys(options) : [],
+    timestamp: new Date().toISOString()
+  }, 'calendar');
+  
+  // Ensure start and end are strings, not Date objects
+  if (start instanceof Date) {
+    start = start.toISOString();
+    MonitoringService?.debug('Converted start Date to ISO string', { start }, 'calendar');
+  }
+  
+  if (end instanceof Date) {
+    end = end.toISOString();
+    MonitoringService?.debug('Converted end Date to ISO string', { end }, 'calendar');
+  }
+  
   MonitoringService?.debug('Getting availability for users/rooms', {
     userCount: Array.isArray(emails) ? emails.length : 0,
     emails: redactSensitiveData({ emails }),

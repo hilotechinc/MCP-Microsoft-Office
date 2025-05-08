@@ -79,6 +79,7 @@
                         <button id="debug-calendar-btn" style="padding:8px 16px;background-color:#5c2d91;color:white;border:none;border-radius:4px;cursor:pointer;">Test Calendar API</button>
                         <button id="debug-mail-btn" style="padding:8px 16px;background-color:#0078d4;color:white;border:none;border-radius:4px;cursor:pointer;">Test Mail API</button>
                         <button id="debug-files-btn" style="padding:8px 16px;background-color:#107c41;color:white;border:none;border-radius:4px;cursor:pointer;">Test Files API</button>
+                        <button id="view-logs-btn" style="padding:8px 16px;background-color:#d83b01;color:white;border:none;border-radius:4px;cursor:pointer;">View Detailed Logs</button>
                     </div>
                     <div id="test-results" style="margin-top:12px;background-color:white;padding:12px;border-radius:4px;max-height:300px;overflow:auto;display:none;font-family:monospace;white-space:pre-wrap;"></div>
                     
@@ -160,9 +161,14 @@ ${JSON.stringify(data, null, 2)}
                     }
                     
                     // Function to fetch logs from the server
-                    async function fetchLogs() {
+                    async function fetchLogs(category = null, level = null) {
                         try {
-                            const response = await fetch('/api/v1/logs');
+                            // Build query parameters for filtering
+                            let url = '/api/v1/logs?limit=200';
+                            if (category) url += `&category=${category}`;
+                            if (level) url += `&level=${level}`;
+                            
+                            const response = await fetch(url);
                             if (response.ok) {
                                 const logs = await response.json();
                                 
@@ -174,16 +180,39 @@ ${JSON.stringify(data, null, 2)}
                                     mcpLogDiv.innerHTML = 'No log entries found.';
                                 } else {
                                     logs.forEach(log => {
-                                        const timestamp = log.timestamp;
-                                        const direction = log.direction || '🔄';
-                                        const endpoint = log.endpoint || 'unknown';
-                                        const data = log.data || {};
-                                        
-                                        const logEntry = `[${timestamp}] ${direction} ${endpoint}
+                                        // For API logs (with direction and endpoint)
+                                        if (log.data && log.data.direction && log.data.endpoint) {
+                                            const timestamp = log.timestamp;
+                                            const direction = log.data.direction;
+                                            const endpoint = log.data.endpoint;
+                                            const data = log.data.data || {};
+                                            
+                                            const logEntry = `[${timestamp}] ${direction} ${endpoint}
 ${JSON.stringify(data, null, 2)}
 
 `;
-                                        mcpLogDiv.innerHTML += logEntry;
+                                            mcpLogDiv.innerHTML += logEntry;
+                                        } 
+                                        // For standard logs (errors, info, debug)
+                                        else {
+                                            const timestamp = log.timestamp;
+                                            const level = log.level ? `[${log.level.toUpperCase()}]` : '';
+                                            const category = log.category ? `[${log.category}]` : '';
+                                            const message = log.message || '';
+                                            const data = log.data || {};
+                                            
+                                            // Format with different colors based on level
+                                            let levelColor = 'inherit';
+                                            if (log.level === 'error') levelColor = '#d13438';
+                                            if (log.level === 'warn') levelColor = '#ff8c00';
+                                            if (log.level === 'debug') levelColor = '#0078d4';
+                                            
+                                            const logEntry = `<div style="margin-bottom:10px;">
+  <span style="color:${levelColor};font-weight:${log.level === 'error' ? 'bold' : 'normal'};">[${timestamp}] ${level} ${category} ${message}</span>
+  <pre style="margin-top:4px;margin-bottom:8px;padding:8px;background-color:#f5f5f5;border-radius:4px;overflow:auto;max-height:200px;">${JSON.stringify(data, null, 2)}</pre>
+</div>`;
+                                            mcpLogDiv.innerHTML += logEntry;
+                                        }
                                     });
                                     
                                     // Auto-scroll to bottom if enabled
@@ -194,7 +223,15 @@ ${JSON.stringify(data, null, 2)}
                             }
                         } catch (error) {
                             console.error('Error fetching logs:', error);
+                            mcpLogDiv.innerHTML = `Error fetching logs: ${error.message}`;
                         }
+                    }
+                    
+                    // Function to fetch calendar-specific logs
+                    async function fetchCalendarLogs() {
+                        showResults('Fetching calendar logs...');
+                        await fetchLogs('calendar');
+                        showResults('Calendar logs loaded. Check the Logs panel below.');
                     }
                     
                     // Calendar test button
@@ -211,6 +248,52 @@ ${JSON.stringify(data, null, 2)}
                         } catch (error) {
                             showResults(`Calendar API error: ${error.message}`);
                             logMcpQuery('✕ ERROR', '/api/v1/calendar', { error: error.message });
+                        }
+                    });
+                    
+                    // View Logs button
+                    document.getElementById('view-logs-btn').addEventListener('click', async () => {
+                        try {
+                            // Create a log filter UI if it doesn't exist
+                            if (!document.getElementById('log-filter-panel')) {
+                                const filterPanel = document.createElement('div');
+                                filterPanel.id = 'log-filter-panel';
+                                filterPanel.style.marginBottom = '16px';
+                                filterPanel.style.display = 'flex';
+                                filterPanel.style.flexDirection = 'row';
+                                filterPanel.style.gap = '12px';
+                                filterPanel.style.alignItems = 'center';
+                                
+                                filterPanel.innerHTML = `
+                                    <label style="margin-right:8px;">Filter logs:</label>
+                                    <button id="all-logs-btn" style="padding:4px 8px;background-color:#f0f0f0;border:1px solid #ccc;border-radius:4px;cursor:pointer;">All Logs</button>
+                                    <button id="calendar-logs-btn" style="padding:4px 8px;background-color:#5c2d91;color:white;border:none;border-radius:4px;cursor:pointer;">Calendar Logs</button>
+                                    <button id="error-logs-btn" style="padding:4px 8px;background-color:#d13438;color:white;border:none;border-radius:4px;cursor:pointer;">Error Logs</button>
+                                    <button id="debug-logs-btn" style="padding:4px 8px;background-color:#0078d4;color:white;border:none;border-radius:4px;cursor:pointer;">Debug Logs</button>
+                                `;
+                                
+                                // Insert before the log panel
+                                const logPanel = document.getElementById('mcp-log-panel');
+                                logPanel.parentNode.insertBefore(filterPanel, logPanel);
+                                
+                                // Add event listeners for filter buttons
+                                document.getElementById('all-logs-btn').addEventListener('click', () => fetchLogs());
+                                document.getElementById('calendar-logs-btn').addEventListener('click', () => fetchLogs('calendar'));
+                                document.getElementById('error-logs-btn').addEventListener('click', () => fetchLogs(null, 'error'));
+                                document.getElementById('debug-logs-btn').addEventListener('click', () => fetchLogs(null, 'debug'));
+                            }
+                            
+                            showResults('Fetching detailed logs...');
+                            await fetchLogs();
+                            showResults('Logs loaded. Check the Logs panel below.');
+                            
+                            // Expand the log panel to make it more visible
+                            const logPanel = document.getElementById('mcp-log-panel');
+                            logPanel.style.maxHeight = '500px';
+                            logPanel.style.display = 'block';
+                            
+                        } catch (error) {
+                            showResults(`Error fetching logs: ${error.message}`);
                         }
                     });
                     

@@ -923,10 +923,27 @@ module.exports = ({ calendarModule }) => ({
             const startTime = Date.now();
             const endpoint = '/api/calendar/availability';
             
+            // ENHANCED LOGGING: Log the raw request body for debugging
+            MonitoringService?.debug('getAvailability raw request body:', { 
+                body: req.body,
+                bodyType: typeof req.body,
+                hasTimeSlots: req.body && req.body.timeSlots ? 'yes' : 'no',
+                hasUsers: req.body && req.body.users ? 'yes' : 'no',
+                hasStart: req.body && req.body.start ? 'yes' : 'no',
+                hasEnd: req.body && req.body.end ? 'yes' : 'no'
+            }, 'calendar');
+            
             // For simpler API calls, also support direct start/end parameters
             let requestBody = { ...req.body };
             if (requestBody.start && requestBody.end && requestBody.users) {
-                MonitoringService?.info('Converting simplified availability request format to standard format', {}, 'calendar');
+                MonitoringService?.info('Converting simplified availability request format to standard format', {
+                    originalFormat: {
+                        start: requestBody.start,
+                        end: requestBody.end,
+                        usersType: Array.isArray(requestBody.users) ? 'array' : typeof requestBody.users,
+                        userCount: Array.isArray(requestBody.users) ? requestBody.users.length : (typeof requestBody.users === 'string' ? 1 : 0)
+                    }
+                }, 'calendar');
                 requestBody = {
                     users: Array.isArray(requestBody.users) ? requestBody.users : [requestBody.users],
                     timeSlots: [{
@@ -934,6 +951,11 @@ module.exports = ({ calendarModule }) => ({
                         end: { dateTime: requestBody.end, timeZone: 'UTC' }
                     }]
                 };
+                
+                // Log the converted format
+                MonitoringService?.debug('Converted to standard format:', {
+                    convertedBody: requestBody
+                }, 'calendar');
             }
             
             // Validate request body with standardized dateTime validation

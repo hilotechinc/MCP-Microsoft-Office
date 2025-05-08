@@ -793,43 +793,24 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 apiPath = '/v1/calendar/availability';
                 apiMethod = 'POST';
                 
-                // Ensure we have start/end dates for availability check
-                if (!transformedParams.start && !transformedParams.startTime) {
-                    throw new Error('Start time is required for getAvailability');
+                // ENHANCED LOGGING: Log the raw input parameters for debugging
+                logDebug(`[MCP Adapter] getAvailability raw input parameters:`, JSON.stringify(transformedParams, null, 2));
+                
+                // Use the tools service for parameter transformation, following separation of concerns
+                try {
+                    // Get the transformed parameters from the tools service
+                    const { params: transformedAvailabilityParams } = toolsService.transformToolParameters('calendar.getAvailability', transformedParams);
+                    
+                    // Use the transformed parameters
+                    apiData = transformedAvailabilityParams;
+                    
+                    // ENHANCED LOGGING: Log the transformed API data for debugging
+                    logDebug(`[MCP Adapter] getAvailability transformed API data (via tools service):`, JSON.stringify(apiData, null, 2));
+                } catch (error) {
+                    // Log the error and rethrow
+                    logDebug(`[MCP Adapter] Error transforming getAvailability parameters:`, error.message);
+                    throw error;
                 }
-                
-                if (!transformedParams.end && !transformedParams.endTime) {
-                    throw new Error('End time is required for getAvailability');
-                }
-                
-                // Transform start/end to ISO string format if they're Date objects
-                const startTime = typeof transformedParams.start === 'object' && transformedParams.start.dateTime 
-                    ? transformedParams.start.dateTime 
-                    : transformedParams.start || transformedParams.startTime;
-                
-                const endTime = typeof transformedParams.end === 'object' && transformedParams.end.dateTime 
-                    ? transformedParams.end.dateTime 
-                    : transformedParams.end || transformedParams.endTime;
-                
-                // Transform parameters to match the controller's expectations
-                // The controller expects users and timeSlots array
-                apiData = {
-                    // Use users or attendees, transforming as needed
-                    users: transformAttendees(transformedParams.users) || transformAttendees(transformedParams.attendees) || [],
-                    // Format as timeSlots array as required by the controller
-                    timeSlots: [
-                        {
-                            start: {
-                                dateTime: startTime,
-                                timeZone: transformedParams.timeZone || 'UTC'
-                            },
-                            end: {
-                                dateTime: endTime,
-                                timeZone: transformedParams.timeZone || 'UTC'
-                            }
-                        }
-                    ]
-                };
                 
                 // Log the transformed data for debugging
                 logDebug(`[MCP Adapter] Transformed availability data:`, apiData);

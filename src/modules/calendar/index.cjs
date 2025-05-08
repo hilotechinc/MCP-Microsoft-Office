@@ -1025,6 +1025,396 @@ const CalendarModule = {
      * @throws {Error} If input validation fails or Graph API call errors occur.
      */
     async getAvailability(options = {}) {
+        // Get services with fallbacks
+        const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
+        
+        // Start tracking execution time
+        const startTime = Date.now();
+        
+        // Log the request with detailed parameters
+        monitoringService?.debug('Calendar availability check requested', { 
+            options: this.redactSensitiveData(options),
+            timestamp: new Date().toISOString(),
+            source: 'calendar.getAvailability'
+        }, 'calendar');
+        
+        // Validate required parameters
+        if (!options.users || !Array.isArray(options.users) || options.users.length === 0) {
+            const err = errorService.createError(
+                'calendar',
+                'Users array is required for getAvailability',
+                'error',
+                { 
+                    options: this.redactSensitiveData(options),
+                    timestamp: new Date().toISOString(),
+                    validationError: 'missing_users'
+                }
+            );
+            monitoringService?.logError(err);
+            monitoringService?.error('Calendar availability validation failed: missing users', {
+                validationError: 'missing_users',
+                timestamp: new Date().toISOString()
+            }, 'calendar');
+            throw err;
+        }
+        
+        // Validate that either timeSlots or duration is provided
+        if (!options.timeSlots && !options.duration) {
+            const err = errorService.createError(
+                'calendar',
+                'Either timeSlots or duration must be provided for getAvailability',
+                'error',
+                { 
+                    options: this.redactSensitiveData(options),
+                    timestamp: new Date().toISOString(),
+                    validationError: 'missing_time_constraint'
+                }
+            );
+            monitoringService?.logError(err);
+            monitoringService?.error('Calendar availability validation failed: missing time constraint', {
+                validationError: 'missing_time_constraint',
+                timestamp: new Date().toISOString()
+            }, 'calendar');
+            throw err;
+        }
+        
+        // Extract emails from users array
+        const emails = options.users.map(user => {
+            if (typeof user === 'string') return user;
+            if (user.email) return user.email;
+            if (user.emailAddress?.address) return user.emailAddress.address;
+            return null;
+        }).filter(Boolean);
+        
+        // Log the extracted emails for debugging
+        monitoringService?.debug('Extracted emails for availability check', {
+            emailCount: emails.length,
+            inputUserCount: options.users.length,
+            timestamp: new Date().toISOString()
+        }, 'calendar');
+        
+        if (emails.length === 0) {
+            const err = errorService.createError(
+                'calendar',
+                'No valid email addresses found in users array',
+                'error',
+                { 
+                    users: this.redactSensitiveData(options.users),
+                    timestamp: new Date().toISOString(),
+                    validationError: 'invalid_email_format'
+                }
+            );
+            monitoringService?.logError(err);
+            monitoringService?.error('Calendar availability validation failed: invalid email format', {
+                validationError: 'invalid_email_format',
+                timestamp: new Date().toISOString()
+            }, 'calendar');
+            throw err;
+        }
+        
+        // Extract date range from options
+        let startDateTime, endDateTime;
+        
+        if (options.timeSlots && options.timeSlots.length > 0) {
+            // Use the first time slot's start and the last time slot's end
+            const firstSlot = options.timeSlots[0];
+            const lastSlot = options.timeSlots[options.timeSlots.length - 1];
+            
+            startDateTime = firstSlot.start?.dateTime;
+            endDateTime = lastSlot.end?.dateTime;
+            
+            // Validate date format
+            if (!startDateTime || !endDateTime) {
+                const err = errorService.createError(
+                    'calendar',
+                    'Invalid time slot format: missing dateTime in start/end',
+                    'error',
+                    { 
+                        firstSlot: this.redactSensitiveData(firstSlot),
+                        lastSlot: this.redactSensitiveData(lastSlot),
+                        timestamp: new Date().toISOString(),
+                        validationError: 'invalid_timeslot_format'
+                    }
+                );
+                monitoringService?.logError(err);
+                monitoringService?.error('Calendar availability validation failed: invalid time slot format', {
+                    validationError: 'invalid_timeslot_format',
+                    timestamp: new Date().toISOString()
+                }, 'calendar');
+                throw err;
+            }
+        } else {
+            // Use duration and windowStart
+            const { duration } = options;
+            const windowStart = options.windowStart || new Date();
+            
+            startDateTime = typeof windowStart === 'string' ? windowStart : windowStart.toISOString();
+            
+            try {
+                // Validate duration format
+                if (!moment.duration(duration).isValid()) {
+                    throw new Error('Invalid duration format');
+                }
+                endDateTime = moment(startDateTime).add(moment.duration(duration)).toISOString();
+            } catch (error) {
+                const err = errorService.createError(
+                    'calendar',
+                    `Invalid duration format: ${duration}`,
+                    'error',
+                    { 
+                        duration,
+                        windowStart,
+                        timestamp: new Date().toISOString(),
+                        validationError: 'invalid_duration_format',
+                        originalError: error.message
+                    }
+                );
+                monitoringService?.logError(err);
+                monitoringService?.error('Calendar availability validation failed: invalid duration format', {
+                    validationError: 'invalid_duration_format',
+                    duration,
+                    timestamp: new Date().toISOString()
+                }, 'calendar');
+                throw err;
+            }
+        }
+
+        // Log the extracted date time range for debugging
+        monitoringService?.debug('Extracted date time range for availability check', {
+            startDateTime,
+            endDateTime,
+            startType: typeof startDateTime,
+            endType: typeof endDateTime,
+            timestamp: new Date().toISOString()
+        }, 'calendar');
+
+        try {
+            // Check if the Graph service has the required method
+            if (!graphService) {
+                const mcpError = errorService.createError(
+                    'calendar',
+                    'GraphService not available for calendar availability check',
+                    'error',
+                    { 
+                        timestamp: new Date().toISOString(),
+                        serviceError: 'missing_graph_service'
+                    }
+                );
+                monitoringService?.logError(mcpError);
+                monitoringService?.error('Calendar availability failed: Graph service not available', {
+                    serviceError: 'missing_graph_service',
+                    timestamp: new Date().toISOString()
+                }, 'calendar');
+                throw mcpError;
+            }
+            
+            if (typeof graphService.getAvailability !== 'function') {
+                const mcpError = errorService.createError(
+                    'calendar',
+                    'GraphService.getAvailability method not implemented',
+                    'error',
+                    { 
+                        emails: this.redactSensitiveData(emails),
+                        startDateTime,
+                        endDateTime,
+                        timestamp: new Date().toISOString(),
+                        serviceError: 'method_not_implemented'
+                    }
+                );
+                monitoringService?.logError(mcpError);
+                monitoringService?.error('Calendar availability failed: Method not implemented', {
+                    serviceError: 'method_not_implemented',
+                    timestamp: new Date().toISOString()
+                }, 'calendar');
+                throw mcpError;
+            }
+            
+            // Log that we're about to call the Graph service
+            monitoringService?.debug('Calling Graph service for availability', {
+                emailCount: emails.length,
+                startDateTime,
+                endDateTime,
+                timeZone: options.timeZone,
+                intervalMinutes: options.intervalMinutes,
+                timestamp: new Date().toISOString()
+            }, 'calendar');
+            
+            // Call the Graph service
+            const result = await graphService.getAvailability(emails, startDateTime, endDateTime, {
+                timeZone: options.timeZone,
+                intervalMinutes: options.intervalMinutes
+            });
+            
+            // Calculate execution time
+            const executionTime = Date.now() - startTime;
+            
+            // Log success metrics
+            monitoringService?.trackMetric('calendar_availability_success', executionTime, {
+                emailCount: emails.length,
+                resultCount: Array.isArray(result) ? result.length : 0,
+                timestamp: new Date().toISOString()
+            });
+            
+            // Log success with result summary
+            monitoringService?.info('Calendar availability check completed successfully', {
+                emailCount: emails.length,
+                resultCount: Array.isArray(result) ? result.length : 0,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'calendar');
+            
+            // Check if mock data is being returned
+            if (result && Array.isArray(result) && result.length > 0) {
+                const isMockData = result.some(item => 
+                    item.scheduleItems && item.scheduleItems.some(scheduleItem => 
+                        scheduleItem.id && scheduleItem.id.includes('mock')
+                    )
+                );
+                
+                if (isMockData) {
+                    monitoringService?.warn('Calendar availability returned mock data', {
+                        emailCount: emails.length,
+                        resultCount: result.length,
+                        executionTimeMs: executionTime,
+                        timestamp: new Date().toISOString()
+                    }, 'calendar');
+                }
+            }
+            
+            return result;
+        } catch (error) {
+            // Calculate execution time even for failures
+            const executionTime = Date.now() - startTime;
+            
+            // Track failure metrics
+            monitoringService?.trackMetric('calendar_availability_failure', executionTime, {
+                errorType: error.code || 'unknown',
+                timestamp: new Date().toISOString()
+            });
+            
+            // Create standardized error
+            const mcpError = errorService.createError(
+                'calendar',
+                `Failed to get availability: ${error.message}`,
+                'error',
+                { 
+                    emails: this.redactSensitiveData(emails),
+                    startDateTime,
+                    endDateTime,
+                    errorCode: error.code || 'unknown',
+                    statusCode: error.statusCode || 'unknown',
+                    originalError: error.stack || error.message,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            
+            // Log the error with detailed context
+            monitoringService?.logError(mcpError);
+            monitoringService?.error('Calendar availability check failed', {
+                errorMessage: error.message,
+                errorCode: error.code || 'unknown',
+                statusCode: error.statusCode || 'unknown',
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'calendar');
+            
+            throw mcpError;
+        }
+    },
+    
+    /**
+     * Private helper to handle common event actions (accept, decline, etc.).
+     * @param {string} action - The action to perform ('accept', 'tentativelyAccept', 'decline', 'cancel').
+     * @param {string} eventId - ID of the event to update.
+     * @param {string} comment - Optional comment.
+     * @returns {Promise<object>} Response from Graph Service.
+     * @private
+     */
+    async _handleEventAction(action, eventId, comment = '') {
+        // Get services with fallbacks
+        const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
+        const graphMethodName = `${action}Event`; // e.g., 'acceptEvent'
+
+        // Log the action attempt
+        monitoringService?.debug(`Attempting ${action} action on calendar event`, {
+            action,
+            eventId,
+            hasComment: !!comment,
+            timestamp: new Date().toISOString()
+        }, 'calendar');
+
+        if (!graphService || typeof graphService[graphMethodName] !== 'function') {
+            const methodError = errorService?.createError(
+                'calendar',
+                `GraphService.${graphMethodName} method not implemented`,
+                'error',
+                { 
+                    action,
+                    eventId,
+                    timestamp: new Date().toISOString(),
+                    serviceError: 'method_not_implemented'
+                }
+            );
+            monitoringService?.logError(methodError);
+            monitoringService?.error(`Calendar event ${action} failed: Method not implemented`, {
+                serviceError: 'method_not_implemented',
+                timestamp: new Date().toISOString()
+            }, 'calendar');
+            throw methodError;
+        }
+
+        try {
+            // Call the Graph service
+            const result = await graphService[graphMethodName](eventId, comment);
+            
+            // Log success
+            monitoringService?.info(`Calendar event ${action} successful`, {
+                eventId,
+                timestamp: new Date().toISOString()
+            }, 'calendar');
+            
+            return result;
+        } catch (error) {
+            // Create standardized error
+            const mcpError = errorService.createError(
+                'calendar',
+                `Failed to ${action} event: ${error.message}`,
+                'error',
+                { 
+                    action,
+                    eventId,
+                    errorCode: error.code || 'unknown',
+                    statusCode: error.statusCode || 'unknown',
+                    originalError: error.stack || error.message,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            
+            // Log the error with detailed context
+            monitoringService?.logError(mcpError);
+            monitoringService?.error(`Calendar event ${action} failed`, {
+                errorMessage: error.message,
+                errorCode: error.code || 'unknown',
+                statusCode: error.statusCode || 'unknown',
+                timestamp: new Date().toISOString()
+            }, 'calendar');
+            
+            throw mcpError;
+        }
+    },
+    
+    /**
+     * Get availability for users within a specified time range
+     * @param {object} options - Options object.
+     * @param {Array<string|object>} options.users - Array of user emails or user objects.
+     * @param {Array<object>} [options.timeSlots] - Array of time slots (e.g., [{ start: { dateTime, timeZone }, end: { dateTime, timeZone } }]). Required if duration is not provided.
+     * @param {string} [options.duration] - ISO 8601 duration string (e.g., 'PT1H'). Required if timeSlots is not provided.
+     * @param {string|Date} [options.windowStart=Date.now()] - Start time for the duration-based window.
+     * @returns {Promise<object>} Availability data object.
+     * @throws {Error} If input validation fails or Graph API call errors occur.
+     */
+    async getAvailability(options = {}) {
         // TODO: [getAvailability] Accept flexible window (slots/duration); bubble Graph errors (MEDIUM)
         const { graphService, errorService, monitoringService } = this.services || {};
 
@@ -1037,7 +1427,10 @@ const CalendarModule = {
 
         // Define validation schema
         const dateTimeTimeZoneSchema = Joi.object({
-            dateTime: Joi.string().isoDate().required(),
+            dateTime: Joi.alternatives().try(
+                Joi.string().isoDate(),
+                Joi.date()
+            ).required(),
             timeZone: Joi.string().required()
         });
         const timeSlotSchema = Joi.object({
@@ -1057,64 +1450,77 @@ const CalendarModule = {
         const { error: validationError, value: validatedOptions } = availabilityOptionsSchema.validate(options);
         if (validationError) {
             const err = errorService.createError('validation', `Invalid availability options: ${validationError.details[0].message}`, 'warn', { details: validationError.details });
-            monitoringService.logError(err);
-            throw err;
-        }
-
-        monitoringService.debug('Validated availability options', {
-            options: this.redactSensitiveData(validatedOptions),
-            timestamp: new Date().toISOString()
-        }, 'calendar');
-
-        const { users, timeSlots, duration, windowStart } = validatedOptions;
-
-        let startDateTime, endDateTime;
-
-        // Determine start and end times
-        if (timeSlots) {
-            // Use the first provided time slot
-            startDateTime = timeSlots[0].start.dateTime;
-            endDateTime = timeSlots[0].end.dateTime;
-            // TODO: Potentially support multiple time slots if Graph API allows?
-        } else {
-            // Calculate end time based on duration and windowStart
-            startDateTime = moment(windowStart).toISOString();
-            endDateTime = moment(startDateTime).add(moment.duration(duration)).toISOString();
-        }
-
-        monitoringService.debug('Extracted date time range for availability check', {
+        
+        // Log that we're about to call the Graph service
+        monitoringService?.debug('Calling Graph service for availability', {
+            emailCount: emails.length,
             startDateTime,
             endDateTime,
-            startType: typeof startDateTime,
-            endType: typeof endDateTime,
+            timeZone: options.timeZone,
+            intervalMinutes: options.intervalMinutes,
             timestamp: new Date().toISOString()
         }, 'calendar');
-
-        try {
-            if (typeof graphService.getAvailability !== 'function') {
-                const mcpError = errorService.createError(
-                    'calendar',
-                    'GraphService.getAvailability method not implemented',
-                    'error',
-                    { timestamp: new Date().toISOString() }
-                );
-                monitoringService.logError(mcpError);
-                throw new Error('GraphService.getAvailability method not implemented');
+        
+        // Call the Graph service
+        const result = await graphService.getAvailability(emails, startDateTime, endDateTime, {
+            timeZone: options.timeZone,
+            intervalMinutes: options.intervalMinutes
+        });
+        
+        // Calculate execution time
+        const executionTime = Date.now() - startTime;
+        
+        // Log success metrics
+        monitoringService?.trackMetric('calendar_availability_success', executionTime, {
+            emailCount: emails.length,
+            resultCount: Array.isArray(result) ? result.length : 0,
+            timestamp: new Date().toISOString()
+        });
+        
+        // Log success with result summary
+        monitoringService?.info('Calendar availability check completed successfully', {
+            emailCount: emails.length,
+            resultCount: Array.isArray(result) ? result.length : 0,
+            executionTimeMs: executionTime,
+            timestamp: new Date().toISOString()
+        }, 'calendar');
+        
+        // Check if mock data is being returned
+        if (result && Array.isArray(result) && result.length > 0) {
+            const isMockData = result.some(item => 
+                item.scheduleItems && item.scheduleItems.some(scheduleItem => 
+                    scheduleItem.id && scheduleItem.id.includes('mock')
+                )
+            );
+            
+            if (isMockData) {
+                monitoringService?.warn('Calendar availability returned mock data', {
+                    emailCount: emails.length,
+                    resultCount: result.length,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'calendar');
             }
-            
-            // Track performance
-            const startTime = Date.now();
-            
-            // Assuming graphService.getAvailability takes users array and start/end strings
-            const availabilityData = await graphService.getAvailability(users, startDateTime, endDateTime);
-            
-            // Calculate elapsed time and track metric
-            const elapsedTime = Date.now() - startTime;
-            monitoringService.trackMetric('calendar_get_availability', elapsedTime, {
-                userCount: users.length,
-                timestamp: new Date().toISOString()
-            });
-            
+        }
+        
+        return result;
+    } catch (error) {
+        // Calculate execution time even for failures
+        const executionTime = Date.now() - startTime;
+        
+        // Track failure metrics
+        monitoringService?.trackMetric('calendar_availability_failure', executionTime, {
+            errorType: error.code || 'unknown',
+            timestamp: new Date().toISOString()
+        });
+        
+        // Create standardized error
+        const mcpError = errorService.createError(
+            'calendar',
+            `Failed to get availability: ${error.message}`,
+            'error',
+            { 
+                emails: this.redactSensitiveData(emails),
             monitoringService.info('Successfully retrieved availability data', {
                 userCount: users.length,
                 resultCount: availabilityData?.length || 0,

@@ -147,6 +147,12 @@ function registerRoutes(router) {
     // TODO: Apply rate limiting
     logRouter.post('/', placeholderRateLimit, logController.addLogEntry); // /v1/logs
     logRouter.get('/', logController.getLogEntries); // /v1/logs
+    // Convenience endpoints for specific log categories
+    logRouter.get('/calendar', (req, res) => {
+        // Pre-filter for calendar logs
+        req.query.category = 'calendar';
+        return logController.getLogEntries(req, res);
+    }); // /v1/logs/calendar
     // TODO: Apply rate limiting
     logRouter.post('/clear', placeholderRateLimit, logController.clearLogEntries); // /v1/logs/clear
     v1.use('/logs', logRouter); // Mounted at /v1/logs

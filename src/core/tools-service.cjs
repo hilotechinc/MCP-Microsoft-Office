@@ -1043,39 +1043,104 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 return updateData;
                 
             case 'calendar.getAvailability':
-                // Ensure we have start/end times for availability check
-                if (!transformedParams.start && !transformedParams.startTime) {
-                    logger.warn('getAvailability requires start time');
-                }
+                logger.debug(`transformParameters: Processing getAvailability parameters`, JSON.stringify(transformedParams, null, 2));
                 
-                if (!transformedParams.end && !transformedParams.endTime) {
-                    logger.warn('getAvailability requires end time');
-                }
-                
-                // Transform start/end to the format expected by the API
-                const startTime = typeof transformedParams.start === 'object' && transformedParams.start.dateTime 
-                    ? transformedParams.start.dateTime 
-                    : transformedParams.start || transformedParams.startTime;
-                
-                const endTime = typeof transformedParams.end === 'object' && transformedParams.end.dateTime 
-                    ? transformedParams.end.dateTime 
-                    : transformedParams.end || transformedParams.endTime;
-                
-                return {
-                    users: transformAttendees(transformedParams.users) || transformAttendees(transformedParams.attendees) || [],
-                    timeSlots: [
-                        {
+                // Check if we're receiving the new format with timeSlots array
+                if (transformedParams.timeSlots && Array.isArray(transformedParams.timeSlots)) {
+                    logger.debug(`transformParameters: getAvailability received timeSlots format with ${transformedParams.timeSlots.length} slots`);
+                    
+                    // Validate the structure of each time slot
+                    const timeSlots = transformedParams.timeSlots.map((slot, index) => {
+                        logger.debug(`transformParameters: Processing time slot ${index}:`, JSON.stringify(slot, null, 2));
+                        
+                        // Handle different possible formats for start/end
+                        // Case 1: slot has start/end objects with dateTime property
+                        if (slot.start?.dateTime && slot.end?.dateTime) {
+                            return {
+                                start: {
+                                    dateTime: slot.start.dateTime,
+                                    timeZone: slot.start.timeZone || transformedParams.timeZone || 'UTC'
+                                },
+                                end: {
+                                    dateTime: slot.end.dateTime,
+                                    timeZone: slot.end.timeZone || transformedParams.timeZone || 'UTC'
+                                }
+                            };
+                        }
+                        
+                        // Case 2: slot has start/end as simple strings
+                        if (typeof slot.start === 'string' && typeof slot.end === 'string') {
+                            return {
+                                start: {
+                                    dateTime: slot.start,
+                                    timeZone: transformedParams.timeZone || 'UTC'
+                                },
+                                end: {
+                                    dateTime: slot.end,
+                                    timeZone: transformedParams.timeZone || 'UTC'
+                                }
+                            };
+                        }
+                        
+                        // Case 3: slot itself is malformed, try to extract what we can
+                        logger.warn(`transformParameters: Malformed time slot at index ${index}:`, JSON.stringify(slot, null, 2));
+                        return {
                             start: {
-                                dateTime: startTime,
-                                timeZone: transformedParams.timeZone || 'UTC'
+                                dateTime: slot.start?.dateTime || slot.start || new Date().toISOString(),
+                                timeZone: slot.start?.timeZone || transformedParams.timeZone || 'UTC'
                             },
                             end: {
-                                dateTime: endTime,
-                                timeZone: transformedParams.timeZone || 'UTC'
+                                dateTime: slot.end?.dateTime || slot.end || new Date(Date.now() + 3600000).toISOString(),
+                                timeZone: slot.end?.timeZone || transformedParams.timeZone || 'UTC'
                             }
-                        }
-                    ]
-                };
+                        };
+                    });
+                    
+                    // Transform parameters to match the controller's expectations
+                    return {
+                        users: transformAttendees(transformedParams.users) || [],
+                        timeSlots: timeSlots
+                    };
+                } else {
+                    // Original format with start/end fields
+                    // Ensure we have start/end times for availability check
+                    if (!transformedParams.start && !transformedParams.startTime) {
+                        logger.warn('getAvailability requires start time');
+                        throw new Error('Start time is required for getAvailability');
+                    }
+                    
+                    if (!transformedParams.end && !transformedParams.endTime) {
+                        logger.warn('getAvailability requires end time');
+                        throw new Error('End time is required for getAvailability');
+                    }
+                    
+                    // Transform start/end to the format expected by the API
+                    const availStartTime = typeof transformedParams.start === 'object' && transformedParams.start.dateTime 
+                        ? transformedParams.start.dateTime 
+                        : transformedParams.start || transformedParams.startTime;
+                    
+                    const availEndTime = typeof transformedParams.end === 'object' && transformedParams.end.dateTime 
+                        ? transformedParams.end.dateTime 
+                        : transformedParams.end || transformedParams.endTime;
+                    
+                    logger.debug(`transformParameters: Extracted start/end times:`, { availStartTime, availEndTime });
+                    
+                    return {
+                        users: transformAttendees(transformedParams.users) || transformAttendees(transformedParams.attendees) || [],
+                        timeSlots: [
+                            {
+                                start: {
+                                    dateTime: availStartTime,
+                                    timeZone: transformedParams.timeZone || 'UTC'
+                                },
+                                end: {
+                                    dateTime: availEndTime,
+                                    timeZone: transformedParams.timeZone || 'UTC'
+                                }
+                            }
+                        ]
+                    };
+                }
                 
             case 'calendar.scheduleMeeting':
                 // Extract start and end time information
@@ -1255,6 +1320,11 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
             // Special case for query
             if (toolName === 'query') {
                 return { moduleName: 'query', methodName: 'processQuery' };
+            }
+            
+            // Special case for calendar.getAvailability
+            if (toolName === 'calendar.getAvailability') {
+                return { moduleName: 'calendar', methodName: 'getAvailability' };
             }
 
             const lowerCaseToolName = toolName.toLowerCase();
