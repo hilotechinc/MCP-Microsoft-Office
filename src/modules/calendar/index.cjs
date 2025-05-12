@@ -1450,61 +1450,106 @@ const CalendarModule = {
         const { error: validationError, value: validatedOptions } = availabilityOptionsSchema.validate(options);
         if (validationError) {
             const err = errorService.createError('validation', `Invalid availability options: ${validationError.details[0].message}`, 'warn', { details: validationError.details });
+            monitoringService?.logError(err);
+            throw err;
+        }
         
-        // Log that we're about to call the Graph service
-        monitoringService?.debug('Calling Graph service for availability', {
-            emailCount: emails.length,
-            startDateTime,
-            endDateTime,
-            timeZone: options.timeZone,
-            intervalMinutes: options.intervalMinutes,
-            timestamp: new Date().toISOString()
-        }, 'calendar');
+        // Extract validated options
+        const { users, timeSlots, duration, windowStart } = validatedOptions;
         
-        // Call the Graph service
-        const result = await graphService.getAvailability(emails, startDateTime, endDateTime, {
-            timeZone: options.timeZone,
-            intervalMinutes: options.intervalMinutes
-        });
+        // Convert users to email addresses if they are objects
+        const emails = users.map(user => typeof user === 'string' ? user : user.email || user.emailAddress?.address);
         
-        // Calculate execution time
-        const executionTime = Date.now() - startTime;
+        // Start timing for performance tracking
+        const startTime = Date.now();
         
-        // Log success metrics
-        monitoringService?.trackMetric('calendar_availability_success', executionTime, {
-            emailCount: emails.length,
-            resultCount: Array.isArray(result) ? result.length : 0,
-            timestamp: new Date().toISOString()
-        });
+        // Determine time range based on provided options
+        let startDateTime, endDateTime;
         
-        // Log success with result summary
-        monitoringService?.info('Calendar availability check completed successfully', {
-            emailCount: emails.length,
-            resultCount: Array.isArray(result) ? result.length : 0,
-            executionTimeMs: executionTime,
-            timestamp: new Date().toISOString()
-        }, 'calendar');
-        
-        // Check if mock data is being returned
-        if (result && Array.isArray(result) && result.length > 0) {
-            const isMockData = result.some(item => 
-                item.scheduleItems && item.scheduleItems.some(scheduleItem => 
-                    scheduleItem.id && scheduleItem.id.includes('mock')
-                )
-            );
+        if (timeSlots && timeSlots.length > 0) {
+            // Use the first time slot for the API call
+            startDateTime = timeSlots[0].start.dateTime;
+            endDateTime = timeSlots[0].end.dateTime;
+        } else if (duration) {
+            // Calculate end time based on duration
+            const start = new Date(windowStart);
+            startDateTime = start.toISOString();
             
-            if (isMockData) {
-                monitoringService?.warn('Calendar availability returned mock data', {
-                    emailCount: emails.length,
-                    resultCount: result.length,
-                    executionTimeMs: executionTime,
-                    timestamp: new Date().toISOString()
-                }, 'calendar');
+            // Parse ISO 8601 duration and add to start time
+            // This is a simplified parser for basic durations
+            const durationMatch = duration.match(/^P(?:(?:(?<days>\d+)D)|(?:T(?:(?<hours>\d+)H)?(?:(?<minutes>\d+)M)?(?:(?<seconds>\d+)S)?))$/);
+            if (durationMatch && durationMatch.groups) {
+                const { days, hours, minutes, seconds } = durationMatch.groups;
+                const end = new Date(start);
+                if (days) end.setDate(end.getDate() + parseInt(days, 10));
+                if (hours) end.setHours(end.getHours() + parseInt(hours, 10));
+                if (minutes) end.setMinutes(end.getMinutes() + parseInt(minutes, 10));
+                if (seconds) end.setSeconds(end.getSeconds() + parseInt(seconds, 10));
+                endDateTime = end.toISOString();
+            } else {
+                // Default to 1 hour if duration parsing fails
+                const end = new Date(start);
+                end.setHours(end.getHours() + 1);
+                endDateTime = end.toISOString();
+                monitoringService?.warn('Failed to parse duration, using 1 hour default', { duration }, 'calendar');
             }
         }
         
-        return result;
-    } catch (error) {
+        try {
+            // Log that we're about to call the Graph service
+            monitoringService?.debug('Calling Graph service for availability', {
+                emailCount: emails.length,
+                startDateTime,
+                endDateTime,
+                timeZone: options.timeZone,
+                intervalMinutes: options.intervalMinutes,
+                timestamp: new Date().toISOString()
+            }, 'calendar');
+            
+            // Call the Graph service
+            const result = await graphService.getAvailability(emails, startDateTime, endDateTime, {
+                timeZone: options.timeZone,
+                intervalMinutes: options.intervalMinutes
+            });
+            
+            // Calculate execution time
+            const executionTime = Date.now() - startTime;
+            
+            // Log success metrics
+            monitoringService?.trackMetric('calendar_availability_success', executionTime, {
+                emailCount: emails.length,
+                resultCount: Array.isArray(result) ? result.length : 0,
+                timestamp: new Date().toISOString()
+            });
+            
+            // Log success with result summary
+            monitoringService?.info('Calendar availability check completed successfully', {
+                emailCount: emails.length,
+                resultCount: Array.isArray(result) ? result.length : 0,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'calendar');
+            
+            // Check if mock data is being returned
+            if (result && Array.isArray(result) && result.length > 0) {
+                const isMockData = result.some(item => 
+                    item.scheduleItems && item.scheduleItems.some(scheduleItem => 
+                        scheduleItem.id && scheduleItem.id.includes('mock')
+                    )
+                );
+                
+                if (isMockData) {
+                    monitoringService?.warn('Calendar availability returned mock data', {
+                        emailCount: emails.length,
+                        resultCount: result.length,
+                        executionTimeMs: executionTime,
+                        timestamp: new Date().toISOString()
+                    }, 'calendar');
+                }
+            }
+            
+            return result;
+        } catch (error) {
         // Calculate execution time even for failures
         const executionTime = Date.now() - startTime;
         
@@ -1521,113 +1566,21 @@ const CalendarModule = {
             'error',
             { 
                 emails: this.redactSensitiveData(emails),
-            monitoringService.info('Successfully retrieved availability data', {
-                userCount: users.length,
-                resultCount: availabilityData?.length || 0,
                 startDateTime,
                 endDateTime,
-                elapsedTime,
+                error: error.toString(),
+                stack: error.stack,
                 timestamp: new Date().toISOString()
-            }, 'calendar');
-
-            // Format the response (Keep existing formatting logic)
-            const result = {
-                users: []
-            };
-            // Process each user's availability
-            for (let i = 0; i < availabilityData.length; i++) {
-                const userData = availabilityData[i];
-                // Match user email/object correctly - requires graphService to return identifier
-                // This assumes userData.scheduleId is the email passed in; needs verification.
-                const userIdentifier = userData.scheduleId;
-
-                const userAvailability = {
-                    identifier: userIdentifier, // Use the identifier returned by Graph
-                    availability: []
-                };
-
-                // Process availability view
-                if (userData.availabilityView) {
-                    const availabilityView = userData.availabilityView;
-                    const startTime = new Date(startDateTime);
-                    const endTime = new Date(endDateTime);
-                    const totalMinutes = (endTime - startTime) / (1000 * 60);
-                    if (availabilityView.length === 0 || totalMinutes <= 0) continue; // Avoid division by zero
-                    const slotIntervalDuration = totalMinutes / availabilityView.length * 60 * 1000; // in ms
-
-                    const availableSlots = [];
-
-                    // Parse the availability view string (0=free, 1=tentative, 2=busy, 3=oof, 4=workingElsewhere, 5=unknown)
-                    for (let j = 0; j < availabilityView.length; j++) {
-                        const status = availabilityView[j];
-                        if (status === '0') { // Free
-                            const slotStart = new Date(startTime.getTime() + (j * slotIntervalDuration));
-                            const slotEnd = new Date(slotStart.getTime() + slotIntervalDuration);
-
-                            availableSlots.push({
-                                start: slotStart.toISOString(),
-                                end: slotEnd.toISOString(),
-                                status: 'available'
-                            });
-                        }
-                    }
-
-                    userAvailability.availability.push({
-                        timeSlot: {
-                            start: startDateTime,
-                            end: endDateTime
-                        },
-                        availableSlots: availableSlots
-                    });
-                }
-                // Include scheduleItems if returned by Graph
-                if (userData.scheduleItems) {
-                    userAvailability.scheduleItems = userData.scheduleItems.map(item => ({ // Simple pass-through for now
-                        status: item.status,
-                        subject: item.subject, // Optional, might not always be present
-                        start: item.start.dateTime,
-                        end: item.end.dateTime,
-                        isPrivate: item.isPrivate
-                    }));
-                }
-                result.users.push(userAvailability);
             }
-
-            return result;
-
-        } catch (error) {
-            // Extract Graph API details if available
-            const graphDetails = {
-                statusCode: error.statusCode,
-                code: error.code, // e.g., ErrorItemNotFound, ErrorAccessDenied
-                graphRequestId: error.requestId,
-                originalMessage: error.message
-            };
-            
-            // Create a single standardized error object
-            const mcpError = errorService.createError(
-                'calendar',
-                `Failed to get availability: ${error.code || error.message}`,
-                error.statusCode && error.statusCode >= 500 ? 'error' : 'warn', // Treat client errors (4xx) as warnings
-                { 
-                    graphDetails, 
-                    originalError: error.stack,
-                    requestParams: { 
-                        users: this.redactSensitiveData(users), 
-                        startDateTime, 
-                        endDateTime 
-                    },
-                    timestamp: new Date().toISOString()
-                }
-            );
-            
-            // Log the error
-            monitoringService.logError(mcpError) || 
-                console.error(`[MCP CALENDAR] Failed to get availability: ${error.message}`);
-                
-            // Throw the structured error
-            throw mcpError;
+        );
+        
+        // Log the error
+        monitoringService?.logError(mcpError);
+        
+        // Rethrow the error for the caller to handle
+        throw mcpError;
         }
+
     },
     
     /**
