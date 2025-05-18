@@ -57,6 +57,16 @@ export class LogViewer {
                             <option value="info">Info</option>
                             <option value="debug">Debug</option>
                         </select>
+                        <select class="category-filter">
+                            <option value="">All Categories</option>
+                            <option value="calendar">Calendar</option>
+                            <option value="mail">Mail</option>
+                            <option value="files">Files</option>
+                            <option value="graph">Graph API</option>
+                            <option value="api">API</option>
+                            <option value="adapter">MCP Adapter</option>
+                        </select>
+                        <button class="track-calendar-flow-btn">Track Calendar Flow</button>
                         <button class="refresh-btn">Refresh</button>
                         <button class="clear-btn">Clear</button>
                     </div>
@@ -80,111 +90,349 @@ export class LogViewer {
         // Apply styles
         const style = document.createElement('style');
         style.textContent = `
+            /* Modern 2025 Design System Variables */
+            :root {
+                --primary: #0078d4;
+                --primary-dark: #005a9e;
+                --primary-light: #c7e0f4;
+                --secondary: #5c2d91;
+                --accent: #107c41;
+                --warning: #ff8c00;
+                --error: #d13438;
+                --success: #0f7b0f;
+                --neutral-100: #ffffff;
+                --neutral-95: #f9f9f9;
+                --neutral-90: #f0f0f0;
+                --neutral-80: #e0e0e0;
+                --neutral-60: #bdbdbd;
+                --neutral-40: #767676;
+                --neutral-20: #333333;
+                --neutral-10: #1f1f1f;
+                --shadow-sm: 0 2px 8px rgba(0,0,0,0.06);
+                --shadow-md: 0 4px 16px rgba(0,0,0,0.08);
+                --shadow-lg: 0 8px 24px rgba(0,0,0,0.12);
+                --radius-sm: 6px;
+                --radius-md: 8px;
+                --radius-lg: 12px;
+                --font-primary: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, 'Helvetica Neue', sans-serif;
+                --font-mono: 'Cascadia Code', 'SF Mono', Monaco, Menlo, Consolas, 'Courier New', monospace;
+                --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+                --transition-normal: 250ms cubic-bezier(0.4, 0, 0.2, 1);
+            }
+            
             .log-viewer {
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-                border-radius: 6px;
+                font-family: var(--font-primary);
+                color: var(--neutral-20);
+                background-color: var(--neutral-100);
+                border-radius: var(--radius-lg);
+                box-shadow: var(--shadow-md);
+                margin: 24px 0;
                 overflow: hidden;
-                box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-                margin-bottom: 20px;
-                border: 1px solid #e0e0e0;
+                max-width: 1200px;
+                margin-left: auto;
+                margin-right: auto;
+                border: 1px solid var(--neutral-90);
             }
             
             .log-viewer-header {
-                background-color: #f0f7ff;
-                padding: 12px 16px;
-                border-bottom: 1px solid #cfe5fc;
+                padding: 20px 24px;
+                background-color: var(--neutral-95);
+                border-bottom: 1px solid var(--neutral-90);
+                display: flex;
+                flex-direction: column;
+                gap: 16px;
             }
             
             .log-viewer-header h3 {
-                margin: 0 0 10px 0;
-                color: #0078d4;
-                font-weight: 500;
+                margin: 0;
+                font-size: 20px;
+                font-weight: 600;
+                color: var(--neutral-20);
+                letter-spacing: -0.01em;
             }
             
-            .log-viewer-controls {
-                display: flex;
-                justify-content: space-between;
+            /* Modern Button Base Style */
+            .btn {
+                display: inline-flex;
                 align-items: center;
-                flex-wrap: wrap;
-                gap: 10px;
+                justify-content: center;
+                padding: 10px 16px;
+                border-radius: var(--radius-sm);
+                border: none;
+                font-size: 14px;
+                font-weight: 500;
+                cursor: pointer;
+                transition: all var(--transition-fast);
+                position: relative;
+                overflow: hidden;
+                gap: 8px;
+                min-width: 100px;
+                height: 40px;
+                letter-spacing: 0.01em;
             }
             
-            .filter-controls, .view-controls {
+            .btn:focus {
+                outline: none;
+                box-shadow: 0 0 0 2px var(--neutral-100), 0 0 0 4px var(--primary);
+            }
+            
+            .btn:active {
+                transform: translateY(1px);
+            }
+            
+            /* Button Variants */
+            .btn-primary {
+                background-color: var(--primary);
+                color: white;
+            }
+            
+            .btn-primary:hover {
+                background-color: var(--primary-dark);
+            }
+            
+            .btn-secondary {
+                background-color: var(--secondary);
+                color: white;
+            }
+            
+            .btn-secondary:hover {
+                background-color: #4a2477;
+            }
+            
+            .btn-accent {
+                background-color: var(--accent);
+                color: white;
+            }
+            
+            .btn-accent:hover {
+                background-color: #0a6535;
+            }
+            
+            .btn-warning {
+                background-color: var(--warning);
+                color: white;
+            }
+            
+            .btn-warning:hover {
+                background-color: #e67e00;
+            }
+            
+            .btn-danger {
+                background-color: var(--error);
+                color: white;
+            }
+            
+            .btn-danger:hover {
+                background-color: #b92b2f;
+            }
+            
+            .btn-outline {
+                background-color: transparent;
+                color: var(--neutral-20);
+                border: 1px solid var(--neutral-60);
+            }
+            
+            .btn-outline:hover {
+                background-color: var(--neutral-95);
+                border-color: var(--neutral-40);
+            }
+            
+            /* Form Controls */
+            .form-control {
+                padding: 10px 16px;
+                border-radius: var(--radius-sm);
+                border: 1px solid var(--neutral-80);
+                background-color: var(--neutral-100);
+                font-size: 14px;
+                min-width: 160px;
+                height: 40px;
+                transition: all var(--transition-fast);
+                color: var(--neutral-20);
+                font-family: var(--font-primary);
+            }
+            
+            .form-control:focus {
+                outline: none;
+                border-color: var(--primary);
+                box-shadow: 0 0 0 3px var(--primary-light);
+            }
+            
+            .form-control:hover:not(:focus) {
+                border-color: var(--neutral-60);
+            }
+            
+            /* Layout Components */
+            .flow-tracking-header {
+                padding: 16px;
+                background-color: var(--primary-light);
+                border-radius: var(--radius-md);
+                margin-bottom: 16px;
+                font-weight: 500;
+                color: var(--primary-dark);
                 display: flex;
                 align-items: center;
                 gap: 8px;
             }
             
-            .level-filter {
-                padding: 6px 10px;
-                border-radius: 4px;
-                border: 1px solid #ccc;
-                background-color: white;
-                font-size: 13px;
+            .flow-tracking-header::before {
+                content: '';
+                display: block;
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                background-color: var(--primary);
             }
             
-            .refresh-btn, .clear-btn {
-                padding: 6px 12px;
-                border-radius: 4px;
-                border: none;
-                cursor: pointer;
-                font-weight: 500;
-                transition: background-color 0.15s ease;
+            .log-viewer-controls {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 20px;
+                justify-content: space-between;
+            }
+            
+            .filter-controls {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 12px;
+                align-items: center;
+            }
+            
+            /* Apply our form-control class */
+            .level-filter, .category-filter {
+                composes: form-control;
+            }
+            
+            /* Apply our button classes */
+            .track-calendar-flow-btn {
+                composes: btn btn-warning;
             }
             
             .refresh-btn {
-                background-color: #0078d4;
-                color: white;
-            }
-            
-            .refresh-btn:hover {
-                background-color: #0067b9;
+                composes: btn btn-primary;
             }
             
             .clear-btn {
-                background-color: #d83b01;
-                color: white;
+                composes: btn btn-danger;
             }
             
-            .clear-btn:hover {
-                background-color: #c43600;
-            }
-            
+            /* Log Container */
             .log-entries-container {
-                height: 400px;
+                height: 500px;
                 overflow-y: auto;
-                background-color: #f9f9f9;
-                border-top: 1px solid #e0e0e0;
+                background-color: var(--neutral-95);
+                border-top: 1px solid var(--neutral-90);
+                padding: 0;
+                position: relative;
+                scrollbar-width: thin;
+                scrollbar-color: var(--neutral-60) var(--neutral-95);
+            }
+            
+            .log-entries-container::-webkit-scrollbar {
+                width: 8px;
+                height: 8px;
+            }
+            
+            .log-entries-container::-webkit-scrollbar-track {
+                background: var(--neutral-95);
+            }
+            
+            .log-entries-container::-webkit-scrollbar-thumb {
+                background-color: var(--neutral-60);
+                border-radius: 20px;
+                border: 2px solid var(--neutral-95);
             }
             
             .log-entries {
-                font-family: 'Menlo', 'Monaco', 'Consolas', 'Courier New', monospace;
-                font-size: 12px;
+                font-family: var(--font-mono);
+                font-size: 13px;
                 line-height: 1.6;
-                white-space: pre-wrap;
-                padding: 12px;
+                padding: 16px 0;
             }
             
+            /* Log Entry Styling */
             .log-entry {
-                margin-bottom: 10px;
-                padding-bottom: 10px;
-                border-bottom: 1px solid #ebebeb;
-                display: flex;
-                flex-direction: column;
+                padding: 12px 24px;
+                border-bottom: 1px solid var(--neutral-90);
+                transition: background-color var(--transition-fast);
+                position: relative;
+            }
+            
+            .log-entry:hover {
+                background-color: var(--neutral-100);
+            }
+            
+            .log-entry:last-child {
+                border-bottom: none;
             }
             
             .log-entry-header {
                 display: flex;
+                gap: 12px;
+                margin-bottom: 8px;
+                font-size: 13px;
                 align-items: center;
                 flex-wrap: wrap;
-                gap: 6px;
-                margin-bottom: 4px;
             }
             
             .log-timestamp {
-                color: #666;
+                color: var(--neutral-40);
+                font-size: 12px;
+                font-family: var(--font-mono);
+            }
+            
+            .log-level {
+                padding: 2px 6px;
+                border-radius: 4px;
                 font-size: 11px;
-                font-family: 'Menlo', 'Monaco', 'Consolas', 'Courier New', monospace;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+            }
+            
+            .log-level-error {
+                background-color: rgba(209, 52, 56, 0.1);
+                color: var(--error);
+            }
+            
+            .log-level-warn {
+                background-color: rgba(255, 140, 0, 0.1);
+                color: var(--warning);
+            }
+            
+            .log-level-info {
+                background-color: rgba(0, 120, 212, 0.1);
+                color: var(--primary);
+            }
+            
+            .log-level-debug {
+                background-color: rgba(92, 45, 145, 0.1);
+                color: var(--secondary);
+            }
+            
+            .log-category {
+                padding: 2px 8px;
+                border-radius: 12px;
+                font-size: 11px;
+                background-color: var(--neutral-90);
+                color: var(--neutral-20);
+            }
+            
+            .log-message {
+                font-family: var(--font-primary);
+                font-size: 14px;
+                margin-bottom: 8px;
+                line-height: 1.5;
+                color: var(--neutral-20);
+            }
+            
+            .log-context {
+                background-color: var(--neutral-100);
+                border: 1px solid var(--neutral-90);
+                border-radius: var(--radius-sm);
+                padding: 12px;
+                margin-top: 8px;
+                overflow-x: auto;
+                position: relative;
             }
             
             .log-level {
@@ -262,17 +510,33 @@ export class LogViewer {
         document.head.appendChild(style);
         
         // Add event listeners
-        this.container.querySelector('.refresh-btn').addEventListener('click', () => this.fetchLogs());
-        this.container.querySelector('.clear-btn').addEventListener('click', () => this.clearLogs());
-        this.container.querySelector('.level-filter').addEventListener('change', (e) => {
-            this.filter.level = e.target.value || null;
+        const refreshBtn = this.container.querySelector('.refresh-btn');
+        const clearBtn = this.container.querySelector('.clear-btn');
+        const levelFilter = this.container.querySelector('.level-filter');
+        const categoryFilter = this.container.querySelector('.category-filter');
+        const trackCalendarFlowBtn = this.container.querySelector('.track-calendar-flow-btn');
+        const autoScrollCheckbox = this.container.querySelector('.auto-scroll');
+        const autoRefreshCheckbox = this.container.querySelector('.auto-refresh');
+        
+        // Store tracking state
+        this.isTrackingCalendarFlow = false;
+        
+        refreshBtn.addEventListener('click', () => this.fetchLogs());
+        clearBtn.addEventListener('click', () => this.clearLogs());
+        levelFilter.addEventListener('change', () => {
+            this.filter.level = levelFilter.value || null;
             this.fetchLogs();
         });
-        this.container.querySelector('.auto-scroll').addEventListener('change', (e) => {
-            this.options.autoScroll = e.target.checked;
+        categoryFilter.addEventListener('change', () => {
+            this.filter.category = categoryFilter.value || null;
+            this.fetchLogs();
         });
-        this.container.querySelector('.auto-refresh').addEventListener('change', (e) => {
-            if (e.target.checked) {
+        trackCalendarFlowBtn.addEventListener('click', () => this.trackCalendarFlow());
+        autoScrollCheckbox.addEventListener('change', () => {
+            this.options.autoScroll = autoScrollCheckbox.checked;
+        });
+        autoRefreshCheckbox.addEventListener('change', () => {
+            if (autoRefreshCheckbox.checked) {
                 this.startAutoRefresh();
             } else {
                 this.stopAutoRefresh();
@@ -466,6 +730,156 @@ export class LogViewer {
         const checkbox = this.container.querySelector('.auto-refresh');
         if (checkbox) {
             checkbox.checked = false;
+        }
+    }
+    
+    /**
+     * Track the calendar API flow from routes to Microsoft Graph
+     */
+    async trackCalendarFlow() {
+        try {
+            // Set tracking state
+            this.isTrackingCalendarFlow = true;
+            
+            // Clear logs first to make it easier to track the flow
+            await this.clearLogs();
+            
+            // Show tracking message
+            const logsContainer = this.container.querySelector('.log-entries');
+            logsContainer.innerHTML = '<div class="flow-tracking-header">Preparing to track calendar flow...</div>';
+            
+            // Make a calendar API call to generate logs
+            const response = await fetch('/api/v1/calendar?debug=true');
+            const data = await response.json();
+            
+            // Wait a moment for all logs to be generated
+            setTimeout(async () => {
+                // Fetch and display the calendar flow logs with special filtering
+                await this.fetchCalendarFlowLogs();
+            }, 1000);
+        } catch (error) {
+            console.error('Error tracking calendar flow:', error);
+            const logsContainer = this.container.querySelector('.log-entries');
+            logsContainer.innerHTML = `<div class="log-entry log-level-error">Error tracking calendar flow: ${error.message}</div>`;
+        }
+    }
+    
+    /**
+     * Fetch logs specifically for calendar flow tracking
+     */
+    async fetchCalendarFlowLogs() {
+        try {
+            // Build query parameters - we'll filter client-side for more control
+            const url = `${this.options.apiEndpoint}?limit=200`;
+            
+            const response = await fetch(url);
+            if (response.ok) {
+                const logs = await response.json();
+                
+                // Clear the log div
+                const logsContainer = this.container.querySelector('.log-entries');
+                logsContainer.innerHTML = '';
+                
+                // Filter logs for calendar flow tracking
+                const filteredLogs = logs.filter(log => {
+                    // Include logs from routes.cjs
+                    if ((log.message || '').includes('/v1/calendar') && 
+                        (log.category === 'api-request' || log.category === 'api')) {
+                        return true;
+                    }
+                    
+                    // Include logs from calendar controller
+                    if (log.category === 'calendar') {
+                        return true;
+                    }
+                    
+                    // Include logs from MCP adapter related to calendar
+                    if ((log.category === 'adapter' || log.category === 'calendar-adapter') && 
+                        ((log.message || '').toLowerCase().includes('calendar') || 
+                         JSON.stringify(log.data || {}).toLowerCase().includes('calendar'))) {
+                        return true;
+                    }
+                    
+                    // Include Microsoft Graph API calls
+                    if (log.category === 'graph' && 
+                        ((log.message || '').toLowerCase().includes('calendar') || 
+                         JSON.stringify(log.data || {}).toLowerCase().includes('calendar'))) {
+                        return true;
+                    }
+                    
+                    return false;
+                });
+                
+                // Sort by timestamp to show the flow in order
+                filteredLogs.sort((a, b) => {
+                    return new Date(a.timestamp) - new Date(b.timestamp);
+                });
+                
+                // Add header for flow tracking
+                logsContainer.innerHTML = `<div class="flow-tracking-header">
+                    <strong>Calendar API Flow Tracking</strong><br>
+                    Showing ${filteredLogs.length} log entries related to calendar API flow from routes to Microsoft Graph
+                </div>`;
+                
+                // Add each log entry with special formatting
+                filteredLogs.forEach(log => {
+                    const logEntry = document.createElement('div');
+                    logEntry.className = 'log-entry';
+                    
+                    // Format timestamp
+                    const timestamp = new Date(log.timestamp).toLocaleString();
+                    
+                    // Determine color based on category for flow tracking
+                    let categoryColor = '#0078d4'; // Default blue
+                    if (log.category === 'api-request' || log.category === 'api') {
+                        categoryColor = '#107c41'; // Green for API routes
+                    } else if (log.category === 'calendar') {
+                        categoryColor = '#5c2d91'; // Purple for calendar controller
+                    } else if (log.category === 'adapter' || log.category === 'calendar-adapter') {
+                        categoryColor = '#0078d4'; // Blue for MCP adapter
+                    } else if (log.category === 'graph') {
+                        categoryColor = '#d83b01'; // Orange for Graph API
+                    }
+                    
+                    // Create header with timestamp, level, and category
+                    const headerDiv = document.createElement('div');
+                    headerDiv.className = 'log-entry-header';
+                    headerDiv.innerHTML = `
+                        <span class="log-timestamp">[${timestamp}]</span>
+                        <span class="log-level log-level-${log.level || 'info'}">${log.level || 'info'}</span>
+                        <span class="log-category" style="color:${categoryColor}">${log.category || 'unknown'}</span>
+                    `;
+                    
+                    // Create message content
+                    const messageDiv = document.createElement('div');
+                    messageDiv.className = 'log-message';
+                    messageDiv.textContent = log.message || 'No message';
+                    
+                    // Add components to log entry
+                    logEntry.appendChild(headerDiv);
+                    logEntry.appendChild(messageDiv);
+                    
+                    // Add context data if available
+                    if (log.data && Object.keys(log.data).length > 0) {
+                        const contextDiv = document.createElement('div');
+                        contextDiv.className = 'log-context';
+                        contextDiv.innerHTML = this.formatContext(log.data);
+                        logEntry.appendChild(contextDiv);
+                    }
+                    
+                    logsContainer.appendChild(logEntry);
+                });
+                
+                // Auto-scroll to bottom if enabled
+                if (this.options.autoScroll) {
+                    const container = this.container.querySelector('.log-entries-container');
+                    container.scrollTop = container.scrollHeight;
+                }
+            }
+        } catch (error) {
+            console.error('Error fetching calendar flow logs:', error);
+            const logsContainer = this.container.querySelector('.log-entries');
+            logsContainer.innerHTML = `<div class="log-entry log-level-error">Error fetching calendar flow logs: ${error.message}</div>`;
         }
     }
     

@@ -4,6 +4,8 @@
  */
 
 const { normalizeFile } = require('../../graph/normalizers.cjs');
+const ErrorService = require('../../core/error-service.cjs');
+const MonitoringService = require('../../core/monitoring-service.cjs');
 
 // Define the capabilities supported by this module
 // This array is used by the module registry to find appropriate modules for different intents
@@ -22,9 +24,125 @@ const FILES_CAPABILITIES = [
 ];
 
 const FilesModule = {
+    /**
+     * Helper method to redact sensitive data from objects before logging
+     * @param {object} data - The data object to redact
+     * @returns {object} Redacted copy of the data
+     * @private
+     */
+    redactSensitiveData(data) {
+        if (!data || typeof data !== 'object') {
+            return data;
+        }
+        
+        // Create a deep copy to avoid modifying the original
+        const result = Array.isArray(data) ? [...data] : {...data};
+        
+        // Fields that should be redacted
+        const sensitiveFields = [
+            'user', 'email', 'mail', 'address', 'emailAddress', 'password', 'token', 'accessToken',
+            'refreshToken', 'content', 'body', 'contentBytes'
+        ];
+        
+        // Recursively process the object
+        for (const key in result) {
+            if (Object.prototype.hasOwnProperty.call(result, key)) {
+                // Check if this is a sensitive field
+                if (sensitiveFields.includes(key.toLowerCase())) {
+                    if (typeof result[key] === 'string') {
+                        result[key] = 'REDACTED';
+                    } else if (Array.isArray(result[key])) {
+                        result[key] = `[${result[key].length} items]`;
+                    } else if (typeof result[key] === 'object' && result[key] !== null) {
+                        result[key] = '{REDACTED}';
+                    }
+                } 
+                // Recursively process nested objects
+                else if (typeof result[key] === 'object' && result[key] !== null) {
+                    result[key] = this.redactSensitiveData(result[key]);
+                }
+            }
+        }
+        
+        return result;
+    },
+    
     id: 'files',
     name: 'OneDrive Files',
     capabilities: FILES_CAPABILITIES,
+    
+    /**
+     * Initializes the files module with dependencies.
+     * @param {object} services - { graphService, errorService, monitoringService }
+     * @returns {object} Initialized module
+     */
+    init(services) {
+        // Validate that required services are provided
+        const requiredServices = ['graphService', 'errorService', 'monitoringService']; 
+        
+        // Use imported services as fallbacks during initialization
+        const errorService = services?.errorService || ErrorService;
+        const monitoringService = services?.monitoringService || MonitoringService;
+
+        // Log initialization attempt
+        monitoringService?.debug('Initializing Files Module', { 
+            timestamp: new Date().toISOString() 
+        }, 'files');
+
+        if (!services) {
+            const error = errorService?.createError(
+                'files',
+                'FilesModule init requires a services object',
+                'error',
+                { timestamp: new Date().toISOString() }
+            ) || {
+                category: 'files',
+                message: 'FilesModule init requires a services object',
+                severity: 'error',
+                context: {}
+            };
+            
+            monitoringService?.logError(error) || 
+                console.error('[MCP FILES] FilesModule init requires a services object');
+                
+            throw error;
+        }
+
+        // Validate required services
+        for (const serviceName of requiredServices) {
+            if (!services[serviceName]) {
+                const error = errorService?.createError(
+                    'files',
+                    `FilesModule init failed: Required service '${serviceName}' is missing`,
+                    'error',
+                    { 
+                        missingService: serviceName,
+                        timestamp: new Date().toISOString() 
+                    }
+                ) || {
+                    category: 'files',
+                    message: `FilesModule init failed: Required service '${serviceName}' is missing`,
+                    severity: 'error',
+                    context: { missingService: serviceName }
+                };
+                
+                monitoringService?.logError(error) || 
+                    console.error(`[MCP FILES] FilesModule init failed: Required service '${serviceName}' is missing`);
+                    
+                throw error;
+            }
+        }
+
+        this.services = services;
+        
+        // Log successful initialization
+        monitoringService?.info('FilesModule initialized successfully', { 
+            timestamp: new Date().toISOString() 
+        }, 'files') || 
+            console.info('[MCP FILES] FilesModule initialized successfully with required services');
+            
+        return this; // Return the module instance, now containing validated services
+    },
     /**
      * Lists files and folders in a directory (defaults to root)
      * @param {string} [parentId] - Parent folder ID (null for root)
@@ -32,11 +150,88 @@ const FilesModule = {
      * @returns {Promise<Array<object>>} List of files and folders
      */
     async listFiles(parentId, req) {
-        const { graphService } = this.services || {};
-        if (!graphService || typeof graphService.listFiles !== 'function') {
-            throw new Error('GraphService.listFiles not implemented');
+        // Get services with fallbacks
+        const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
+        
+        // Start tracking execution time
+        const startTime = Date.now();
+        
+        // Log the request with detailed parameters
+        monitoringService?.debug('Files listing requested', { 
+            parentId: parentId || 'root',
+            timestamp: new Date().toISOString(),
+            source: 'files.listFiles'
+        }, 'files');
+        
+        try {
+            // Validate that GraphService is available
+            if (!graphService || typeof graphService.listFiles !== 'function') {
+                const err = errorService.createError(
+                    'files',
+                    'GraphService.listFiles not implemented',
+                    'error',
+                    { 
+                        parentId: parentId || 'root',
+                        timestamp: new Date().toISOString(),
+                        serviceError: 'missing_graph_service'
+                    }
+                );
+                monitoringService?.logError(err);
+                throw err;
+            }
+            
+            // Call the Graph service
+            const result = await graphService.listFiles(parentId, req);
+            
+            // Calculate execution time
+            const executionTime = Date.now() - startTime;
+            
+            // Log success metrics
+            monitoringService?.trackMetric('files_list_success', executionTime, {
+                fileCount: Array.isArray(result) ? result.length : 0,
+                parentId: parentId || 'root',
+                timestamp: new Date().toISOString()
+            });
+            
+            // Log success with result summary
+            monitoringService?.info('Files listing completed successfully', {
+                fileCount: Array.isArray(result) ? result.length : 0,
+                parentId: parentId || 'root',
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'files');
+            
+            return result;
+        } catch (error) {
+            // Calculate execution time even for failures
+            const executionTime = Date.now() - startTime;
+            
+            // Track failure metrics
+            monitoringService?.trackMetric('files_list_failure', executionTime, {
+                errorType: error.code || 'unknown',
+                parentId: parentId || 'root',
+                timestamp: new Date().toISOString()
+            });
+            
+            // Create standardized error if not already one
+            const mcpError = error.id ? error : errorService.createError(
+                'files',
+                `Failed to list files: ${error.message}`,
+                'error',
+                { 
+                    parentId: parentId || 'root',
+                    error: error.toString(),
+                    stack: error.stack,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            
+            // Log the error
+            monitoringService?.logError(mcpError);
+            
+            // Rethrow the error for the caller to handle
+            throw mcpError;
         }
-        return await graphService.listFiles(parentId, req);
     },
     
     /**
@@ -46,26 +241,119 @@ const FilesModule = {
      * @returns {Promise<Array<object>>} List of matching files
      */
     async searchFiles(query, req) {
-        console.log(`[Files Module] Searching files with query: "${query}"`);
+        // Get services with fallbacks
+        const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
         
-        const { graphService } = this.services || {};
-        if (!graphService) {
-            console.error('[Files Module] GraphService not available');
-            throw new Error('GraphService not available');
+        // Start tracking execution time
+        const startTime = Date.now();
+        
+        // Validate input
+        if (!query) {
+            const err = errorService.createError(
+                'files',
+                'Search query is required for searchFiles',
+                'error',
+                { 
+                    timestamp: new Date().toISOString(),
+                    validationError: 'missing_query'
+                }
+            );
+            monitoringService?.logError(err);
+            monitoringService?.error('Files search validation failed: missing query', {
+                validationError: 'missing_query',
+                timestamp: new Date().toISOString()
+            }, 'files');
+            throw err;
         }
         
-        if (typeof graphService.searchFiles !== 'function') {
-            console.error('[Files Module] GraphService.searchFiles not implemented');
-            throw new Error('GraphService.searchFiles not implemented');
-        }
+        // Log the request with detailed parameters
+        monitoringService?.debug('Files search requested', { 
+            query: this.redactSensitiveData(query),
+            timestamp: new Date().toISOString(),
+            source: 'files.searchFiles'
+        }, 'files');
         
         try {
+            // Validate that GraphService is available
+            if (!graphService) {
+                const err = errorService.createError(
+                    'files',
+                    'GraphService not available',
+                    'error',
+                    { 
+                        timestamp: new Date().toISOString(),
+                        serviceError: 'missing_graph_service'
+                    }
+                );
+                monitoringService?.logError(err);
+                throw err;
+            }
+            
+            if (typeof graphService.searchFiles !== 'function') {
+                const err = errorService.createError(
+                    'files',
+                    'GraphService.searchFiles not implemented',
+                    'error',
+                    { 
+                        timestamp: new Date().toISOString(),
+                        serviceError: 'missing_method'
+                    }
+                );
+                monitoringService?.logError(err);
+                throw err;
+            }
+            
+            // Call the Graph service
             const results = await graphService.searchFiles(query, req);
-            console.log(`[Files Module] Search completed successfully with ${results.length} results`);
+            
+            // Calculate execution time
+            const executionTime = Date.now() - startTime;
+            
+            // Log success metrics
+            monitoringService?.trackMetric('files_search_success', executionTime, {
+                resultCount: Array.isArray(results) ? results.length : 0,
+                queryLength: query.length,
+                timestamp: new Date().toISOString()
+            });
+            
+            // Log success with result summary
+            monitoringService?.info('Files search completed successfully', {
+                resultCount: Array.isArray(results) ? results.length : 0,
+                queryLength: query.length,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'files');
+            
             return results;
         } catch (error) {
-            console.error(`[Files Module] Error in searchFiles:`, error);
-            throw error; // Rethrow to allow controller's fallback mechanism to work
+            // Calculate execution time even for failures
+            const executionTime = Date.now() - startTime;
+            
+            // Track failure metrics
+            monitoringService?.trackMetric('files_search_failure', executionTime, {
+                errorType: error.code || 'unknown',
+                queryLength: query ? query.length : 0,
+                timestamp: new Date().toISOString()
+            });
+            
+            // Create standardized error if not already one
+            const mcpError = error.id ? error : errorService.createError(
+                'files',
+                `Failed to search files: ${error.message}`,
+                'error',
+                { 
+                    query: this.redactSensitiveData(query),
+                    error: error.toString(),
+                    stack: error.stack,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            
+            // Log the error
+            monitoringService?.logError(mcpError);
+            
+            // Rethrow the error for the caller to handle
+            throw mcpError;
         }
     },
     
@@ -201,51 +489,182 @@ const FilesModule = {
     },
     
     /**
-     * Initializes the files module with dependencies.
-     * @param {object} services - { graphService, cacheService }
-     * @returns {object} Initialized module
-     */
-    init(services) {
+
+    // Validate that required services are provided
+    const requiredServices = ['graphService']; // Only graphService is truly required, we have fallbacks for the others
+
+        if (!services) {
+            const error = errorService?.createError(
+                'files',
+                'FilesModule init requires a services object',
+                'error',
+                { timestamp: new Date().toISOString() }
+            ) || {
+                category: 'files',
+                message: 'FilesModule init requires a services object',
+                severity: 'error',
+                context: {}
+            };
+            
+            monitoringService?.logError(error) || 
+                console.error('[MCP FILES] FilesModule init requires a services object');
+                
+            throw error;
+        }
+
+        // Validate required services
+        for (const serviceName of requiredServices) {
+            if (!services[serviceName]) {
+                const error = errorService?.createError(
+                    'files',
+                    `FilesModule init failed: Required service '${serviceName}' is missing`,
+                    'error',
+                    { 
+                        missingService: serviceName,
+                        timestamp: new Date().toISOString() 
+                    }
+                ) || {
+                    category: 'files',
+                    message: `FilesModule init failed: Required service '${serviceName}' is missing`,
+                    severity: 'error',
+                    context: { missingService: serviceName }
+                };
+                
+                monitoringService?.logError(error) || 
+                    console.error(`[MCP FILES] FilesModule init failed: Required service '${serviceName}' is missing`);
+                    
+                throw error;
+            }
+        }
+
         this.services = services;
-        return this;
-    },
-    /**
-     * Handles file-related intents routed to this module.
-     * @param {string} intent
-     * @param {object} entities
-     * @param {object} context
-     * @returns {Promise<object>} Normalized response
-     */
-    async handleIntent(intent, entities = {}, context = {}) {
-        const { graphService, cacheService } = this.services || {};
-        switch (intent) {
+        
+        monitoringService?.logError(error) || 
+            console.error('[MCP FILES] FilesModule init requires a services object');
+            
+        throw error;
+    }
+
+    // Only graphService is truly required, we have fallbacks for the others
+    if (!services.graphService) {
+        const error = errorService.createError(
+            'files',
+            'FilesModule init failed: Required service \'graphService\' is missing',
+            'error',
+            { 
+                missingService: 'graphService',
+                timestamp: new Date().toISOString() 
+            }
+        );
+        
+        monitoringService?.logError(error) || 
+            console.error('[MCP FILES] FilesModule init failed: Required service \'graphService\' is missing');
+            
+        throw error;
+    }
+
+    this.services = {
+        ...services,
+        errorService: services.errorService || ErrorService,
+        monitoringService: services.monitoringService || MonitoringService
+    };
+    
+    // Log successful initialization
+    monitoringService?.info('FilesModule initialized successfully', { 
+        timestamp: new Date().toISOString() 
+    }, 'files') || 
+        console.info('[MCP FILES] FilesModule initialized successfully with required services');
+        
+    return this; // Return the module instance, now containing validated services
+},
+
+/**
+ * Handles file-related intents routed to this module.
+ * @param {string} intent
+ * @param {object} entities
+ * @param {object} context
+ * @returns {Promise<object>} Normalized response
+ */
+async handleIntent(intent, entities = {}, context = {}) {
+    // Get services with fallbacks
+    const { graphService, cacheService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
+    
+    // Start tracking execution time
+    const startTime = Date.now();
+    
+    // Log the request with detailed parameters
+    monitoringService?.debug('Files intent handling requested', { 
+        intent,
+        entities: this.redactSensitiveData(entities),
+        timestamp: new Date().toISOString(),
+        source: 'files.handleIntent'
+    }, 'files');
+    
+    try {
+        // Validate that GraphService is available
+        if (!graphService) {
+            const err = errorService.createError(
+                'files',
+                'GraphService not available',
+                'error',
+                { 
+                    intent,
+                    timestamp: new Date().toISOString(),
+                    validationError: 'missing_graph_service'
+                }
+            );
+            monitoringService?.logError(err);
+            throw err;
+        }
+            
+        let result;
+            
+        switch(intent) {
             case 'listFiles': {
-                const folderId = entities.folderId || null;
-                const cacheKey = `files:list:${folderId || 'root'}`;
+                const parentId = entities.parentId || (typeof entities === 'string' ? entities : null);
+                
+                // Try to get from cache first
+                const cacheKey = `files:list:${parentId || 'root'}`;
                 let files = cacheService && await cacheService.get(cacheKey);
+                
                 if (!files) {
-                    const raw = await graphService.listFiles(folderId, context.req);
+                    // Pass the request context if available
+                    const raw = await graphService.listFiles(parentId, context.req);
                     files = Array.isArray(raw) ? raw.map(normalizeFile) : [];
                     if (cacheService) await cacheService.set(cacheKey, files, 60);
                 }
-                return { type: 'fileList', items: files };
+                result = { type: 'fileList', items: files };
+                break;
             }
             case 'searchFiles': {
                 const query = entities.query || (typeof entities === 'string' ? entities : '');
                 
                 if (!query) {
-                    console.warn('[Files Module] searchFiles intent called without query parameter');
-                    return { type: 'fileList', items: [] };
+                    // Log warning for missing query parameter
+                    monitoringService?.warn('searchFiles intent called without query parameter', {
+                        intent,
+                        timestamp: new Date().toISOString()
+                    }, 'files');
+                    result = { type: 'fileList', items: [] };
+                    break;
                 }
                 
-                console.log(`[Files Module] Handling searchFiles intent with query: "${query}"`);
+                // Log search request
+                monitoringService?.debug('Handling searchFiles intent', {
+                    query,
+                    timestamp: new Date().toISOString()
+                }, 'files');
                 
                 // Try to get from cache first
                 const cacheKey = `files:search:${query}`;
                 let results = cacheService && await cacheService.get(cacheKey);
                 
                 if (!results) {
-                    console.log(`[Files Module] Cache miss for query "${query}", fetching from Graph API`);
+                    monitoringService?.debug('Cache miss for search query', {
+                        query,
+                        timestamp: new Date().toISOString()
+                    }, 'files');
+                    
                     try {
                         // Pass the request context if available
                         const raw = await graphService.searchFiles(query, context.req);
@@ -254,65 +673,169 @@ const FilesModule = {
                         // Cache the results
                         if (cacheService) {
                             await cacheService.set(cacheKey, results, 60);
-                            console.log(`[Files Module] Cached ${results.length} results for query "${query}"`);
+                            monitoringService?.debug('Cached search results', {
+                                query,
+                                resultCount: results.length,
+                                timestamp: new Date().toISOString()
+                            }, 'files');
                         }
                     } catch (error) {
-                        console.error(`[Files Module] Error in searchFiles intent:`, error);
+                        // Log the search error
+                        const searchError = errorService.createError(
+                            'files',
+                            `Error searching files: ${error.message}`,
+                            'error',
+                            { 
+                                query,
+                                error: error.toString(),
+                                stack: error.stack,
+                                timestamp: new Date().toISOString()
+                            }
+                        );
+                        monitoringService?.logError(searchError);
                         results = []; // Return empty array on error
                     }
                 } else {
-                    console.log(`[Files Module] Cache hit for query "${query}" with ${results.length} results`);
+                    monitoringService?.debug('Cache hit for search query', {
+                        query,
+                        resultCount: results.length,
+                        timestamp: new Date().toISOString()
+                    }, 'files');
                 }
                 
-                return { type: 'fileList', items: results };
+                result = { type: 'fileList', items: results };
+                break;
             }
             case 'downloadFile': {
                 const { fileId } = entities;
                 const file = await graphService.downloadFile(fileId);
-                return { type: 'fileDownload', fileId, content: file };
+                result = { type: 'fileDownload', fileId, content: file };
+                break;
             }
             case 'uploadFile': {
                 const { name, content } = entities;
-                const result = await graphService.uploadFile(name, content);
-                return { type: 'fileUploadResult', file: normalizeFile(result) };
+                const uploadResult = await graphService.uploadFile(name, content);
+                result = { type: 'fileUploadResult', file: normalizeFile(uploadResult) };
+                break;
             }
             case 'getFileMetadata': {
                 const { fileId } = entities;
                 const meta = await graphService.getFileMetadata(fileId);
-                return { type: 'fileMetadata', file: normalizeFile(meta) };
+                result = { type: 'fileMetadata', file: normalizeFile(meta) };
+                break;
             }
             case 'createSharingLink': {
                 const { fileId, type } = entities;
                 const link = await graphService.createSharingLink(fileId, type);
-                return { type: 'sharingLink', link };
+                result = { type: 'sharingLink', link };
+                break;
             }
             case 'getSharingLinks': {
                 const { fileId } = entities;
                 const links = await graphService.getSharingLinks(fileId);
-                return { type: 'sharingLinks', links };
+                result = { type: 'sharingLinks', links };
+                break;
             }
             case 'removeSharingPermission': {
                 const { fileId, permissionId } = entities;
-                const result = await graphService.removeSharingPermission(fileId, permissionId);
-                return { type: 'removeSharingPermissionResult', result };
+                const permResult = await graphService.removeSharingPermission(fileId, permissionId);
+                result = { type: 'removeSharingPermissionResult', result: permResult };
+                break;
             }
             case 'getFileContent': {
                 const { fileId } = entities;
                 const content = await graphService.getFileContent(fileId);
-                return { type: 'fileContent', fileId, content };
+                result = { type: 'fileContent', fileId, content };
+                break;
             }
             case 'setFileContent': {
                 const { fileId, content } = entities;
-                const result = await graphService.setFileContent(fileId, content);
-                return { type: 'setFileContentResult', file: normalizeFile(result) };
+                const setResult = await graphService.setFileContent(fileId, content);
+                result = { type: 'setFileContentResult', file: normalizeFile(setResult) };
+                break;
             }
             case 'updateFileContent': {
                 const { fileId, content } = entities;
-                const result = await graphService.updateFileContent(fileId, content);
-                return { type: 'updateFileContentResult', file: normalizeFile(result) };
+                const updateResult = await graphService.updateFileContent(fileId, content);
+                result = { type: 'updateFileContentResult', file: normalizeFile(updateResult) };
+                break;
             }
-            default:
-                throw new Error(`FilesModule cannot handle intent: ${intent}`);
+            default: {
+                // Create a standardized error for unsupported intent
+                const unsupportedError = errorService.createError(
+                    'files',
+                    `The files module does not support the intent: ${intent}`,
+                    'warn',
+                    { 
+                        intent, 
+                        moduleId: this.id,
+                        timestamp: new Date().toISOString()
+                    }
+                );
+                
+                monitoringService?.logError(unsupportedError);
+                monitoringService?.warn(`Unsupported files intent received: ${intent}`, {
+                    intent,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+                    
+                // Track metric for unsupported intent
+                monitoringService?.trackMetric('files_unsupported_intent', 1, {
+                    intent,
+                    timestamp: new Date().toISOString()
+                });
+                
+                throw unsupportedError; // Throw error to signal unsupported operation
+            }
+        }
+            
+        // Calculate execution time
+        const executionTime = Date.now() - startTime;
+            
+        // Log success metrics
+        monitoringService?.trackMetric('files_intent_success', executionTime, {
+            intent,
+            timestamp: new Date().toISOString()
+        });
+            
+        // Log success with result summary
+        monitoringService?.info('Files intent handled successfully', {
+            intent,
+            executionTimeMs: executionTime,
+            timestamp: new Date().toISOString()
+        }, 'files');
+            
+        return result;
+    } catch (error) {
+        // Calculate execution time even for failures
+        const executionTime = Date.now() - startTime;
+            
+        // Track failure metrics
+        monitoringService?.trackMetric('files_intent_failure', executionTime, {
+            intent,
+            errorType: error.code || 'unknown',
+            timestamp: new Date().toISOString()
+        });
+            
+        // Create standardized error if not already one
+        const mcpError = error.id ? error : errorService.createError(
+            'files',
+            `Failed to handle files intent: ${error.message}`,
+            'error',
+            { 
+                intent,
+                entities: this.redactSensitiveData(entities),
+                error: error.toString(),
+                stack: error.stack,
+                timestamp: new Date().toISOString()
+            }
+        );
+            
+        // Log the error
+        monitoringService?.logError(mcpError);
+            
+        // Rethrow the error for the caller to handle
+        throw mcpError;
         }
     }
 };

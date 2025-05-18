@@ -605,25 +605,28 @@ async function createEvent(eventData, userId = 'me') {
       }, 'calendar');
     }
   } catch (error) {
-    // Create standardized error object
-    const mcpError = ErrorService?.createError(
-      'calendar',
-      `Could not get user's mailbox settings: ${error.message || 'Unknown error'}`,
-      'warn',
-      {
-        userId: redactSensitiveData({ userId }),
-        errorMessage: error.message || 'No message',
-        timestamp: new Date().toISOString()
-      }
-    );
-    
-    // Log the error
-    MonitoringService?.logError(mcpError) || 
+    if (process.env.NODE_ENV !== 'production') {
+      // Create standardized error object
+      const mcpError = ErrorService?.createError(
+        'calendar',
+        `Could not get user's mailbox settings: ${error.message || 'Unknown error'}`,
+        'warn',
+        {
+          userId: redactSensitiveData({ userId }),
+          errorMessage: error.message || 'No message',
+          timestamp: new Date().toISOString()
+        }
+      );
+      
+      // Log the error
+      MonitoringService?.logError(mcpError);
+      
       MonitoringService?.warn(`Could not get user's mailbox settings`, {
         userId: redactSensitiveData({ userId }),
         errorMessage: error.message,
         timestamp: new Date().toISOString()
       }, 'calendar');
+    }
     
     // Fall back to the timezone provided in the request, or the default
     userTimeZone = eventData.start.timeZone || CONFIG.DEFAULT_TIMEZONE;
@@ -744,6 +747,135 @@ async function createEvent(eventData, userId = 'me') {
   if (eventData.allowNewTimeProposals !== undefined) {
     graphEvent.allowNewTimeProposals = eventData.allowNewTimeProposals;
   }
+
+  // Create the event with retry logic for transient errors
+  const maxRetries = 3;
+  let retryCount = 0;
+  let lastError = null;
+  let createdGraphEvent = null;
+
+  while (retryCount < maxRetries) {
+    try {
+      // Make the API call to create the event
+      const endpointPath = getEndpointPath(userId, '/events');
+      MonitoringService?.debug(`Creating event with endpoint`, {
+        endpoint: endpointPath,
+        userId: redactSensitiveData({ userId }),
+        timestamp: new Date().toISOString()
+      }, 'calendar');
+      createdGraphEvent = await client.api(endpointPath).post(graphEvent);
+
+      // START INSERTED CODE - Check for invalid Graph API response
+      if (!createdGraphEvent || typeof createdGraphEvent !== 'object' || !createdGraphEvent.id) {
+        const detailMessage = !createdGraphEvent 
+            ? 'Graph API returned null or undefined.' 
+            : (typeof createdGraphEvent !== 'object' 
+                ? 'Graph API did not return an object.' 
+                : 'Graph API response is missing an ID.');
+
+        const errorContext = {
+            userId: redactSensitiveData({ userId }),
+            submittedEventData: redactSensitiveData(graphEvent), // The data sent to Graph
+            graphResponse: redactSensitiveData(createdGraphEvent), // Log the actual problematic response (redacted)
+            detail: detailMessage,
+            timestamp: new Date().toISOString()
+        };
+        
+        // Ensure ErrorService is available or use a default error
+        const mcpError = ErrorService?.createError ? ErrorService.createError(
+            'graph',
+            'Failed to create calendar event: Invalid response from Graph API.',
+            'error',
+            errorContext
+        ) : new Error('Failed to create calendar event: Invalid response from Graph API. ErrorService unavailable.');
+        
+        MonitoringService?.logError(mcpError);
+        EventService?.emit('mcp.error', mcpError);
+        throw mcpError; 
+      }
+      // END INSERTED CODE
+
+      // Normalize the created event
+      const normalizedEvent = normalizeEvent(createdGraphEvent);
+
+      // Emit event for UI updates with redacted data
+      EventService?.emit('calendar:event:created', {
+        eventId: redactSensitiveData({ eventId: normalizedEvent.id }),
+        subject: redactSensitiveData({ subject: normalizedEvent.subject }),
+        start: normalizedEvent.start,
+        end: normalizedEvent.end,
+        hasAttendees: normalizedEvent.attendees && normalizedEvent.attendees.length > 0,
+        timestamp: new Date().toISOString()
+      });
+
+      // Return normalized event
+      return normalizedEvent;
+    } catch (error) {
+      lastError = error;
+      
+      // Only retry on rate limiting (429) or server errors (5xx)
+      if (error.statusCode === 429 || (error.statusCode >= 500 && error.statusCode < 600)) {
+        retryCount++;
+        if (retryCount < maxRetries) {
+          // Exponential backoff with jitter
+          const baseDelay = 1000; // 1 second
+          const maxDelay = 10000; // 10 seconds
+          const exponentialDelay = Math.min(maxDelay, baseDelay * Math.pow(2, retryCount - 1));
+          const jitter = Math.random() * 0.3 * exponentialDelay; // 0-30% jitter
+          const delay = exponentialDelay + jitter;
+          
+          MonitoringService?.warn(`Retrying event creation after delay`, {
+            userId: redactSensitiveData({ userId }),
+            delayMs: Math.round(delay),
+            attempt: retryCount,
+            maxRetries,
+            timestamp: new Date().toISOString()
+          }, 'calendar');
+          
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+      }
+      
+      // Non-retryable error or max retries reached
+      if (process.env.NODE_ENV !== 'production') {
+        // Create standardized error object
+        const mcpError = ErrorService?.createError(
+          'calendar',
+          `Error creating calendar event: ${error.message || 'Unknown error'}`,
+          'error',
+          {
+            userId: redactSensitiveData({ userId }),
+            statusCode: error.statusCode || 'unknown',
+            errorMessage: error.message || 'No message',
+            timestamp: new Date().toISOString()
+          }
+        );
+        
+        // Log the error
+        MonitoringService?.logError(mcpError);
+        
+        MonitoringService?.error('Error creating calendar event', {
+          userId: redactSensitiveData({ userId }),
+          errorMessage: error.message || 'No message',
+          statusCode: error.statusCode || 'unknown',
+          timestamp: new Date().toISOString()
+        }, 'calendar');
+      }
+      
+      // Error handling with standardized ErrorService completed
+      
+      const graphError = new Error(`Failed to create calendar event: ${error.message}`);
+      graphError.name = 'GraphApiError';
+      graphError.originalError = error;
+      graphError.mcpError = mcpError;
+      throw graphError;
+    }
+  }
+  
+  // This should never be reached due to the throw in the catch block,
+  // but adding as a safeguard
+  throw lastError;
 }
 
 // Email validation regex - RFC 5322 compliant
@@ -1110,9 +1242,9 @@ function normalizeAvailabilityResults(results) {
  * @param {Object} options - Query options
  * @param {string} [options.start] - Start date (YYYY-MM-DD)
  * @param {string} [options.end] - End date (YYYY-MM-DD)
- * @param {number} [options.top] - Maximum number of events to return
+ * @param {number} [options.top=50] - Maximum number of events to return
  * @param {string} [options.select] - Comma-separated list of properties to include
- * @param {string} [options.orderby] - Property to sort by (e.g., 'start/dateTime asc')
+ * @param {string} [options.orderby='start/dateTime'] - Property to sort by
  * @param {string} [options.userId='me'] - User ID to get events for
  * @returns {Promise<Array<Object>>} Raw event data from Graph API
  */
@@ -1295,7 +1427,7 @@ async function respondToEvent(eventId, responseType, options = {}) {
       }
       
       // Create standardized error object with ErrorService
-      const mcpError = ErrorService?.createError(
+      const mcpError = ErrorService.createError(
         'calendar',
         `Failed to ${responseType} event: ${error.message || 'Unknown error'}`,
         'error',
@@ -1497,7 +1629,7 @@ async function cancelEvent(eventId, options = {}) {
       }
       
       // Create standardized error object with ErrorService
-      const mcpError = ErrorService?.createError(
+      const mcpError = ErrorService.createError(
         'calendar',
         `Failed to cancel event: ${error.message || 'Unknown error'}`,
         'error',
@@ -1606,7 +1738,7 @@ async function findMeetingTimes(options = {}, userId = 'me') {
       };
     }),
     timeConstraint: {
-      timeslots: [{
+      timeSlots: [{
         start: {
           dateTime: startTime,
           timeZone: timeZone
@@ -2490,18 +2622,40 @@ async function resolveAttendeeNames(attendees, client) {
         type: 'required' // Default type for string attendees
       });
     }
-    // Case 2: Object with emailAddress.address that doesn't look like an email - needs resolution
-    else if (att.emailAddress && att.emailAddress.address && !att.emailAddress.address.includes('@')) {
-      needsResolution.push({
-        original: att,
-        nameToResolve: att.emailAddress.address,
-        displayName: att.emailAddress.name,
-        type: att.type || 'required'
+    // Case 2: Object with email property
+    else if (att.email && isValidEmail(att.email)) {
+      // Ensure type is one of the valid types
+      const type = validTypes.includes(att.type) ? att.type : 'required';
+      
+      directlyFormattable.push({
+        emailAddress: {
+          address: att.email,
+          name: att.name || att.email.split('@')[0]
+        },
+        type: type
       });
     }
-    // Case 3: Already has a valid email or can be directly formatted
+    // Case 3: Object with emailAddress nested object
+    else if (att.emailAddress && att.emailAddress.address && isValidEmail(att.emailAddress.address)) {
+      // Ensure type is one of the valid types
+      const type = validTypes.includes(att.type) ? att.type : 'required';
+      
+      directlyFormattable.push({
+        emailAddress: {
+          address: att.emailAddress.address,
+          name: att.emailAddress.name || att.emailAddress.address.split('@')[0]
+        },
+        type: type
+      });
+    }
+    // If none of the above formats match, don't include this attendee
     else {
-      directlyFormattable.push(att);
+      if (process.env.NODE_ENV !== 'production') {
+        MonitoringService?.warn('Could not format attendee', {
+          attendee: att,
+          timestamp: new Date().toISOString()
+        }, 'calendar');
+      }
     }
   }
   

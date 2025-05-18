@@ -6,38 +6,38 @@
 export function addConnectionChecks(root, apiBase = '/api') {
     console.log('MCP Desktop: Adding connection checks to UI');
 
-    // Create connection check container
+    // Create connection check container using modern design system
     const container = document.createElement('div');
-    container.className = 'connection-checks';
-    container.style.margin = '32px 0';
-    container.style.display = 'flex';
-    container.style.flexDirection = 'column';
-    container.style.alignItems = 'center';
-    container.style.gap = '12px';
+    container.className = 'service-connections card';
+    
+    // Create card header
+    const cardHeader = document.createElement('div');
+    cardHeader.className = 'card-header';
     
     // Add heading
     const heading = document.createElement('h3');
+    heading.className = 'card-title';
     heading.textContent = 'Check Service Connections';
-    heading.style.marginBottom = '12px';
-    container.appendChild(heading);
+    cardHeader.appendChild(heading);
+    container.appendChild(cardHeader);
+    
+    // Create card body
+    const cardBody = document.createElement('div');
+    cardBody.className = 'card-body';
     
     // Add button container
     const buttonContainer = document.createElement('div');
-    buttonContainer.style.display = 'flex';
-    buttonContainer.style.gap = '12px';
-    buttonContainer.style.marginBottom = '16px';
-    container.appendChild(buttonContainer);
+    buttonContainer.className = 'connection-buttons';
+    cardBody.appendChild(buttonContainer);
     
     // Add results container
     const resultsContainer = document.createElement('div');
     resultsContainer.id = 'connection-results';
-    resultsContainer.style.width = '100%';
-    resultsContainer.style.maxWidth = '800px';
-    resultsContainer.style.padding = '16px';
-    resultsContainer.style.backgroundColor = '#f8f8f8';
-    resultsContainer.style.borderRadius = '4px';
-    resultsContainer.style.display = 'none';
-    container.appendChild(resultsContainer);
+    resultsContainer.className = 'test-results mt-4 hidden';
+    cardBody.appendChild(resultsContainer);
+    
+    // Add card body to container
+    container.appendChild(cardBody);
     
     // Create connection check buttons
     const services = [
@@ -49,13 +49,24 @@ export function addConnectionChecks(root, apiBase = '/api') {
     services.forEach(service => {
         const button = document.createElement('button');
         button.textContent = `Check ${service.name}`;
-        button.className = `check-${service.endpoint}-btn`;
-        button.style.padding = '8px 16px';
-        button.style.backgroundColor = service.color;
-        button.style.color = 'white';
-        button.style.border = 'none';
-        button.style.borderRadius = '4px';
-        button.style.cursor = 'pointer';
+        
+        // Use modern button classes based on service type
+        let btnClass = 'btn ';
+        switch(service.endpoint) {
+            case 'mail':
+                btnClass += 'btn-primary';
+                break;
+            case 'calendar':
+                btnClass += 'btn-secondary';
+                break;
+            case 'files':
+                btnClass += 'btn-accent';
+                break;
+            default:
+                btnClass += 'btn-outline';
+        }
+        
+        button.className = `check-${service.endpoint}-btn ${btnClass}`;
         
         button.addEventListener('click', async () => {
             // Update button state
@@ -122,72 +133,113 @@ export function addConnectionChecks(root, apiBase = '/api') {
         }
     });
 
-    // Function to display formatted results
+    // Function to display formatted results using modern design system
     function showResults(title, data, modal = false) {
-        // Format the JSON data
-        const prettyData = JSON.stringify(data, null, 2);
+        // Safely format the JSON data
+        let prettyData;
+        try {
+            prettyData = JSON.stringify(data, null, 2);
+        } catch (error) {
+            console.error('Error formatting data:', error);
+            prettyData = 'Error formatting data: ' + (error.message || 'Unknown error');
+        }
         
         if (modal) {
-            // Use a better modal dialog instead of alert
+            // Use a modern modal dialog
             const modalContainer = document.createElement('div');
+            modalContainer.className = 'modal-overlay';
             modalContainer.style.position = 'fixed';
             modalContainer.style.top = '0';
             modalContainer.style.left = '0';
             modalContainer.style.width = '100%';
             modalContainer.style.height = '100%';
-            modalContainer.style.backgroundColor = 'rgba(0,0,0,0.5)';
+            modalContainer.style.backgroundColor = 'rgba(0,0,0,0.4)';
+            modalContainer.style.backdropFilter = 'blur(4px)';
             modalContainer.style.display = 'flex';
             modalContainer.style.alignItems = 'center';
             modalContainer.style.justifyContent = 'center';
             modalContainer.style.zIndex = '1000';
             
             const modalContent = document.createElement('div');
-            modalContent.style.backgroundColor = 'white';
-            modalContent.style.padding = '24px';
-            modalContent.style.borderRadius = '8px';
+            modalContent.className = 'card';
+            modalContent.style.backgroundColor = 'var(--neutral-100)';
+            modalContent.style.padding = '0';
+            modalContent.style.borderRadius = 'var(--radius-lg)';
             modalContent.style.maxWidth = '800px';
+            modalContent.style.width = '90%';
             modalContent.style.maxHeight = '80%';
-            modalContent.style.overflow = 'auto';
+            modalContent.style.overflow = 'hidden';
+            modalContent.style.boxShadow = 'var(--shadow-lg)';
             modalContent.style.position = 'relative';
+            modalContent.style.display = 'flex';
+            modalContent.style.flexDirection = 'column';
             
+            // Create modal header
+            const modalHeader = document.createElement('div');
+            modalHeader.className = 'card-header';
+            modalHeader.style.display = 'flex';
+            modalHeader.style.justifyContent = 'space-between';
+            modalHeader.style.alignItems = 'center';
+            modalHeader.style.padding = '20px 24px';
+            modalHeader.style.borderBottom = '1px solid var(--neutral-90)';
+            
+            // Create modal title
             const modalTitle = document.createElement('h3');
+            modalTitle.className = 'card-title';
             modalTitle.textContent = title;
-            modalTitle.style.marginTop = '0';
+            modalTitle.style.margin = '0';
+            modalHeader.appendChild(modalTitle);
             
+            // Create close button
             const closeButton = document.createElement('button');
-            closeButton.textContent = 'Close';
-            closeButton.style.position = 'absolute';
-            closeButton.style.top = '16px';
-            closeButton.style.right = '16px';
-            closeButton.style.padding = '4px 8px';
-            closeButton.style.backgroundColor = '#e0e0e0';
-            closeButton.style.border = 'none';
-            closeButton.style.borderRadius = '4px';
-            closeButton.style.cursor = 'pointer';
+            closeButton.className = 'btn btn-outline';
+            closeButton.innerHTML = `
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+            `;
+            closeButton.style.minWidth = 'auto';
+            closeButton.style.padding = '8px';
+            closeButton.style.height = '36px';
+            closeButton.style.width = '36px';
             closeButton.addEventListener('click', () => {
                 document.body.removeChild(modalContainer);
             });
+            modalHeader.appendChild(closeButton);
             
+            // Create modal body
+            const modalBody = document.createElement('div');
+            modalBody.className = 'card-body';
+            modalBody.style.padding = '24px';
+            modalBody.style.overflow = 'auto';
+            
+            // Create pre element for code
             const pre = document.createElement('pre');
-            pre.style.backgroundColor = '#f5f5f5';
-            pre.style.padding = '16px';
-            pre.style.borderRadius = '4px';
-            pre.style.overflow = 'auto';
+            pre.className = 'test-results';
+            pre.style.margin = '0';
             pre.style.maxHeight = '500px';
             pre.textContent = prettyData;
+            modalBody.appendChild(pre);
             
-            modalContent.appendChild(modalTitle);
-            modalContent.appendChild(closeButton);
-            modalContent.appendChild(pre);
+            // Add header and body to modal content
+            modalContent.appendChild(modalHeader);
+            modalContent.appendChild(modalBody);
             modalContainer.appendChild(modalContent);
             
             document.body.appendChild(modalContainer);
         } else {
-            // Update the results container
+            // Update the results container with modern styling
+            resultsContainer.classList.remove('hidden');
             resultsContainer.innerHTML = `
-                <h4 style="margin-top:0">${title}</h4>
-                <pre style="background-color:#f5f5f5;padding:12px;border-radius:4px;overflow:auto;max-height:300px;">${prettyData}</pre>
+                <div class="card-header" style="padding:16px;background-color:var(--neutral-95);border-bottom:1px solid var(--neutral-90);margin:-16px -16px 16px -16px;">
+                    <h4 style="margin:0;font-size:16px;font-weight:600;color:var(--neutral-20);">${title}</h4>
+                </div>
+                <pre style="margin:0;font-family:var(--font-mono);font-size:13px;line-height:1.5;">${prettyData}</pre>
             `;
+            
+            // Scroll to the results
+            resultsContainer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
     }
 

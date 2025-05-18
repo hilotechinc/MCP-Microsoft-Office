@@ -48,6 +48,12 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
         downloadFile: { moduleName: 'files', methodName: 'downloadFile' },
         uploadFile: { moduleName: 'files', methodName: 'uploadFile' },
         getFileMetadata: { moduleName: 'files', methodName: 'getFileMetadata' },
+        getFileContent: { moduleName: 'files', methodName: 'getFileContent' },
+        setFileContent: { moduleName: 'files', methodName: 'setFileContent' },
+        updateFileContent: { moduleName: 'files', methodName: 'updateFileContent' },
+        createSharingLink: { moduleName: 'files', methodName: 'createSharingLink' },
+        getSharingLinks: { moduleName: 'files', methodName: 'getSharingLinks' },
+        removeSharingPermission: { moduleName: 'files', methodName: 'removeSharingPermission' },
         
         // People module tools
         findPeople: { moduleName: 'people', methodName: 'find' },

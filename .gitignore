@@ -1,6 +1,7 @@
 node_modules
+node_modules*
 **/.claude
+data/*
+logs/*
 .env
-data/mcp.sqlite
-data/mcp.sqlite
-logs/*.log
+.DS_Store

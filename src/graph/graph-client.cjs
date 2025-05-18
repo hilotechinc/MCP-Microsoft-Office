@@ -64,6 +64,9 @@ class GraphClient {
             async post(body, options = {}) {
                 return await _fetchWithRetry(path, self.token, 'POST', body, options);
             },
+            async put(body, options = {}) {
+                return await _fetchWithRetry(path, self.token, 'PUT', body, options);
+            },
             async patch(body, options = {}) {
                 return await _fetchWithRetry(path, self.token, 'PATCH', body, options);
             },

@@ -80,11 +80,23 @@ async function startDevServer() {
   app.use('/api/status', statusRouter);
   
   // Register auth endpoints directly to avoid routing issues
+  // Support both GET and POST for login
+  app.get('/api/auth/login', async (req, res) => {
+    try {
+      const msalService = require('./src/auth/msal-service.cjs');
+      await msalService.login(req, res);
+      console.log('Login process initiated (GET)');
+    } catch (error) {
+      console.error('Login failed:', error);
+      res.status(500).json({ error: 'Login failed', message: error.message });
+    }
+  });
+  
   app.post('/api/auth/login', async (req, res) => {
     try {
       const msalService = require('./src/auth/msal-service.cjs');
       await msalService.login(req, res);
-      console.log('Login process initiated');
+      console.log('Login process initiated (POST)');
     } catch (error) {
       console.error('Login failed:', error);
       res.status(500).json({ error: 'Login failed', message: error.message });

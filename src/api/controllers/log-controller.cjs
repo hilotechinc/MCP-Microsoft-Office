@@ -118,37 +118,52 @@ async function addLogEntry(req, res) {
  */
 async function getLogEntries(req, res) {
     try {
-        const { limit = 100, category, level, source } = req.query;
-        const parsedLimit = parseInt(limit);
+        // Get query parameters
+        const { limit = '100', category, level, source } = req.query;
+        const parsedLimit = parseInt(limit, 10) || 100;
         
-        // Debug log the request parameters
-        monitoringService.debug('Getting log entries with filters', { 
-            limit: parsedLimit, 
-            category, 
-            level, 
-            source,
-            totalCachedEntries: logEntries.length,
-            categoriesInCache: [...new Set(logEntries.map(entry => entry.category))]
+        // Log the request for debugging
+        monitoringService.debug('Log entries requested', { 
+            query: req.query,
+            parsedLimit,
+            requestId: req.requestId || 'none'
         }, 'log-controller');
         
-        // Initialize result array
-        let result = [...logEntries];
-        const existingTimestamps = new Set(result.map(entry => entry.timestamp));
+        // Get cached log entries
+        let result = [];
+        let existingTimestamps = new Set();
         
-        // Apply category filter if provided - with improved matching
-        if (category) {
-            const beforeCount = result.length;
-            result = result.filter(entry => {
-                // More flexible category matching (case insensitive, partial match)
-                if (typeof entry.category === 'string' && typeof category === 'string') {
-                    return entry.category.toLowerCase().includes(category.toLowerCase());
+        // If we're not explicitly requesting file logs only
+        if (!source || source !== 'file') {
+            // Filter cached logs based on category and level
+            result = logEntries.filter(entry => {
+                // Match category if provided (with improved matching)
+                if (category && category !== 'all') {
+                    if (category === 'system') {
+                        // For system category, include entries with empty category too
+                        if (entry.category && entry.category !== 'system' && entry.category !== '') {
+                            return false;
+                        }
+                    } else if (entry.category !== category) {
+                        return false;
+                    }
                 }
-                return entry.category === category;
-            });
-            monitoringService.debug(`Category filter applied: ${category}`, { 
-                beforeCount, 
-                afterCount: result.length,
-                matchRate: `${(result.length / (beforeCount || 1) * 100).toFixed(1)}%`
+                
+                // Match level if provided
+                if (level && entry.level !== level && entry.severity !== level) {
+                    return false;
+                }
+                
+                return true;
+            }).slice(0, parsedLimit);
+            
+            // Track timestamps to avoid duplicates
+            existingTimestamps = new Set(result.map(entry => entry.timestamp));
+            
+            monitoringService.debug(`Found ${result.length} cached log entries matching criteria`, {
+                category,
+                level,
+                limit: parsedLimit
             }, 'log-controller');
         }
         

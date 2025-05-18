@@ -448,10 +448,18 @@ module.exports = ({ mailModule }) => ({
             res.setHeader('Content-Type', 'application/json');
             
             // Validate required parameters
-            const { id } = req.query;
+            let { id } = req.query;
             
             if (!id) {
                 return res.status(400).json({ error: 'Email ID is required as a query parameter' });
+            }
+            
+            // Fix malformed IDs that might contain the parameter name again
+            if (id.includes('?id=') || id.includes('&id=')) {
+                console.log(`[Mail Controller] Fixing malformed email ID: ${id}`);
+                // Extract just the first part before any ? or & character
+                id = id.split(/[?&]/)[0];
+                console.log(`[Mail Controller] Fixed email ID: ${id}`);
             }
             
             console.log(`[Mail Controller] Getting attachments for email ID: ${id}`);
@@ -471,25 +479,58 @@ module.exports = ({ mailModule }) => ({
                 }
             } catch (moduleError) {
                 console.error('[Mail Controller] Error getting attachments:', moduleError);
-                console.log('[Mail Controller] Falling back to mock attachments list');
                 
-                // Generate mock attachments for testing purposes
-                attachments = [
-                    {
-                        id: `mock-attachment-1-${id}`,
-                        name: 'Document1.pdf',
-                        contentType: 'application/pdf',
-                        size: 125640,
-                        isInline: false
-                    },
-                    {
-                        id: `mock-attachment-2-${id}`,
-                        name: 'image.png',
-                        contentType: 'image/png',
-                        size: 53200,
-                        isInline: true
-                    }
-                ];
+                // Check if we're in development mode
+                const isDevelopment = process.env.NODE_ENV === 'development';
+                
+                if (isDevelopment && process.env.USE_MOCK_DATA === 'true') {
+                    console.log('[Mail Controller] Falling back to mock attachments list (development mode)');
+                    
+                    // Generate mock attachments for testing purposes
+                    attachments = [
+                        {
+                            id: `mock-attachment-1-${id}`,
+                            name: 'Document1.pdf',
+                            contentType: 'application/pdf',
+                            size: 125640,
+                            isInline: false
+                        },
+                        {
+                            id: `mock-attachment-2-${id}`,
+                            name: 'image.png',
+                            contentType: 'image/png',
+                            size: 53200,
+                            isInline: true
+                        }
+                    ];
+                } else {
+                    // In production or when mock data is disabled, return the actual error
+                    console.error('[Mail Controller] Failed to get attachments and mock data is disabled');
+                    
+                    // Create a standardized error using the error service
+                    const mcpError = errorService.createError(
+                        'graph',
+                        `Failed to retrieve email attachments: ${moduleError.message}`,
+                        'error',
+                        { 
+                            emailId: id,
+                            graphErrorCode: moduleError.code || 'unknown',
+                            stack: moduleError.stack,
+                            timestamp: new Date().toISOString()
+                        }
+                    );
+                    
+                    // Log the error with the monitoring service
+                    monitoringService.logError(mcpError);
+                    
+                    // Return a user-friendly error response
+                    return res.status(500).json({ 
+                        error: 'Failed to retrieve email attachments', 
+                        details: moduleError.message,
+                        graphError: moduleError.code || 'unknown',
+                        errorId: mcpError.id
+                    });
+                }
                 console.log('[Mail Controller] Generated mock attachments');
             }
             

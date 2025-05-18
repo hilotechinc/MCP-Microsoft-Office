@@ -106,9 +106,34 @@ async function searchPeople(searchQuery, options = {}, req) {
  * @returns {Promise<object>} Normalized person object
  */
 async function getPersonById(personId, req) {
-  const client = await graphClientFactory.createClient(req);
-  const res = await client.api(`/me/people/${personId}`).get();
-  return normalizePerson(res);
+  try {
+    console.log(`[People Service] Getting person with ID: ${personId}`);
+    const client = await graphClientFactory.createClient(req);
+    
+    // Try first with /me/people endpoint
+    try {
+      const res = await client.api(`/me/people/${personId}`).get();
+      console.log(`[People Service] Successfully retrieved person from /me/people endpoint`);
+      return normalizePerson(res);
+    } catch (peopleError) {
+      console.log(`[People Service] Failed to get person from /me/people endpoint: ${peopleError.message}`);
+      
+      // If the first attempt fails, try with /users endpoint
+      try {
+        const res = await client.api(`/users/${personId}`).get();
+        console.log(`[People Service] Successfully retrieved person from /users endpoint`);
+        return normalizePerson(res);
+      } catch (usersError) {
+        console.log(`[People Service] Failed to get person from /users endpoint: ${usersError.message}`);
+        
+        // If both attempts fail, throw the original error
+        throw peopleError;
+      }
+    }
+  } catch (error) {
+    console.error(`[People Service] Error getting person by ID:`, error);
+    throw error;
+  }
 }
 
 /**

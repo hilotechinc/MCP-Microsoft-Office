@@ -11,6 +11,7 @@ const filesControllerFactory = require('./controllers/files-controller.cjs');
 const peopleControllerFactory = require('./controllers/people-controller.cjs');
 const logController = require('./controllers/log-controller.cjs');
 const { requireAuth } = require('./middleware/auth-middleware.cjs');
+const { routesLogger, controllerLogger } = require('./middleware/request-logger.cjs');
 const apiContext = require('./api-context.cjs');
 const statusRouter = require('./status.cjs');
 
@@ -52,6 +53,10 @@ function registerRoutes(router) {
 
     // Versioned API path
     const v1 = express.Router();
+    
+    // Apply routes logger middleware to all v1 routes
+    v1.use(routesLogger());
+    
     // No authentication required for v1 endpoints - the backend will handle authentication internally
 
     // Create injected controller instances
@@ -68,12 +73,16 @@ function registerRoutes(router) {
 
     // --- Query Router --- 
     const queryRouter = express.Router();
+    // Apply controller logger middleware
+    queryRouter.use(controllerLogger());
     // TODO: Apply rate limiting
     queryRouter.post('/', placeholderRateLimit, queryController.handleQuery);
     v1.use('/query', queryRouter);
 
     // --- Mail Router --- 
     const mailRouter = express.Router();
+    // Apply controller logger middleware
+    mailRouter.use(controllerLogger());
     mailRouter.get('/', mailController.getMail); // Corresponds to /v1/mail
     // TODO: Apply rate limiting
     mailRouter.post('/send', placeholderRateLimit, mailController.sendMail); // Corresponds to /v1/mail/send
@@ -89,6 +98,8 @@ function registerRoutes(router) {
 
     // --- Calendar Router --- 
     const calendarRouter = express.Router();
+    // Apply controller logger middleware
+    calendarRouter.use(controllerLogger());
     calendarRouter.get('/', calendarController.getEvents); // /v1/calendar
     // TODO: Apply rate limiting
     calendarRouter.post('/events', placeholderRateLimit, calendarController.createEvent); // /v1/calendar/events
@@ -116,6 +127,8 @@ function registerRoutes(router) {
 
     // --- Files Router --- 
     const filesRouter = express.Router();
+    // Apply controller logger middleware
+    filesRouter.use(controllerLogger());
     filesRouter.get('/', filesController.listFiles); // /v1/files
     // TODO: Apply rate limiting
     filesRouter.post('/upload', placeholderRateLimit, filesController.uploadFile); // /v1/files/upload
@@ -136,6 +149,8 @@ function registerRoutes(router) {
 
     // --- People Router --- 
     const peopleRouter = express.Router();
+    // Apply controller logger middleware
+    peopleRouter.use(controllerLogger());
     peopleRouter.get('/', peopleController.getRelevantPeople); // /v1/people
     peopleRouter.get('/search', peopleController.searchPeople);
     peopleRouter.get('/find', peopleController.findPeople);
@@ -144,6 +159,8 @@ function registerRoutes(router) {
 
     // --- Log Router --- (No Auth required for logs)
     const logRouter = express.Router();
+    // Apply controller logger middleware
+    logRouter.use(controllerLogger());
     // TODO: Apply rate limiting
     logRouter.post('/', placeholderRateLimit, logController.addLogEntry); // /v1/logs
     logRouter.get('/', logController.getLogEntries); // /v1/logs

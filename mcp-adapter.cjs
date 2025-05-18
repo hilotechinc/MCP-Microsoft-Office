@@ -50,6 +50,15 @@ const originalConsole = {
 // Helper: Write logs to stderr and use monitoring service for backend logging
 function writeToLogFile(level, ...args) {
     try {
+        // First, check if any of the arguments contain the MonitoringService recursion pattern
+        // This prevents the infinite logging loop
+        for (const arg of args) {
+            if (typeof arg === 'string' && arg.includes('[MonitoringService] Emitted')) {
+                // Skip logging this message to prevent recursion
+                return;
+            }
+        }
+
         const prefix = `[MCP ADAPTER ${level.toUpperCase()}]`;
         const formattedArgs = args.map(arg => {
             if (typeof arg === 'object') {
@@ -115,14 +124,14 @@ let adapterState = {
 // Initialize tools service with a stub module registry containing the module definitions
 const stubModuleRegistry = {
     getAllModules: () => [
-        { id: 'mail', name: 'mail', capabilities: ['getInbox', 'sendEmail', 'searchEmails', 'flagEmail', 'getEmailDetails', 'markAsRead'] },
+        { id: 'mail', name: 'mail', capabilities: ['getInbox', 'sendEmail', 'searchEmails', 'flagEmail', 'getEmailDetails', 'markAsRead', 'readMailDetails', 'getMailAttachments', 'markEmailRead'] },
         { id: 'calendar', name: 'calendar', capabilities: ['getEvents', 'create', 'update', 'scheduleMeeting', 'getAvailability', 'findMeetingTimes', 'cancelEvent'] },
         { id: 'files', name: 'files', capabilities: ['listFiles', 'uploadFile', 'downloadFile', 'getFileMetadata'] },
         { id: 'people', name: 'people', capabilities: ['find', 'search', 'getRelevantPeople', 'getPersonById'] }
     ],
     getModule: (moduleName) => {
         const modules = {
-            'mail': { id: 'mail', capabilities: ['getInbox', 'sendEmail', 'searchEmails', 'flagEmail', 'getEmailDetails', 'markAsRead'] },
+            'mail': { id: 'mail', capabilities: ['getInbox', 'sendEmail', 'searchEmails', 'flagEmail', 'getEmailDetails', 'markAsRead', 'readMailDetails', 'getMailAttachments', 'markEmailRead'] },
             'calendar': { id: 'calendar', capabilities: ['getEvents', 'create', 'update', 'scheduleMeeting', 'getAvailability', 'findMeetingTimes', 'cancelEvent'] },
             'files': { id: 'files', capabilities: ['listFiles', 'uploadFile', 'downloadFile', 'getFileMetadata'] },
             'people': { id: 'people', capabilities: ['find', 'search', 'getRelevantPeople', 'getPersonById'] }
@@ -273,13 +282,23 @@ function logDebug(message, ...args) {
         // CRITICAL: NEVER write to stdout in an MCP adapter - it corrupts the JSON-RPC stream
         // Only write to stderr or use the monitoring service
         
+        // Determine if this is a calendar-related message for better categorization
+        const isCalendarRelated = 
+            message.toLowerCase().includes('calendar') || 
+            (args.length > 0 && JSON.stringify(args).toLowerCase().includes('calendar'));
+            
         // Write to stderr (safe for MCP)
-        process.stderr.write(`[DEBUG] ${formattedMessage}\n`);
+        process.stderr.write(`[DEBUG${isCalendarRelated ? '-CALENDAR' : ''}] ${formattedMessage}\n`);
         
         // Also log to monitoring service if available
         try {
             setImmediate(() => {
-                monitoringService.debug(formattedMessage, {});
+                monitoringService.debug(formattedMessage, {
+                    source: 'mcp-adapter',
+                    category: isCalendarRelated ? 'calendar' : 'adapter',
+                    timestamp: new Date().toISOString(),
+                    messageType: isCalendarRelated ? 'calendar-interaction' : 'general'
+                }, isCalendarRelated ? 'calendar' : 'adapter');
             });
         } catch (monitoringErr) {
             // Silently ignore monitoring errors - we already logged to stderr
@@ -479,6 +498,15 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
         // Log the parameters being processed
         logDebug(`[MCP Adapter] Processing parameters for ${moduleName}.${methodName}:`, params);
         
+        // Add enhanced logging for calendar module interactions
+        if (moduleName === 'calendar') {
+            logDebug(`[MCP Adapter] Calendar module call: ${methodName}`, {
+                method: methodName,
+                params: params,
+                timestamp: new Date().toISOString()
+            });
+        }
+        
         // Transform parameters based on the module and method
         // This ensures compatibility with the backend API expectations
         let transformedParams = { ...params }; // Start with a copy of the original params
@@ -526,6 +554,20 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
             return dateTime;
         };
         
+        // Helper function to safely handle null/undefined values in objects
+        const safeObjectAssign = (target, source) => {
+            if (!source) return target;
+            
+            // Only copy properties that are not null or undefined
+            Object.keys(source).forEach(key => {
+                if (source[key] !== null && source[key] !== undefined) {
+                    target[key] = source[key];
+                }
+            });
+            
+            return target;
+        };
+        
         switch (moduleMethod) {
             // Query module endpoints
             case 'query.processQuery':
@@ -543,37 +585,76 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
             
             // Email details endpoint
             case 'mail.getEmailDetails':
+            case 'mail.readMailDetails':
+            case 'outlook mail.readMailDetails':
                 if (!transformedParams.id) {
-                    throw new Error('Email ID is required for getEmailDetails');
+                    const errorMessage = 'Email ID is required for getting email details. Please provide an ID parameter with the email ID.';
+                    logDebug(`[MCP Adapter] Error: ${errorMessage}`);
+                    throw new Error(errorMessage);
                 }
                 // Properly format the path with the ID parameter
                 apiPath = `/v1/mail/${transformedParams.id}`;
                 apiMethod = 'GET';
-                // Log the API call for debugging
-                logDebug(`[MCP Adapter] Making GET request to ${apiPath}`);
-                break;
                 
-            // Mark email as read endpoint
-            case 'mail.markAsRead':
-                if (!transformedParams.id) {
-                    throw new Error('Email ID is required for markAsRead');
+                // Add query parameters for additional options
+                const mailDetailsParams = [];
+                
+                // Option to include body content
+                if (transformedParams.includeBody !== undefined) {
+                    mailDetailsParams.push(`includeBody=${transformedParams.includeBody}`);
                 }
-                // Properly format the path with the ID parameter
-                apiPath = `/v1/mail/${transformedParams.id}/read`;
-                apiMethod = 'PATCH';
-                // Include isRead in the request body
-                apiData = {
-                    isRead: transformedParams.isRead !== false // Default to true if not explicitly set to false
-                };
+                
+                // Option to include attachments info
+                if (transformedParams.includeAttachments !== undefined) {
+                    mailDetailsParams.push(`includeAttachments=${transformedParams.includeAttachments}`);
+                }
+                
+                // Add query parameters to the API path
+                if (mailDetailsParams.length > 0) {
+                    apiPath += `?${mailDetailsParams.join('&')}`;
+                }
+                
                 // Log the API call for debugging
-                logDebug(`[MCP Adapter] Making PATCH request to ${apiPath} with data:`, apiData);
+                logDebug(`[MCP Adapter] Making ${apiMethod} request to ${apiPath}`);
                 break;
             case 'mail.getInbox':
             case 'mail.readMail':
             case 'outlook mail.readMail':
                 apiPath = '/v1/mail';
                 apiMethod = 'GET';
+                
+                // Add query parameters for filtering emails
+                const mailParams = [];
+                
+                // Option to filter by folder
+                if (transformedParams.folder) {
+                    mailParams.push(`folder=${encodeURIComponent(transformedParams.folder)}`);
+                }
+                
+                // Option to limit the number of emails
+                if (transformedParams.top || transformedParams.limit) {
+                    mailParams.push(`$top=${transformedParams.top || transformedParams.limit || 25}`);
+                }
+                
+                // Option to filter by read status
+                if (transformedParams.isRead !== undefined) {
+                    mailParams.push(`isRead=${transformedParams.isRead}`);
+                }
+                
+                // Option to filter by date range
+                if (transformedParams.since) {
+                    mailParams.push(`since=${encodeURIComponent(transformedParams.since)}`);
+                }
+                
+                // Add query parameters to the API path
+                if (mailParams.length > 0) {
+                    apiPath += `?${mailParams.join('&')}`;
+                }
+                
+                // Log the API call for debugging
+                logDebug(`[MCP Adapter] Making ${apiMethod} request to ${apiPath}`);
                 break;
+                
             case 'mail.sendEmail':
             case 'mail.send':
                 const toolDefinition = toolsService.getToolByName('mail.sendEmail');
@@ -593,8 +674,14 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                     bcc: params.bcc, // Pass BCC if provided
                     subject: params.subject,
                     body: params.body,
-                    contentType: looksLikeHtml ? 'HTML' : 'Text' // Set content type
+                    contentType: looksLikeHtml ? 'HTML' : 'Text', // Set content type
+                    attachments: params.attachments // Pass attachments if provided
                 };
+                
+                // Log if attachments are being sent
+                if (params.attachments && Array.isArray(params.attachments) && params.attachments.length > 0) {
+                    logDebug(`[MCP Adapter] Sending email with ${params.attachments.length} attachments`);
+                }
                 logDebug(`[MCP Adapter] Handling ${moduleName}.${methodName} with path ${apiPath} and data:`, apiData);
                 break;
             case 'mail.searchMail':
@@ -611,13 +698,73 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 break;
             case 'mail.flagMail':
             case 'mail.flagEmail':
+                if (!transformedParams.id) {
+                    throw new Error('Email ID is required for flagging');
+                }
                 apiPath = '/v1/mail/flag';
                 apiMethod = 'POST';
-                apiData = params;
+                // Include email ID and flag value in the request body
+                apiData = {
+                    id: transformedParams.id,
+                    flag: transformedParams.flag !== false // Default to true if not explicitly set to false
+                };
+                // Log the API call for debugging
+                logDebug(`[MCP Adapter] Making ${apiMethod} request to ${apiPath} with data:`, apiData);
+                break;
+            case 'mail.markEmailRead':
+            case 'mail.markAsRead':
+            case 'outlook mail.markEmailRead':
+                if (!transformedParams.id) {
+                    const errorMessage = 'Email ID is required for marking as read/unread. Please provide an ID parameter with the email ID.';
+                    logDebug(`[MCP Adapter] Error: ${errorMessage}`);
+                    throw new Error(errorMessage);
+                }
+                // Properly format the path with the ID parameter
+                apiPath = `/v1/mail/${transformedParams.id}/read`;
+                apiMethod = 'PATCH';
+                // Include isRead in the request body
+                apiData = {
+                    isRead: transformedParams.isRead !== false // Default to true if not explicitly set to false
+                };
+                // Log the API call for debugging
+                logDebug(`[MCP Adapter] Making ${apiMethod} request to ${apiPath} with data:`, apiData);
                 break;
             case 'mail.getAttachments':
-                apiPath = '/v1/mail/attachments';
+            case 'mail.getMailAttachments':
+            case 'outlook mail.getMailAttachments':
+                if (!transformedParams.id) {
+                    const errorMessage = 'Email ID is required for getting attachments. Please provide an ID parameter with the email ID.';
+                    logDebug(`[MCP Adapter] Error: ${errorMessage}`);
+                    throw new Error(errorMessage);
+                }
+                
+                // Use the correct endpoint path that matches the route in routes.cjs
+                apiPath = `/v1/mail/attachments`;
                 apiMethod = 'GET';
+                
+                // Add the email ID as a query parameter - the controller expects 'id' parameter
+                const attachmentParams = [`id=${encodeURIComponent(transformedParams.id)}`];
+                
+                // Also transform the parameter for the handleIntent method which expects 'mailId'
+                transformedParams.mailId = transformedParams.id;
+                
+                // Option to filter by attachment ID
+                if (transformedParams.attachmentId) {
+                    attachmentParams.push(`attachmentId=${transformedParams.attachmentId}`);
+                }
+                
+                // Option to include content
+                if (transformedParams.includeContent !== undefined) {
+                    attachmentParams.push(`includeContent=${transformedParams.includeContent}`);
+                }
+                
+                // Add query parameters to the API path
+                if (attachmentParams.length > 0) {
+                    apiPath += `?${attachmentParams.join('&')}`;
+                }
+                
+                // Log the API call for debugging
+                logDebug(`[MCP Adapter] Making ${apiMethod} request to ${apiPath}`);
                 break;
 
             // Calendar module endpoints
@@ -751,39 +898,70 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 apiPath = '/v1/calendar/events/' + transformedParams.id;
                 apiMethod = 'PUT';
                 
-                // Create an object with only the provided parameters
-                // This avoids sending undefined values that could overwrite existing data
-                const updateData = {};
-                
-                if (transformedParams.subject !== undefined) {
-                    updateData.subject = transformedParams.subject;
+                try {
+                    // Create an object with only the provided parameters
+                    // This avoids sending undefined values that could overwrite existing data
+                    const updateData = {};
+                    const defaultTimeZone = transformedParams.timeZone || 'UTC';
+                    
+                    // Only add properties that are explicitly provided and not null
+                    if (transformedParams.subject !== undefined && transformedParams.subject !== null) {
+                        updateData.subject = transformedParams.subject;
+                    }
+                    
+                    // Handle start time if provided
+                    if (transformedParams.start !== undefined && transformedParams.start !== null) {
+                        updateData.start = transformDateTime(transformedParams.start, defaultTimeZone);
+                    }
+                    
+                    // Handle end time if provided
+                    if (transformedParams.end !== undefined && transformedParams.end !== null) {
+                        updateData.end = transformDateTime(transformedParams.end, defaultTimeZone);
+                    }
+                    
+                    // Handle attendees if provided
+                    if (transformedParams.attendees !== undefined && transformedParams.attendees !== null) {
+                        const attendees = transformAttendees(transformedParams.attendees);
+                        if (attendees && attendees.length > 0) {
+                            updateData.attendees = attendees;
+                        }
+                    }
+                    
+                    // Handle location if provided
+                    if (transformedParams.location !== undefined && transformedParams.location !== null) {
+                        // For location, we need to handle both string and object formats
+                        if (typeof transformedParams.location === 'string') {
+                            updateData.location = { displayName: transformedParams.location };
+                        } else {
+                            updateData.location = transformedParams.location;
+                        }
+                    }
+                    
+                    // Handle body content if provided
+                    if (transformedParams.body !== undefined && transformedParams.body !== null) {
+                        // For body, we need to handle both string and object formats
+                        if (typeof transformedParams.body === 'string') {
+                            // Determine if the body looks like HTML
+                            const looksLikeHtml = /<[a-z][\s\S]*>/i.test(transformedParams.body);
+                            updateData.body = {
+                                content: transformedParams.body,
+                                contentType: looksLikeHtml ? 'html' : 'text'
+                            };
+                        } else {
+                            updateData.body = transformedParams.body;
+                        }
+                    }
+                    
+                    // Handle online meeting flag if provided
+                    if (transformedParams.isOnlineMeeting !== undefined) {
+                        updateData.isOnlineMeeting = transformedParams.isOnlineMeeting;
+                    }
+                    
+                    apiData = updateData;
+                } catch (error) {
+                    logDebug(`[MCP Adapter] Error in updateEvent parameter transformation: ${error.message}`);
+                    throw new Error(`Failed to transform updateEvent parameters: ${error.message}`);
                 }
-                
-                if (transformedParams.start !== undefined) {
-                    updateData.start = transformDateTime(transformedParams.start, transformedParams.timeZone);
-                }
-                
-                if (transformedParams.end !== undefined) {
-                    updateData.end = transformDateTime(transformedParams.end, transformedParams.timeZone);
-                }
-                
-                if (transformedParams.attendees !== undefined) {
-                    updateData.attendees = transformAttendees(transformedParams.attendees);
-                }
-                
-                if (transformedParams.location !== undefined) {
-                    updateData.location = transformedParams.location;
-                }
-                
-                if (transformedParams.body !== undefined) {
-                    updateData.body = transformedParams.body;
-                }
-                
-                if (transformedParams.isOnlineMeeting !== undefined) {
-                    updateData.isOnlineMeeting = transformedParams.isOnlineMeeting;
-                }
-                
-                apiData = updateData;
                 
                 // Log the update data for debugging
                 logDebug(`[MCP Adapter] Updating event ${transformedParams.id} with data:`, apiData);
@@ -848,109 +1026,484 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
             case 'calendar.findtimes': // Add this case to handle the findtimes endpoint
                 apiPath = '/v1/calendar/findMeetingTimes';
                 apiMethod = 'POST';
-                // Transform parameters to match what the calendar service expects
                 
-                // Extract time constraints from different possible input formats
-                let timeConstraints = transformedParams.timeConstraints;
-                if (!timeConstraints && (transformedParams.startTime || transformedParams.start)) {
-                    timeConstraints = {
-                        startTime: transformedParams.startTime || transformedParams.start,
-                        endTime: transformedParams.endTime || transformedParams.end,
-                        timeZone: transformedParams.timeZone || 'UTC'
+                try {
+                    // Transform parameters to match what the calendar service expects
+                    const defaultTimeZone = transformedParams.timeZone || 'UTC';
+                    
+                    // Extract time constraints from different possible input formats
+                    let timeConstraints = transformedParams.timeConstraints;
+                    let timeSlots = [];
+                    
+                    // Handle different formats of time constraints
+                    if (timeConstraints && timeConstraints.timeSlots && Array.isArray(timeConstraints.timeSlots)) {
+                        // Format 1: Explicit timeSlots array in timeConstraints
+                        timeSlots = timeConstraints.timeSlots.map(slot => {
+                            return {
+                                start: transformDateTime(slot.start, slot.start?.timeZone || defaultTimeZone),
+                                end: transformDateTime(slot.end, slot.end?.timeZone || defaultTimeZone)
+                            };
+                        });
+                    } else if (timeConstraints && (timeConstraints.start || timeConstraints.startTime)) {
+                        // Format 2: Single time range in timeConstraints object
+                        timeSlots = [{
+                            start: transformDateTime(timeConstraints.start || timeConstraints.startTime, timeConstraints.timeZone || defaultTimeZone),
+                            end: transformDateTime(timeConstraints.end || timeConstraints.endTime, timeConstraints.timeZone || defaultTimeZone)
+                        }];
+                    } else if (transformedParams.startTime || transformedParams.start) {
+                        // Format 3: Direct start/end parameters at the top level
+                        timeSlots = [{
+                            start: transformDateTime(transformedParams.startTime || transformedParams.start, defaultTimeZone),
+                            end: transformDateTime(transformedParams.endTime || transformedParams.end, defaultTimeZone)
+                        }];
+                    } else {
+                        // Format 4: Default to current time + 7 days if no time constraints provided
+                        const now = new Date();
+                        const oneWeekLater = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+                        
+                        timeSlots = [{
+                            start: {
+                                dateTime: now.toISOString(),
+                                timeZone: defaultTimeZone
+                            },
+                            end: {
+                                dateTime: oneWeekLater.toISOString(),
+                                timeZone: defaultTimeZone
+                            }
+                        }];
+                    }
+                    
+                    // Ensure we have at least one time slot
+                    if (timeSlots.length === 0) {
+                        throw new Error('No valid time slots could be determined from the provided parameters');
+                    }
+                    
+                    // Validate that each time slot has start and end
+                    timeSlots.forEach((slot, index) => {
+                        if (!slot.start || !slot.end) {
+                            throw new Error(`Time slot at index ${index} is missing start or end time`);
+                        }
+                    });
+                    
+                    // Create the API data with proper structure following Microsoft Graph API requirements
+                    apiData = {
+                        // Transform attendees to array format - ensure it's never null/undefined
+                        attendees: transformAttendees(transformedParams.attendees) || [].map(attendee => {
+                            // Ensure each attendee has the correct format
+                            const email = typeof attendee === 'string' ? attendee : (attendee.email || attendee.address);
+                            return { 
+                                emailAddress: { address: email },
+                                type: attendee.type || 'required'
+                            };
+                        }),
+                        
+                        // Time constraints with properly formatted timeSlots array
+                        // IMPORTANT: Microsoft Graph API expects 'timeSlots' (capital 'S')
+                        timeConstraint: {
+                            timeSlots: timeSlots.map(slot => ({
+                                start: {
+                                    dateTime: slot.start.dateTime,
+                                    timeZone: slot.start.timeZone || 'UTC'
+                                },
+                                end: {
+                                    dateTime: slot.end.dateTime,
+                                    timeZone: slot.end.timeZone || 'UTC'
+                                }
+                            })),
+                            activityDomain: timeConstraints?.activityDomain || transformedParams.activityDomain || 'work'
+                        },
+                        
+                        // Duration in minutes - ensure it's a positive number
+                        meetingDuration: parseInt(transformedParams.meetingDuration || transformedParams.duration || 60, 10),
+                        
+                        // Additional parameters with reasonable defaults
+                        maxCandidates: parseInt(transformedParams.maxCandidates || 10, 10),
+                        minimumAttendeePercentage: parseInt(transformedParams.minimumAttendeePercentage || 100, 10)
                     };
+                    
+                    // Ensure we have at least one attendee
+                    if (!apiData.attendees || apiData.attendees.length === 0) {
+                        // Add the current user as an attendee if none provided
+                        apiData.attendees = [{
+                            emailAddress: { address: 'me@example.com' }, // This will be replaced by the API
+                            type: 'required'
+                        }];
+                    }
+                    
+                    // Log the transformed parameters for debugging
+                    logDebug(`[MCP Adapter] Transformed findMeetingTimes parameters:`, apiData);
+                } catch (error) {
+                    logDebug(`[MCP Adapter] Error in findMeetingTimes parameter transformation: ${error.message}`);
+                    throw new Error(`Failed to transform findMeetingTimes parameters: ${error.message}`);
                 }
-                
-                apiData = {
-                    // Transform attendees to array format
-                    attendees: transformAttendees(transformedParams.attendees) || [],
-                    // Time constraints
-                    timeConstraint: {
-                        start: timeConstraints?.startTime || timeConstraints?.start,
-                        end: timeConstraints?.endTime || timeConstraints?.end,
-                        timeZone: timeConstraints?.timeZone || transformedParams.timeZone || 'UTC'
-                    },
-                    // Duration in minutes
-                    meetingDuration: transformedParams.meetingDuration || transformedParams.duration || 60,
-                    // Additional parameters
-                    maxCandidates: transformedParams.maxCandidates || 10,
-                    minimumAttendeePercentage: transformedParams.minimumAttendeePercentage || 100
-                };
-                
-                // Log the transformed parameters for debugging
-                logDebug(`[MCP Adapter] Transformed findMeetingTimes parameters:`, apiData);
                 break;
             case 'calendar.scheduleMeeting':
             case 'calendar.schedule': // Add alias for backward compatibility
+            case 'microsoft calendar.scheduleMeeting':
                 apiPath = '/v1/calendar/events'; // Map to the same endpoint as createEvent
                 apiMethod = 'POST';
                 
-                // Extract start and end time information - prioritize preferredTimes if available
-                let meetingStartTime, meetingEndTime;
-                
-                if (transformedParams.preferredTimes && transformedParams.preferredTimes.length > 0) {
-                    meetingStartTime = transformedParams.preferredTimes[0].start;
-                    meetingEndTime = transformedParams.preferredTimes[0].end;
-                    console.log(`[MCP Adapter scheduleMeeting] Using preferredTimes: ${JSON.stringify(meetingStartTime)} to ${JSON.stringify(meetingEndTime)}`);
-                } else {
-                    // Try various parameter combinations to extract start/end times
-                    if (transformedParams.start) {
-                        meetingStartTime = transformedParams.start;
-                    } else if (transformedParams.startDateTime) {
-                        meetingStartTime = { 
-                            dateTime: transformedParams.startDateTime, 
-                            timeZone: transformedParams.timeZone || 'Pacific Standard Time' 
+                try {
+                    // Start tracking execution time for performance monitoring
+                    const startTime = Date.now();
+                    
+                    // Extract start and end time information
+                    let meetingStartTime = transformedParams.start;
+                    let meetingEndTime = transformedParams.end;
+                    const defaultTimeZone = transformedParams.timeZone || 'UTC';
+                    
+                    // Check for preferredTimes first (highest priority)
+                    if (transformedParams.preferredTimes && Array.isArray(transformedParams.preferredTimes) && transformedParams.preferredTimes.length > 0) {
+                        const preferredTime = transformedParams.preferredTimes[0];
+                        
+                        if (preferredTime.start) {
+                            meetingStartTime = preferredTime.start;
+                        }
+                        
+                        if (preferredTime.end) {
+                            meetingEndTime = preferredTime.end;
+                        }
+                        
+                        logDebug(`[MCP Adapter] Using preferred meeting times`);
+                    }
+                    
+                    // If both start and end are missing, set default values (1 hour from now)
+                    if (!meetingStartTime && !meetingEndTime) {
+                        const now = new Date();
+                        const oneHourLater = new Date(now.getTime() + 60 * 60 * 1000);
+                        const twoHoursLater = new Date(now.getTime() + 120 * 60 * 1000);
+                        
+                        meetingStartTime = {
+                            dateTime: oneHourLater.toISOString(),
+                            timeZone: defaultTimeZone
+                        };
+                        
+                        meetingEndTime = {
+                            dateTime: twoHoursLater.toISOString(),
+                            timeZone: defaultTimeZone
+                        };
+                        
+                        logDebug(`[MCP Adapter] Using default meeting times: ${oneHourLater.toISOString()} to ${twoHoursLater.toISOString()}`);
+                    }
+                    
+                    // If we have start but no end, set end to 1 hour after start
+                    if (meetingStartTime && !meetingEndTime) {
+                        // Parse the start time if it's a string
+                        let startDate;
+                        if (typeof meetingStartTime === 'string') {
+                            startDate = new Date(meetingStartTime);
+                            meetingStartTime = {
+                                dateTime: startDate.toISOString(),
+                                timeZone: defaultTimeZone
+                            };
+                        } else if (typeof meetingStartTime === 'object' && meetingStartTime.dateTime) {
+                            startDate = new Date(meetingStartTime.dateTime);
+                        } else {
+                            // Handle null or undefined by setting a default
+                            const now = new Date();
+                            const oneHourLater = new Date(now.getTime() + 60 * 60 * 1000);
+                            startDate = oneHourLater;
+                            meetingStartTime = {
+                                dateTime: startDate.toISOString(),
+                                timeZone: defaultTimeZone
+                            };
+                            logDebug(`[MCP Adapter] Using default start time: ${startDate.toISOString()}`);
+                        }
+                        
+                        // Set end time to 1 hour after start
+                        const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
+                        meetingEndTime = {
+                            dateTime: endDate.toISOString(),
+                            timeZone: meetingStartTime.timeZone || defaultTimeZone
+                        };
+                        logDebug(`[MCP Adapter] Calculated end time based on start time: ${endDate.toISOString()}`);
+                    }
+                    
+                    // If we have end but no start, set start to 1 hour before end
+                    if (!meetingStartTime && meetingEndTime) {
+                        // Parse the end time if it's a string
+                        let endDate;
+                        if (typeof meetingEndTime === 'string') {
+                            endDate = new Date(meetingEndTime);
+                            meetingEndTime = {
+                                dateTime: endDate.toISOString(),
+                                timeZone: defaultTimeZone
+                            };
+                        } else if (typeof meetingEndTime === 'object' && meetingEndTime.dateTime) {
+                            endDate = new Date(meetingEndTime.dateTime);
+                        } else {
+                            // Handle null or undefined by setting a default
+                            const now = new Date();
+                            const twoHoursLater = new Date(now.getTime() + 120 * 60 * 1000);
+                            endDate = twoHoursLater;
+                            meetingEndTime = {
+                                dateTime: endDate.toISOString(),
+                                timeZone: defaultTimeZone
+                            };
+                            logDebug(`[MCP Adapter] Using default end time: ${endDate.toISOString()}`);
+                        }
+                        
+                        // Set start time to 1 hour before end
+                        const startDate = new Date(endDate.getTime() - 60 * 60 * 1000);
+                        meetingStartTime = {
+                            dateTime: startDate.toISOString(),
+                            timeZone: meetingEndTime.timeZone || defaultTimeZone
+                        };
+                        logDebug(`[MCP Adapter] Calculated start time based on end time: ${startDate.toISOString()}`);
+                    }
+                    
+                    // Ensure both start and end are in the correct format
+                    if (typeof meetingStartTime === 'string') {
+                        meetingStartTime = {
+                            dateTime: new Date(meetingStartTime).toISOString(),
+                            timeZone: defaultTimeZone
                         };
                     }
                     
-                    if (transformedParams.end) {
-                        meetingEndTime = transformedParams.end;
-                    } else if (transformedParams.endDateTime) {
-                        meetingEndTime = { 
-                            dateTime: transformedParams.endDateTime, 
-                            timeZone: transformedParams.timeZone || 'Pacific Standard Time' 
+                    if (typeof meetingEndTime === 'string') {
+                        meetingEndTime = {
+                            dateTime: new Date(meetingEndTime).toISOString(),
+                            timeZone: defaultTimeZone
                         };
                     }
                     
-                    console.log(`[MCP Adapter scheduleMeeting] Using direct parameters: ${JSON.stringify(meetingStartTime)} to ${JSON.stringify(meetingEndTime)}`);
+                    // Ensure body content is properly formatted for HTML
+                    let bodyContent = transformedParams.body || transformedParams.content || '';
+                    if (bodyContent && !bodyContent.startsWith('<')) {
+                        // If it doesn't start with HTML tag, wrap it in paragraph tags
+                        bodyContent = `<p>${bodyContent}</p>`;
+                    }
+                    
+                    // Create the API data with proper structure
+                    apiData = {
+                        subject: transformedParams.subject || 'New Meeting',
+                        body: {
+                            contentType: 'html',
+                            content: bodyContent
+                        },
+                        start: meetingStartTime,
+                        end: meetingEndTime,
+                        location: transformedParams.location ? { displayName: transformedParams.location } : null,
+                        attendees: transformAttendees(transformedParams.attendees) || []
+                    };
+                    
+                    // Add isOnlineMeeting if specified
+                    if (transformedParams.isOnlineMeeting !== undefined) {
+                        // Convert string 'true'/'false' to boolean if needed
+                        apiData.isOnlineMeeting = transformedParams.isOnlineMeeting === true || 
+                            transformedParams.isOnlineMeeting === 'true' || 
+                            transformedParams.isOnlineMeeting === '1';
+                    }
+                    
+                    // Calculate execution time for metrics
+                    const executionTime = Date.now() - startTime;
+                    logDebug(`[MCP Adapter] scheduleMeeting parameter transformation completed in ${executionTime}ms`);
+                } catch (error) {
+                    logError(`[MCP Adapter] Error transforming scheduleMeeting parameters: ${error.message}`);
+                    throw new Error(`Failed to transform parameters for scheduleMeeting: ${error.message}`);
                 }
                 
-                // Log timezone information for debugging
-                if (meetingStartTime && meetingStartTime.timeZone) {
-                    console.log(`[MCP Adapter scheduleMeeting] Start time zone: ${meetingStartTime.timeZone}`);
-                }
-                
-                if (meetingEndTime && meetingEndTime.timeZone) {
-                    console.log(`[MCP Adapter scheduleMeeting] End time zone: ${meetingEndTime.timeZone}`);
-                }
-                
-                if (transformedParams.timeZone) {
-                    console.log(`[MCP Adapter scheduleMeeting] Default time zone: ${transformedParams.timeZone}`);
-                }
-                
-                // Transform parameters to match what the calendar controller expects
-                apiData = {
-                    // Required parameters
-                    subject: transformedParams.subject,
-                    attendees: transformAttendees(transformedParams.attendees) || [],
-                    // Use the extracted start and end times
-                    start: meetingStartTime ? transformDateTime(meetingStartTime, transformedParams.timeZone) : undefined,
-                    end: meetingEndTime ? transformDateTime(meetingEndTime, transformedParams.timeZone) : undefined,
-                    // Optional parameters
-                    location: transformedParams.location,
-                    body: transformedParams.body,
-                    isOnlineMeeting: transformedParams.isOnlineMeeting
-                };
                 // Log the API call for debugging
                 logDebug(`[MCP Adapter] Making POST request to ${apiPath} with data:`, apiData);
                 break;
+                
             case 'calendar.getRooms':
+            case 'calendar.rooms':
                 apiPath = '/v1/calendar/rooms';
                 apiMethod = 'GET';
+                
+                // Transform parameters for room filtering
+                if (transformedParams) {
+                    const queryParams = [];
+                    
+                    // Add optional filters
+                    if (transformedParams.building) {
+                        queryParams.push(`building=${encodeURIComponent(transformedParams.building)}`);
+                    }
+                    
+                    if (transformedParams.floor) {
+                        queryParams.push(`floor=${encodeURIComponent(transformedParams.floor)}`);
+                    }
+                    
+                    if (transformedParams.capacity) {
+                        queryParams.push(`capacity=${transformedParams.capacity}`);
+                    }
+                    
+                    // Add pagination parameters
+                    if (transformedParams.top || transformedParams.limit) {
+                        queryParams.push(`$top=${transformedParams.top || transformedParams.limit || 25}`);
+                    }
+                    
+                    if (transformedParams.skip) {
+                        queryParams.push(`$skip=${transformedParams.skip}`);
+                    }
+                    
+                    // Add query parameters to the API path
+                    if (queryParams.length > 0) {
+                        apiPath += `?${queryParams.join('&')}`;
+                    }
+                }
+                
+                // Log the API call for debugging
+                logDebug(`[MCP Adapter] Making ${apiMethod} request to ${apiPath}`);
                 break;
+                
+            case 'calendar.acceptEvent':
+            case 'microsoft calendar.acceptEvent':
+                if (!transformedParams.id) {
+                    const errorMessage = 'Event ID is required for accepting an event. Please provide an ID parameter with the event ID.';
+                    logDebug(`[MCP Adapter] Error: ${errorMessage}`);
+                    throw new Error(errorMessage);
+                }
+                apiPath = `/v1/calendar/events/${transformedParams.id}/accept`;
+                apiMethod = 'POST';
+                
+                // Add optional comment if provided
+                if (transformedParams.comment) {
+                    apiData = { comment: transformedParams.comment };
+                }
+                break;
+                
+            case 'calendar.declineEvent':
+            case 'microsoft calendar.declineEvent':
+                if (!transformedParams.id) {
+                    const errorMessage = 'Event ID is required for declining an event. Please provide an ID parameter with the event ID.';
+                    logDebug(`[MCP Adapter] Error: ${errorMessage}`);
+                    throw new Error(errorMessage);
+                }
+                apiPath = `/v1/calendar/events/${transformedParams.id}/decline`;
+                apiMethod = 'POST';
+                
+                // Add optional comment if provided
+                if (transformedParams.comment) {
+                    apiData = { comment: transformedParams.comment };
+                }
+                break;
+                
+            case 'calendar.tentativelyAcceptEvent':
+            case 'microsoft calendar.tentativelyAcceptEvent':
+                if (!transformedParams.id) {
+                    const errorMessage = 'Event ID is required for tentatively accepting an event. Please provide an ID parameter with the event ID.';
+                    logDebug(`[MCP Adapter] Error: ${errorMessage}`);
+                    throw new Error(errorMessage);
+                }
+                apiPath = `/v1/calendar/events/${transformedParams.id}/tentativelyAccept`;
+                apiMethod = 'POST';
+                
+                // Add optional comment if provided
+                if (transformedParams.comment) {
+                    apiData = { comment: transformedParams.comment };
+                }
+                break;
+                
             case 'calendar.getCalendars':
+            case 'calendar.calendars':
+            case 'microsoft calendar.getCalendars':
                 apiPath = '/v1/calendar/calendars';
                 apiMethod = 'GET';
+                
+                // Transform parameters for calendar options
+                if (transformedParams) {
+                    const queryParams = [];
+                    
+                    // Add optional filters
+                    if (transformedParams.includeDelegated !== undefined) {
+                        queryParams.push(`includeDelegated=${transformedParams.includeDelegated}`);
+                    }
+                    
+                    if (transformedParams.includeShared !== undefined) {
+                        queryParams.push(`includeShared=${transformedParams.includeShared}`);
+                    }
+                    
+                    // Add query parameters to the API path
+                    if (queryParams.length > 0) {
+                        apiPath += `?${queryParams.join('&')}`;
+                    }
+                }
+                
+                // Log the API call for debugging
+                logDebug(`[MCP Adapter] Making ${apiMethod} request to ${apiPath}`);
                 break;
+            case 'calendar.acceptEvent':
+            case 'calendar.accept':
+                if (!transformedParams.eventId) {
+                    throw new Error('Event ID is required for accepting an event');
+                }
+                
+                apiPath = `/v1/calendar/events/${transformedParams.eventId}/accept`;
+                apiMethod = 'POST';
+                
+                // Optional comment for the response
+                if (transformedParams.comment) {
+                    apiData = { comment: transformedParams.comment };
+                } else {
+                    apiData = {};
+                }
+                
+                // Log the API call for debugging
+                logDebug(`[MCP Adapter] Making ${apiMethod} request to ${apiPath} with data:`, apiData);
+                break;
+                
+            case 'calendar.tentativelyAcceptEvent':
+            case 'calendar.tentative':
+                if (!transformedParams.eventId) {
+                    throw new Error('Event ID is required for tentatively accepting an event');
+                }
+                
+                apiPath = `/v1/calendar/events/${transformedParams.eventId}/tentativelyAccept`;
+                apiMethod = 'POST';
+                
+                // Optional comment for the response
+                if (transformedParams.comment) {
+                    apiData = { comment: transformedParams.comment };
+                } else {
+                    apiData = {};
+                }
+                
+                // Log the API call for debugging
+                logDebug(`[MCP Adapter] Making ${apiMethod} request to ${apiPath} with data:`, apiData);
+                break;
+                
+            case 'calendar.declineEvent':
+            case 'calendar.decline':
+                if (!transformedParams.eventId) {
+                    throw new Error('Event ID is required for declining an event');
+                }
+                
+                apiPath = `/v1/calendar/events/${transformedParams.eventId}/decline`;
+                apiMethod = 'POST';
+                
+                // Optional comment for the response
+                if (transformedParams.comment) {
+                    apiData = { comment: transformedParams.comment };
+                } else {
+                    apiData = {};
+                }
+                
+                // Log the API call for debugging
+                logDebug(`[MCP Adapter] Making ${apiMethod} request to ${apiPath} with data:`, apiData);
+                break;
+                
+            case 'calendar.cancelEvent':
+            case 'calendar.cancel':
+                if (!transformedParams.eventId) {
+                    throw new Error('Event ID is required for canceling an event');
+                }
+                
+                apiPath = `/v1/calendar/events/${transformedParams.eventId}/cancel`;
+                apiMethod = 'POST';
+                
+                // Optional comment for the cancellation
+                if (transformedParams.comment) {
+                    apiData = { comment: transformedParams.comment };
+                } else {
+                    apiData = {};
+                }
+                
+                // Log the API call for debugging
+                logDebug(`[MCP Adapter] Making ${apiMethod} request to ${apiPath} with data:`, apiData);
+                break;
+                
             case 'calendar.addAttachment':
                 apiPath = `/v1/calendar/events/${params.eventId}/attachments`;
                 apiMethod = 'POST';
@@ -1089,7 +1642,30 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
         }
 
         logDebug(`[MCP Adapter] Executing ${moduleName}.${methodName} via API: ${apiMethod} ${apiPath}`);
+        // Add enhanced logging for calendar controller API calls
+        if (moduleName === 'calendar' || apiPath.includes('/v1/calendar')) {
+            logDebug(`[MCP Adapter] Making calendar API call: ${apiMethod} ${apiPath}`, {
+                method: apiMethod,
+                path: apiPath,
+                data: apiData,
+                timestamp: new Date().toISOString(),
+                moduleMethod: `${moduleName}.${methodName}`
+            });
+        }
+        
+        // Make the API call
         const result = await callApi(apiMethod, apiPath, apiData);
+        
+        // Log the result for calendar calls
+        if (moduleName === 'calendar' || apiPath.includes('/v1/calendar')) {
+            logDebug(`[MCP Adapter] Calendar API call result: ${apiMethod} ${apiPath}`, {
+                success: true,
+                resultType: typeof result,
+                hasData: result != null,
+                timestamp: new Date().toISOString(),
+                moduleMethod: `${moduleName}.${methodName}`
+            });
+        }
 
         // Special case for system.getManifest to transform tools list to manifest format
         if (`${moduleName}.${methodName}` === 'system.getManifest' && result && result.tools) {
@@ -1189,6 +1765,29 @@ async function handleToolCall(toolName, toolArgs) {
         // Special handling for calendar date ranges
         if ((toolName === 'getEvents' || toolName === 'getCalendar') && toolArgs.timeframe) {
             toolArgs = processCalendarTimeframe(toolArgs);
+        }
+        
+        // Special handling for file operations
+        // Map common file operation tool names directly to their module methods
+        const fileOperations = {
+            'searchFiles': 'files.searchFiles',
+            'getFileContent': 'files.getFileContent',
+            'createSharingLink': 'files.createSharingLink',
+            'updateFileContent': 'files.updateFileContent',
+            'getSharingLinks': 'files.getSharingLinks',
+            'removeSharingPermission': 'files.removeSharingPermission',
+            'setFileContent': 'files.setFileContent',
+            'downloadFile': 'files.downloadFile',
+            'uploadFile': 'files.uploadFile',
+            'getFileMetadata': 'files.getFileMetadata',
+            'listFiles': 'files.listFiles'
+        };
+        
+        // If the tool is a file operation, map it directly
+        if (fileOperations[toolName]) {
+            const [moduleName, methodName] = fileOperations[toolName].split('.');
+            logDebug(`[MCP Adapter] Direct mapping for file operation: ${toolName} -> ${moduleName}.${methodName}`);
+            return await executeModuleMethod(moduleName, methodName, toolArgs);
         }
         
         // First try to use the toolsService to map and transform the parameters

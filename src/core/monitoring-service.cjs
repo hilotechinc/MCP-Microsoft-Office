@@ -26,6 +26,9 @@ try {
 const EventEmitter = require('events');
 const logEmitter = new EventEmitter();
 
+// Increase max listeners to avoid warnings
+logEmitter.setMaxListeners(20);
+
 function initLogger(logFilePath, logLevel = 'info') {
     // If no custom path provided, use date-stamped file name
     if (!logFilePath && !process.env.MCP_LOG_PATH) {
@@ -137,8 +140,9 @@ function info(message, context = {}, category = '') {
     if (!logger) initLogger();
     const logData = {
         message,
-        context,
         category,
+        context,
+        severity: 'info',
         timestamp: new Date().toISOString(),
         pid: process.pid,
         hostname: os.hostname(),
@@ -147,11 +151,21 @@ function info(message, context = {}, category = '') {
     
     logger.info(logData);
     
-    // Emit log event for UI subscribers
+    // Ensure context is serializable for event emission
+    const safeContext = JSON.parse(JSON.stringify({
+        ...context,
+        _logType: 'info',
+        _category: category
+    }));
+    
+    // Emit log event for UI subscribers with safe context
     logEmitter.emit('log', {
-        level: 'info',
-        ...logData
+        ...logData,
+        context: safeContext
     });
+    
+    // Debug log emission
+    console.log(`[MonitoringService] Emitted info log: ${message}`);
 }
 
 /**
@@ -164,8 +178,9 @@ function warn(message, context = {}, category = '') {
     if (!logger) initLogger();
     const logData = {
         message,
-        context,
         category,
+        context,
+        severity: 'warn',
         timestamp: new Date().toISOString(),
         pid: process.pid,
         hostname: os.hostname(),
@@ -174,10 +189,18 @@ function warn(message, context = {}, category = '') {
     
     logger.warn(logData);
     
-    // Emit log event for UI subscribers
+    // Ensure context is serializable for event emission
+    const safeContext = JSON.parse(JSON.stringify({
+        ...context,
+        _logType: 'warn',
+        _category: category
+    }));
+    
+    // Emit log event for UI subscribers with safe context
     logEmitter.emit('log', {
         level: 'warn',
-        ...logData
+        ...logData,
+        context: safeContext
     });
 }
 
@@ -191,8 +214,9 @@ function debug(message, context = {}, category = '') {
     if (!logger) initLogger();
     const logData = {
         message,
-        context,
         category,
+        context,
+        severity: 'debug',
         timestamp: new Date().toISOString(),
         pid: process.pid,
         hostname: os.hostname(),
@@ -201,11 +225,30 @@ function debug(message, context = {}, category = '') {
     
     logger.debug(logData);
     
-    // Emit log event for UI subscribers
-    logEmitter.emit('log', {
-        level: 'debug',
-        ...logData
-    });
+    try {
+        // Ensure context is serializable for event emission
+        const safeContext = JSON.parse(JSON.stringify({
+            ...context,
+            _logType: 'debug',
+            _category: category
+        }));
+        
+        // Emit log event for UI subscribers with safe context
+        logEmitter.emit('log', {
+            ...logData,
+            context: safeContext
+        });
+    } catch (e) {
+        console.error('Error emitting debug log:', e);
+        // Emit a simplified log if serialization fails
+        logEmitter.emit('log', {
+            message,
+            category,
+            severity: 'debug',
+            timestamp: new Date().toISOString(),
+            context: { error: 'Context serialization failed' }
+        });
+    }
 }
 
 /**
@@ -218,8 +261,9 @@ function error(message, context = {}, category = '') {
     if (!logger) initLogger();
     const logData = {
         message,
-        context,
         category,
+        context,
+        severity: 'error',
         timestamp: new Date().toISOString(),
         pid: process.pid,
         hostname: os.hostname(),
@@ -228,11 +272,32 @@ function error(message, context = {}, category = '') {
     
     logger.error(logData);
     
-    // Emit log event for UI subscribers
-    logEmitter.emit('log', {
-        level: 'error',
-        ...logData
-    });
+    try {
+        // Ensure context is serializable for event emission
+        const safeContext = JSON.parse(JSON.stringify({
+            ...context,
+            _logType: 'error',
+            _category: category
+        }));
+        
+        // Emit log event for UI subscribers with safe context
+        logEmitter.emit('log', {
+            ...logData,
+            context: safeContext
+        });
+        
+        console.error(`[MonitoringService] Emitted error log: ${message}`);
+    } catch (e) {
+        console.error('Error emitting error log:', e);
+        // Emit a simplified log if serialization fails
+        logEmitter.emit('log', {
+            message,
+            category,
+            severity: 'error',
+            timestamp: new Date().toISOString(),
+            context: { error: 'Context serialization failed', originalMessage: message }
+        });
+    }
 }
 
 /**

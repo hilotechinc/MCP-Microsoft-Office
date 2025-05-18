@@ -10,6 +10,7 @@ cd "$(dirname "$0")"
 export NODE_ENV=development
 export ELECTRON_ENABLE_LOGGING=1
 export ELECTRON_ENABLE_STACK_DUMPING=1
+export MCP_LOG_LEVEL=debug
 
 # Kill any existing processes on port 3000
 echo "Checking for existing processes on port 3000..."

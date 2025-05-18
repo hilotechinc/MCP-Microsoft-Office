@@ -23,7 +23,7 @@ const monitoringService = require('../core/monitoring-service.cjs');
 // Initialize modules with their dependencies
 const mailModule = MailModule.init({ graphService: mailService, cacheService, eventService, errorService, monitoringService });
 const calendarModule = CalendarModule.init({ graphService: calendarService, cacheService, eventService, errorService, monitoringService });
-const filesModule = FilesModule.init({ graphService: filesService, cacheService });
+const filesModule = FilesModule.init({ graphService: filesService, cacheService, errorService, monitoringService });
 const peopleModule = PeopleModule.init({ graphService: peopleService, cacheService });
 
 // Register modules

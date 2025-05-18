@@ -1,4 +1,3 @@
-<!-- @fileoverview Minimal renderer for MCP Electron app main window. -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -6,34 +5,61 @@
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MCP Desktop</title>
-    <style>
-        html, body { height: 100%; margin: 0; padding: 0; }
-        body { display: flex; align-items: center; justify-content: center; background: #f5f7fa; font-family: sans-serif; }
-        .center { text-align: center; }
-        h1 { color: #3366cc; }
-    </style>
+    <link rel="stylesheet" href="./modern-ui.css">
 </head>
 <body>
-    <!-- Test panel will be inserted dynamically after the status bar -->
-    <div id="app"></div>
+    <header class="app-header">
+        <div class="container header-content">
+            <div class="app-logo">MCP Desktop</div>
+            <div id="status-indicators"></div>
+        </div>
+    </header>
+    
+    <div class="app-container">
+        <!-- Sidebar with Microsoft 365 Integration Status -->
+        <aside class="sidebar" id="app-sidebar">
+            <div id="integration-status" class="card">
+                <div class="card-header">
+                    <h3 class="card-title">Microsoft 365 Integration</h3>
+                </div>
+                <div class="card-body">
+                    <div class="connection-buttons">
+                        <button id="debug-mail-btn" class="btn btn-primary">Test Mail API</button>
+                        <button id="debug-calendar-btn" class="btn btn-secondary">Test Calendar API</button>
+                        <button id="debug-files-btn" class="btn btn-accent">Test Files API</button>
+                    </div>
+                    <div id="test-results" class="test-results mt-4 hidden"></div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">System Details</h3>
+                </div>
+                <div class="card-body">
+                    <div id="system-info">
+                        <p><strong>Version:</strong> 2.5.0</p>
+                        <p><strong>Environment:</strong> Production</p>
+                        <p><strong>Last Updated:</strong> May 16, 2025</p>
+                    </div>
+                </div>
+            </div>
+        </aside>
+        
+        <!-- Main content area -->
+        <main class="main-content">
+            <!-- App container where dynamic content will be rendered -->
+            <div id="app"></div>
+        </main>
+    </div>
+    
     <!-- Polyfill for potential ESM/CommonJS compatibility issues -->
     <script>
-        window.process = window.process || { env: {} };
-    </script>
-    
-    <!-- First load a simple script to ensure the app div exists -->
-    <script>
-        if (!document.getElementById('app')) {
-            const appDiv = document.createElement('div');
-            appDiv.id = 'app';
-            document.body.appendChild(appDiv);
+        if (typeof globalThis === 'undefined') {
+            window.globalThis = window;
         }
     </script>
     
-    <!-- Load the application code -->
-    <script src="./compiled/bundle.js" type="module" defer></script>
-    
-    <!-- Test button functionality -->
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             // Create a function to check status and show test panel if authenticated
@@ -46,7 +72,9 @@
                         if (status.msGraph === 'green') {
                             // Wait for the app to render the status bar
                             setTimeout(() => {
-                                createTestPanel();
+                                // No need to create the panel as it's already in the HTML
+                                // Just add event listeners to the buttons
+                                setupButtonListeners();
                             }, 500);
                         }
                     }
@@ -55,306 +83,255 @@
                 }
             }
             
-            // Create and insert the test panel after the status bar
-            function createTestPanel() {
-                // Check if the panel already exists
-                if (document.getElementById('test-panel')) return;
-                
-                // Create the test panel
-                const testPanel = document.createElement('div');
-                testPanel.id = 'test-panel';
-                testPanel.style.margin = '24px auto';
-                testPanel.style.padding = '16px';
-                testPanel.style.backgroundColor = '#f0f4f8';
-                testPanel.style.borderRadius = '8px';
-                testPanel.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
-                testPanel.style.maxWidth = '800px';
-                testPanel.style.display = 'block';
-                testPanel.style.clear = 'both';
-                
-                // Add panel content
-                testPanel.innerHTML = `
-                    <h3 style="margin-top:0;margin-bottom:12px;color:#333;">Test Microsoft 365 Integration</h3>
-                    <div style="display:flex;flex-direction:row;gap:12px;margin-bottom:16px;">
-                        <button id="debug-calendar-btn" style="padding:8px 16px;background-color:#5c2d91;color:white;border:none;border-radius:4px;cursor:pointer;">Test Calendar API</button>
-                        <button id="debug-mail-btn" style="padding:8px 16px;background-color:#0078d4;color:white;border:none;border-radius:4px;cursor:pointer;">Test Mail API</button>
-                        <button id="debug-files-btn" style="padding:8px 16px;background-color:#107c41;color:white;border:none;border-radius:4px;cursor:pointer;">Test Files API</button>
-                        <button id="view-logs-btn" style="padding:8px 16px;background-color:#d83b01;color:white;border:none;border-radius:4px;cursor:pointer;">View Detailed Logs</button>
-                    </div>
-                    <div id="test-results" style="margin-top:12px;background-color:white;padding:12px;border-radius:4px;max-height:300px;overflow:auto;display:none;font-family:monospace;white-space:pre-wrap;"></div>
-                    
-                    <h3 style="margin-top:24px;margin-bottom:12px;color:#333;">MCP Query Log</h3>
-                    <div style="display:flex;flex-direction:row;gap:12px;margin-bottom:16px;">
-                        <button id="clear-log-btn" style="padding:8px 16px;background-color:#d83b01;color:white;border:none;border-radius:4px;cursor:pointer;">Clear Log</button>
-                        <button id="refresh-log-btn" style="padding:8px 16px;background-color:#0078d4;color:white;border:none;border-radius:4px;cursor:pointer;">Refresh Log</button>
-                        <label style="display:flex;align-items:center;">
-                            <input type="checkbox" id="auto-scroll" checked style="margin-right:8px;">
-                            Auto-scroll to bottom
-                        </label>
-                        <label style="display:flex;align-items:center;">
-                            <input type="checkbox" id="auto-refresh" checked style="margin-right:8px;">
-                            Auto-refresh (5s)
-                        </label>
-                    </div>
-                    <div id="mcp-log" style="background-color:white;padding:12px;border-radius:4px;height:300px;overflow:auto;font-family:monospace;white-space:pre-wrap;font-size:12px;">MCP Query Log initialized. Waiting for queries...</div>
-                `;
-                
-                // Insert after the app div
-                const appDiv = document.getElementById('app');
-                if (appDiv) {
-                    // Insert the test panel after the app div content
-                    appDiv.appendChild(testPanel);
-                    
-                    // Add event listeners to the buttons
-                    const resultsDiv = document.getElementById('test-results');
-                    const mcpLogDiv = document.getElementById('mcp-log');
-                    const autoScrollCheckbox = document.getElementById('auto-scroll');
-                    
-                    // Clear log button
-                    document.getElementById('clear-log-btn').addEventListener('click', async () => {
-                        try {
-                            // Clear logs on the server
-                            await fetch('/api/v1/logs/clear', { method: 'POST' });
-                            mcpLogDiv.innerHTML = 'MCP Query Log cleared. Waiting for queries...';
-                        } catch (error) {
-                            console.error('Error clearing logs:', error);
-                            mcpLogDiv.innerHTML = 'Error clearing logs: ' + error.message;
+            // Function to setup button event listeners
+            function setupButtonListeners() {
+                // Add event listeners to the buttons
+                document.getElementById('debug-mail-btn')?.addEventListener('click', async () => {
+                    try {
+                        // First try to get real mail data
+                        const response = await fetch('/api/v1/mail?limit=5');
+                        if (!response.ok) {
+                            throw new Error(`API returned status ${response.status}`);
                         }
-                    });
-                    
-                    // Refresh log button
-                    document.getElementById('refresh-log-btn').addEventListener('click', () => {
-                        fetchLogs();
-                    });
-                    
-                    // Auto-refresh functionality
-                    const autoRefreshCheckbox = document.getElementById('auto-refresh');
-                    let refreshInterval;
-                    
-                    function setupAutoRefresh() {
-                        if (autoRefreshCheckbox.checked) {
-                            refreshInterval = setInterval(fetchLogs, 5000);
-                        } else {
-                            clearInterval(refreshInterval);
-                        }
-                    }
-                    
-                    autoRefreshCheckbox.addEventListener('change', setupAutoRefresh);
-                    setupAutoRefresh(); // Initial setup
-                    
-                    // Initial fetch of logs
-                    fetchLogs();
-                    
-                    // Function to log MCP queries
-                    function logMcpQuery(direction, endpoint, data) {
-                        const timestamp = new Date().toISOString();
-                        const logEntry = `[${timestamp}] ${direction} ${endpoint}
-${JSON.stringify(data, null, 2)}
-
-`;
-                        mcpLogDiv.innerHTML += logEntry;
+                        const data = await response.json();
                         
-                        // Auto-scroll to bottom if enabled
-                        if (autoScrollCheckbox.checked) {
-                            mcpLogDiv.scrollTop = mcpLogDiv.scrollHeight;
+                        if (Array.isArray(data) && data.length > 0) {
+                            showResults('Mail API Test - Success', {
+                                status: 'Connected to Microsoft Graph',
+                                messageCount: data.length,
+                                sample: data[0] // Show first email as sample
+                            });
+                        } else {
+                            // If no emails found, show appropriate message
+                            showResults('Mail API Test - Success', {
+                                status: 'Connected to Microsoft Graph',
+                                messageCount: 0,
+                                message: 'No emails found in inbox'
+                            });
                         }
-                    }
-                    
-                    // Function to fetch logs from the server
-                    async function fetchLogs(category = null, level = null) {
+                    } catch (error) {
+                        console.error('Mail API test error:', error);
+                        // Fall back to test endpoint if real endpoint fails
                         try {
-                            // Build query parameters for filtering
-                            let url = '/api/v1/logs?limit=200';
-                            if (category) url += `&category=${category}`;
-                            if (level) url += `&level=${level}`;
-                            
-                            const response = await fetch(url);
-                            if (response.ok) {
-                                const logs = await response.json();
-                                
-                                // Clear the log div
-                                mcpLogDiv.innerHTML = '';
-                                
-                                // Add each log entry
-                                if (logs.length === 0) {
-                                    mcpLogDiv.innerHTML = 'No log entries found.';
-                                } else {
-                                    logs.forEach(log => {
-                                        // For API logs (with direction and endpoint)
-                                        if (log.data && log.data.direction && log.data.endpoint) {
-                                            const timestamp = log.timestamp;
-                                            const direction = log.data.direction;
-                                            const endpoint = log.data.endpoint;
-                                            const data = log.data.data || {};
-                                            
-                                            const logEntry = `[${timestamp}] ${direction} ${endpoint}
-${JSON.stringify(data, null, 2)}
-
-`;
-                                            mcpLogDiv.innerHTML += logEntry;
-                                        } 
-                                        // For standard logs (errors, info, debug)
-                                        else {
-                                            const timestamp = log.timestamp;
-                                            const level = log.level ? `[${log.level.toUpperCase()}]` : '';
-                                            const category = log.category ? `[${log.category}]` : '';
-                                            const message = log.message || '';
-                                            const data = log.data || {};
-                                            
-                                            // Format with different colors based on level
-                                            let levelColor = 'inherit';
-                                            if (log.level === 'error') levelColor = '#d13438';
-                                            if (log.level === 'warn') levelColor = '#ff8c00';
-                                            if (log.level === 'debug') levelColor = '#0078d4';
-                                            
-                                            const logEntry = `<div style="margin-bottom:10px;">
-  <span style="color:${levelColor};font-weight:${log.level === 'error' ? 'bold' : 'normal'};">[${timestamp}] ${level} ${category} ${message}</span>
-  <pre style="margin-top:4px;margin-bottom:8px;padding:8px;background-color:#f5f5f5;border-radius:4px;overflow:auto;max-height:200px;">${JSON.stringify(data, null, 2)}</pre>
-</div>`;
-                                            mcpLogDiv.innerHTML += logEntry;
-                                        }
-                                    });
-                                    
-                                    // Auto-scroll to bottom if enabled
-                                    if (autoScrollCheckbox.checked) {
-                                        mcpLogDiv.scrollTop = mcpLogDiv.scrollHeight;
-                                    }
-                                }
+                            const fallbackResponse = await fetch('/api/v1/mail/test');
+                            if (fallbackResponse.ok) {
+                                const fallbackData = await fallbackResponse.json();
+                                showResults('Mail API Test - Mock Data', {
+                                    status: 'Using mock data - Graph API connection issue',
+                                    error: error.message,
+                                    mockData: fallbackData
+                                });
+                            } else {
+                                throw new Error('Both real and test endpoints failed');
                             }
-                        } catch (error) {
-                            console.error('Error fetching logs:', error);
-                            mcpLogDiv.innerHTML = `Error fetching logs: ${error.message}`;
+                        } catch (fallbackError) {
+                            showResults('Mail API Test Failed', { 
+                                error: error.message || 'Unknown error',
+                                fallbackError: fallbackError.message
+                            });
                         }
                     }
-                    
-                    // Function to fetch calendar-specific logs
-                    async function fetchCalendarLogs() {
-                        showResults('Fetching calendar logs...');
-                        await fetchLogs('calendar');
-                        showResults('Calendar logs loaded. Check the Logs panel below.');
-                    }
-                    
-                    // Calendar test button
-                    document.getElementById('debug-calendar-btn').addEventListener('click', async () => {
-                        try {
-                            showResults('Fetching calendar events...');
-                            logMcpQuery('→ OUT', '/api/v1/calendar', { limit: 5, debug: true });
-                            
-                            const response = await fetch('/api/v1/calendar?limit=5&debug=true');
-                            const data = await response.json();
-                            showResults(JSON.stringify(data, null, 2));
-                            
-                            logMcpQuery('← IN', '/api/v1/calendar', data);
-                        } catch (error) {
-                            showResults(`Calendar API error: ${error.message}`);
-                            logMcpQuery('✕ ERROR', '/api/v1/calendar', { error: error.message });
+                });
+                
+                document.getElementById('debug-calendar-btn')?.addEventListener('click', async () => {
+                    try {
+                        // First try to get real calendar events
+                        const response = await fetch('/api/v1/calendar?limit=5');
+                        if (!response.ok) {
+                            throw new Error(`API returned status ${response.status}`);
                         }
-                    });
-                    
-                    // View Logs button
-                    document.getElementById('view-logs-btn').addEventListener('click', async () => {
+                        const data = await response.json();
+                        
+                        if (Array.isArray(data) && data.length > 0) {
+                            showResults('Calendar API Test - Success', {
+                                status: 'Connected to Microsoft Graph',
+                                eventCount: data.length,
+                                sample: data[0] // Show first event as sample
+                            });
+                        } else {
+                            // If no events found, show appropriate message
+                            showResults('Calendar API Test - Success', {
+                                status: 'Connected to Microsoft Graph',
+                                eventCount: 0,
+                                message: 'No upcoming calendar events found'
+                            });
+                        }
+                    } catch (error) {
+                        console.error('Calendar API test error:', error);
+                        // Fall back to test endpoint if real endpoint fails
                         try {
-                            // Create a log filter UI if it doesn't exist
-                            if (!document.getElementById('log-filter-panel')) {
-                                const filterPanel = document.createElement('div');
-                                filterPanel.id = 'log-filter-panel';
-                                filterPanel.style.marginBottom = '16px';
-                                filterPanel.style.display = 'flex';
-                                filterPanel.style.flexDirection = 'row';
-                                filterPanel.style.gap = '12px';
-                                filterPanel.style.alignItems = 'center';
-                                
-                                filterPanel.innerHTML = `
-                                    <label style="margin-right:8px;">Filter logs:</label>
-                                    <button id="all-logs-btn" style="padding:4px 8px;background-color:#f0f0f0;border:1px solid #ccc;border-radius:4px;cursor:pointer;">All Logs</button>
-                                    <button id="calendar-logs-btn" style="padding:4px 8px;background-color:#5c2d91;color:white;border:none;border-radius:4px;cursor:pointer;">Calendar Logs</button>
-                                    <button id="error-logs-btn" style="padding:4px 8px;background-color:#d13438;color:white;border:none;border-radius:4px;cursor:pointer;">Error Logs</button>
-                                    <button id="debug-logs-btn" style="padding:4px 8px;background-color:#0078d4;color:white;border:none;border-radius:4px;cursor:pointer;">Debug Logs</button>
-                                `;
-                                
-                                // Insert before the log panel
-                                const logPanel = document.getElementById('mcp-log-panel');
-                                logPanel.parentNode.insertBefore(filterPanel, logPanel);
-                                
-                                // Add event listeners for filter buttons
-                                document.getElementById('all-logs-btn').addEventListener('click', () => fetchLogs());
-                                document.getElementById('calendar-logs-btn').addEventListener('click', () => fetchLogs('calendar'));
-                                document.getElementById('error-logs-btn').addEventListener('click', () => fetchLogs(null, 'error'));
-                                document.getElementById('debug-logs-btn').addEventListener('click', () => fetchLogs(null, 'debug'));
+                            const fallbackResponse = await fetch('/api/v1/calendar/test');
+                            if (fallbackResponse.ok) {
+                                const fallbackData = await fallbackResponse.json();
+                                showResults('Calendar API Test - Mock Data', {
+                                    status: 'Using mock data - Graph API connection issue',
+                                    error: error.message,
+                                    mockData: fallbackData
+                                });
+                            } else {
+                                throw new Error('Both real and test endpoints failed');
                             }
-                            
-                            showResults('Fetching detailed logs...');
-                            await fetchLogs();
-                            showResults('Logs loaded. Check the Logs panel below.');
-                            
-                            // Expand the log panel to make it more visible
-                            const logPanel = document.getElementById('mcp-log-panel');
-                            logPanel.style.maxHeight = '500px';
-                            logPanel.style.display = 'block';
-                            
-                        } catch (error) {
-                            showResults(`Error fetching logs: ${error.message}`);
+                        } catch (fallbackError) {
+                            showResults('Calendar API Test Failed', { 
+                                error: error.message || 'Unknown error',
+                                fallbackError: fallbackError.message
+                            });
                         }
-                    });
-                    
-                    // Mail test button
-                    document.getElementById('debug-mail-btn').addEventListener('click', async () => {
+                    }
+                });
+                
+                document.getElementById('debug-files-btn')?.addEventListener('click', async () => {
+                    try {
+                        // First try to get real files
+                        const response = await fetch('/api/v1/files?limit=5');
+                        if (!response.ok) {
+                            throw new Error(`API returned status ${response.status}`);
+                        }
+                        const data = await response.json();
+                        
+                        if (Array.isArray(data) && data.length > 0) {
+                            showResults('Files API Test - Success', {
+                                status: 'Connected to Microsoft Graph',
+                                fileCount: data.length,
+                                sample: data[0] // Show first file as sample
+                            });
+                        } else {
+                            // If no files found, show appropriate message
+                            showResults('Files API Test - Success', {
+                                status: 'Connected to Microsoft Graph',
+                                fileCount: 0,
+                                message: 'No files found in OneDrive'
+                            });
+                        }
+                    } catch (error) {
+                        console.error('Files API test error:', error);
+                        // Fall back to test endpoint if real endpoint fails
                         try {
-                            showResults('Fetching emails...');
-                            logMcpQuery('→ OUT', '/api/v1/mail', { limit: 5, debug: true });
-                            
-                            const response = await fetch('/api/v1/mail?limit=5&debug=true');
-                            const data = await response.json();
-                            showResults(JSON.stringify(data, null, 2));
-                            
-                            logMcpQuery('← IN', '/api/v1/mail', data);
-                        } catch (error) {
-                            showResults(`Mail API error: ${error.message}`);
-                            logMcpQuery('✕ ERROR', '/api/v1/mail', { error: error.message });
+                            const fallbackResponse = await fetch('/api/v1/files/test');
+                            if (fallbackResponse.ok) {
+                                const fallbackData = await fallbackResponse.json();
+                                showResults('Files API Test - Mock Data', {
+                                    status: 'Using mock data - Graph API connection issue',
+                                    error: error.message,
+                                    mockData: fallbackData
+                                });
+                            } else {
+                                throw new Error('Both real and test endpoints failed');
+                            }
+                        } catch (fallbackError) {
+                            showResults('Files API Test Failed', { 
+                                error: error.message || 'Unknown error',
+                                fallbackError: fallbackError.message
+                            });
                         }
-                    });
-                    
-                    // Files test button
-                    document.getElementById('debug-files-btn').addEventListener('click', async () => {
-                        try {
-                            showResults('Fetching files...');
-                            logMcpQuery('→ OUT', '/api/v1/files', { debug: true });
+                    }
+                });
+                
+                // Add event listener for the View Logs button if it exists
+                document.getElementById('view-logs-btn')?.addEventListener('click', () => {
+                    // Show the logs section in the main content area
+                    const app = document.getElementById('app');
+                    if (app) {
+                        // Create log viewer if it doesn't exist
+                        if (!document.getElementById('log-viewer')) {
+                            const logViewer = document.createElement('div');
+                            logViewer.id = 'log-viewer';
+                            logViewer.className = 'card';
+                            logViewer.innerHTML = `
+                                <div class="card-header">
+                                    <h3 class="card-title">MCP Query Log</h3>
+                                    <div class="log-controls">
+                                        <label class="status-indicator mr-3">
+                                            <input type="checkbox" id="auto-refresh" checked>
+                                            <span>Auto-refresh</span>
+                                        </label>
+                                        <label class="status-indicator">
+                                            <input type="checkbox" id="auto-scroll" checked>
+                                            <span>Auto-scroll</span>
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="card-body">
+                                    <div class="log-actions mb-4">
+                                        <button id="refresh-logs-btn" class="btn btn-outline">Refresh</button>
+                                        <button id="clear-logs-btn" class="btn btn-outline">Clear</button>
+                                    </div>
+                                    <div id="mcp-log" class="mcp-log"></div>
+                                </div>
+                            `;
+                            app.appendChild(logViewer);
                             
-                            const response = await fetch('/api/v1/files?debug=true');
-                            const data = await response.json();
-                            showResults(JSON.stringify(data, null, 2));
-                            
-                            logMcpQuery('← IN', '/api/v1/files', data);
-                        } catch (error) {
-                            showResults(`Files API error: ${error.message}`);
-                            logMcpQuery('✕ ERROR', '/api/v1/files', { error: error.message });
+                            // Initialize LogViewer component
+                            if (typeof LogViewer !== 'undefined' && LogViewer.init) {
+                                LogViewer.init();
+                            }
+                        } else {
+                            // Show the log viewer if it's hidden
+                            document.getElementById('log-viewer').style.display = 'block';
                         }
-                    });
-                }
+                    }
+                });
             }
             
-            function showResults(content) {
+            // Function to show results in the test-results div
+            function showResults(title, content) {
                 const resultsDiv = document.getElementById('test-results');
                 if (resultsDiv) {
-                    resultsDiv.style.display = 'block';
+                    resultsDiv.classList.remove('hidden');
                     
                     // Format the content nicely
-                    if (typeof content === 'string') {
-                        // Check if it's already JSON formatted
-                        if (content.trim().startsWith('{') || content.trim().startsWith('[')) {
+                    let formattedContent = '';
+                    try {
+                        if (typeof content === 'string') {
                             try {
-                                const parsed = JSON.parse(content);
-                                resultsDiv.innerHTML = JSON.stringify(parsed, null, 2);
+                                // Try to parse as JSON if it starts with { or [
+                                if (content.trim().startsWith('{') || content.trim().startsWith('[')) {
+                                    const parsed = JSON.parse(content);
+                                    formattedContent = JSON.stringify(parsed, null, 2);
+                                } else {
+                                    formattedContent = content;
+                                }
                             } catch (e) {
-                                // Not valid JSON, just show as is
-                                resultsDiv.innerHTML = content;
+                                formattedContent = content;
                             }
                         } else {
-                            resultsDiv.innerHTML = content;
+                            formattedContent = JSON.stringify(content, null, 2);
                         }
-                    } else {
-                        resultsDiv.innerHTML = JSON.stringify(content, null, 2);
+                    } catch (error) {
+                        console.error('Error formatting content:', error);
+                        formattedContent = 'Error formatting content: ' + (error.message || 'Unknown error');
                     }
+                    
+                    // Safely create HTML content
+                    const headerDiv = document.createElement('div');
+                    headerDiv.className = 'card-header';
+                    headerDiv.style.padding = '16px';
+                    headerDiv.style.backgroundColor = 'var(--neutral-95)';
+                    headerDiv.style.borderBottom = '1px solid var(--neutral-90)';
+                    headerDiv.style.margin = '-16px -16px 16px -16px';
+                    
+                    const headerTitle = document.createElement('h4');
+                    headerTitle.style.margin = '0';
+                    headerTitle.style.fontSize = '16px';
+                    headerTitle.style.fontWeight = '600';
+                    headerTitle.style.color = 'var(--neutral-20)';
+                    headerTitle.textContent = title;
+                    headerDiv.appendChild(headerTitle);
+                    
+                    const preElement = document.createElement('pre');
+                    preElement.style.margin = '0';
+                    preElement.style.fontFamily = 'var(--font-mono)';
+                    preElement.style.fontSize = '13px';
+                    preElement.style.lineHeight = '1.5';
+                    preElement.textContent = formattedContent;
+                    
+                    // Clear and append new content
+                    resultsDiv.innerHTML = '';
+                    resultsDiv.appendChild(headerDiv);
+                    resultsDiv.appendChild(preElement);
+                    
+                    // Scroll to the results
+                    resultsDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
                 }
             }
             
@@ -368,19 +345,12 @@ ${JSON.stringify(data, null, 2)}
                     if (mutation.type === 'childList' && mutation.addedNodes.length) {
                         const statusBar = document.getElementById('status-bar');
                         if (statusBar) {
-                            // Find the login button in the status bar
-                            const loginButtons = Array.from(statusBar.querySelectorAll('button')).filter(
-                                button => button.textContent.includes('Login')
-                            );
-                            
-                            if (loginButtons.length > 0) {
-                                loginButtons[0].addEventListener('click', () => {
-                                    // Check status again after a delay to allow login to complete
+                            const loginButton = statusBar.querySelector('.login-button');
+                            if (loginButton) {
+                                loginButton.addEventListener('click', () => {
                                     setTimeout(checkStatusAndShowTestPanel, 2000);
                                 });
                             }
-                            
-                            // We found what we needed, disconnect the observer
                             observer.disconnect();
                         }
                     }
@@ -391,5 +361,14 @@ ${JSON.stringify(data, null, 2)}
             observer.observe(document.body, { childList: true, subtree: true });
         });
     </script>
+    
+    <!-- Import the LogViewer component -->
+    <script src="./components/LogViewer.js" type="module"></script>
+    
+    <!-- Import the check-connections module -->
+    <script src="./check-connections.js" type="module"></script>
+    
+    <!-- Import the main app bundle -->
+    <script src="./compiled/bundle.js" type="module" defer></script>
 </body>
 </html>

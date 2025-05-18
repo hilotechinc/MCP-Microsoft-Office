@@ -21,13 +21,16 @@ let server = null;
 
 // If this file is being run directly (not imported), start the server
 if (require.main === module) {
+  console.log('Starting combined server...');
   startCombinedServer().then(() => {
+    console.log('Server started successfully!');
     // Server startup is already logged in startCombinedServer function
     // Just log the log file path for user convenience when running directly
     if (monitoringService?.LOG_FILE_PATH) {
       console.log(`📊 Logs written to ${monitoringService?.LOG_FILE_PATH}`);
     }
   }).catch(err => {
+    console.error('Failed to start combined server:', err.message, err.stack);
     const error = errorService?.createError(
       errorService?.CATEGORIES.SYSTEM,
       `Failed to start combined server: ${err.message}`,
@@ -136,8 +139,15 @@ process.on('SIGINT', async () => {
  * @returns {Promise<http.Server>} The HTTP server instance
  */
 async function startCombinedServer(port = 3000) {
+  console.log('Setting up combined server...');
   // Set up middleware from the server module
-  setupMiddleware(app);
+  try {
+    setupMiddleware(app);
+    console.log('Common middleware set up successfully.');
+  } catch (err) {
+    console.error('Error setting up middleware:', err.message, err.stack);
+    throw err;
+  }
   
   // Add request logging middleware
   app.use((req, res, next) => {
@@ -178,6 +188,18 @@ async function startCombinedServer(port = 3000) {
     next();
   });
   
+  // Add request logging middleware to log all API requests at debug level
+  app.use((req, res, next) => {
+    monitoringService?.debug(`${req.method} ${req.path}`, { 
+      query: req.query, 
+      body: req.method !== 'GET' ? req.body : undefined,
+      params: req.params,
+      ip: req.ip,
+      timestamp: new Date().toISOString()
+    }, 'api-request');
+    next();
+  });
+  
   // Add CORS headers for Electron web requests
   app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
@@ -192,9 +214,10 @@ async function startCombinedServer(port = 3000) {
   });
   
   // Set up session middleware for authentication
+  console.log('Setting up session middleware...');
   const isProduction = process.env.NODE_ENV === 'production';
   app.use(session({
-    secret: process.env.SESSION_SECRET || 'mcp-session-secret',
+    secret: process.env.SESSION_SECRET || 'mcp-desktop-secret',
     resave: false,
     saveUninitialized: true,
     cookie: { 
@@ -202,6 +225,7 @@ async function startCombinedServer(port = 3000) {
       sameSite: isProduction ? 'strict' : 'lax' // Stricter same-site policy in production
     }
   }));
+  console.log('Session middleware set up successfully.');
   
   // Log session configuration but redact sensitive data
   monitoringService?.debug('Session middleware configured', {
@@ -409,6 +433,7 @@ async function startCombinedServer(port = 3000) {
     res.sendFile(path.join(__dirname, '../renderer/index.html'));
   });
   
+  console.log('About to start the server...');
   // Start the server
   const startTime = Date.now();
   return new Promise((resolve) => {
