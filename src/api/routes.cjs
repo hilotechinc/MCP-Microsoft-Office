@@ -107,7 +107,6 @@ function registerRoutes(router) {
     // TODO: Apply rate limiting
     calendarRouter.post('/availability', placeholderRateLimit, calendarController.getAvailability); // /v1/calendar/availability
     // TODO: Apply rate limiting
-    calendarRouter.post('/schedule', placeholderRateLimit, calendarController.scheduleMeeting); // /v1/calendar/schedule
     // TODO: Apply rate limiting
     calendarRouter.post('/events/:id/accept', placeholderRateLimit, calendarController.acceptEvent);
     // TODO: Apply rate limiting

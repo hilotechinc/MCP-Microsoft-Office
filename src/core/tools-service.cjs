@@ -76,7 +76,6 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
         cancelEvent: { moduleName: 'calendar', methodName: 'cancelEvent' },
         getAvailability: { moduleName: 'calendar', methodName: 'getAvailability' },
         findMeetingTimes: { moduleName: 'calendar', methodName: 'findMeetingTimes' },
-        scheduleMeeting: { moduleName: 'calendar', methodName: 'scheduleMeeting' },
         
         // Files module tools
         listFiles: { moduleName: 'files', methodName: 'listFiles' },
@@ -543,89 +542,6 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                             max: 100, 
                             default: 10 
                         }
-                    };
-                break;
-                case 'scheduleMeeting':
-                    toolDef.description = 'Schedule a meeting with intelligent time selection';
-                    toolDef.endpoint = '/api/v1/calendar/schedule';
-                    toolDef.method = 'POST';
-                    toolDef.parameters = {
-                        subject: { type: 'string', description: 'Meeting subject/title', required: true },
-                        attendees: { 
-                            type: 'array', 
-                            description: 'Array of attendee email addresses', 
-                            items: { type: 'string', format: 'email' },
-                            required: true
-                        },
-                        preferredTimes: { 
-                            type: 'array', 
-                            description: 'Preferred time slots for the meeting',
-                            optional: true,
-                            items: {
-                                type: 'object',
-                                properties: {
-                                    start: {
-                                        type: 'object',
-                                        required: true,
-                                        properties: {
-                                            dateTime: { type: 'string', description: 'ISO date string', required: true },
-                                            timeZone: { type: 'string', description: 'Time zone', optional: true, default: 'UTC' }
-                                        }
-                                    },
-                                    end: {
-                                        type: 'object',
-                                        required: true,
-                                        properties: {
-                                            dateTime: { type: 'string', description: 'ISO date string', required: true },
-                                            timeZone: { type: 'string', description: 'Time zone', optional: true, default: 'UTC' }
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        duration: { 
-                            type: 'number', 
-                            description: 'Meeting duration in minutes', 
-                            optional: true,
-                            min: 15,
-                            max: 480
-                        },
-                        body: { 
-                            type: 'any', 
-                            description: 'Meeting description/body as string or object with contentType and content', 
-                            optional: true,
-                            oneOf: [
-                                { type: 'string' },
-                                { 
-                                    type: 'object',
-                                    properties: {
-                                        contentType: { 
-                                            type: 'string', 
-                                            description: 'Content type (text, html, HTML)', 
-                                            enum: ['text', 'html', 'HTML'],
-                                            default: 'text'
-                                        },
-                                        content: { type: 'string', description: 'The actual content', required: true }
-                                    }
-                                }
-                            ]
-                        },
-                        location: { 
-                            type: 'any', 
-                            description: 'Meeting location as string or object with displayName and address', 
-                            optional: true,
-                            oneOf: [
-                                { type: 'string' },
-                                { 
-                                    type: 'object',
-                                    properties: {
-                                        displayName: { type: 'string', description: 'Display name of the location', required: true },
-                                        address: { type: 'object', description: 'Address details', optional: true }
-                                    }
-                                }
-                            ]
-                        },
-                        isOnlineMeeting: { type: 'boolean', description: 'Whether this is an online meeting', optional: true }
                     };
                 break;
             case 'getRooms':
@@ -1235,43 +1151,6 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                     };
                 }
                 
-            case 'calendar.scheduleMeeting':
-                // Extract start and end time information
-                let meetingStartTime, meetingEndTime;
-                
-                if (transformedParams.preferredTimes && transformedParams.preferredTimes.length > 0) {
-                    meetingStartTime = transformedParams.preferredTimes[0].start;
-                    meetingEndTime = transformedParams.preferredTimes[0].end;
-                } else {
-                    // Try various parameter combinations to extract start/end times
-                    if (transformedParams.start) {
-                        meetingStartTime = transformedParams.start;
-                    } else if (transformedParams.startDateTime) {
-                        meetingStartTime = { 
-                            dateTime: transformedParams.startDateTime, 
-                            timeZone: transformedParams.timeZone || 'Pacific Standard Time' 
-                        };
-                    }
-                    
-                    if (transformedParams.end) {
-                        meetingEndTime = transformedParams.end;
-                    } else if (transformedParams.endDateTime) {
-                        meetingEndTime = { 
-                            dateTime: transformedParams.endDateTime, 
-                            timeZone: transformedParams.timeZone || 'Pacific Standard Time' 
-                        };
-                    }
-                }
-                
-                return {
-                    subject: transformedParams.subject,
-                    attendees: transformAttendees(transformedParams.attendees) || [],
-                    start: meetingStartTime ? transformDateTime(meetingStartTime, transformedParams.timeZone) : undefined,
-                    end: meetingEndTime ? transformDateTime(meetingEndTime, transformedParams.timeZone) : undefined,
-                    location: transformedParams.location,
-                    body: transformedParams.body,
-                    isOnlineMeeting: transformedParams.isOnlineMeeting
-                };
                 
             case 'calendar.findMeetingTimes':
                 // Extract time constraints from different possible input formats

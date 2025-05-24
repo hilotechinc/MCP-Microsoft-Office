@@ -1094,205 +1094,6 @@ module.exports = ({ calendarModule }) => ({
         }
     },
     
-    /**
-     * POST /api/calendar/schedule
-     * Schedules a meeting with intelligent time selection
-     * @param {import('express').Request} req
-     * @param {import('express').Response} res
-     */
-    async scheduleMeeting(req, res) {
-        try {
-            // Start timing for performance tracking
-            const startTime = Date.now();
-            const endpoint = '/api/calendar/schedule';
-            
-            // Validate request body with standardized dateTime validation
-            const meetingSchema = Joi.object({
-                subject: Joi.string().required(),
-                attendees: Joi.array().items(Joi.string().email()).required(),
-                preferredTimes: Joi.array().items(Joi.object({
-                    start: Joi.object({
-                        dateTime: Joi.date().iso().required(),
-                        timeZone: Joi.string().default('UTC')
-                    }).required(),
-                    end: Joi.object({
-                        dateTime: Joi.date().iso().required(),
-                        timeZone: Joi.string().default('UTC')
-                    }).required()
-                })).optional(),
-                duration: Joi.number().min(15).max(480).optional(), // Duration in minutes
-                body: Joi.alternatives().try(
-                    Joi.string(),
-                    Joi.object({
-                        contentType: Joi.string().valid('text', 'html', 'HTML').default('text'),
-                        content: Joi.string().required()
-                    })
-                ).optional(),
-                location: Joi.alternatives().try(
-                    Joi.string(),
-                    Joi.object({
-                        displayName: Joi.string().required(),
-                        address: Joi.object().optional()
-                    })
-                ).optional(),
-                isOnlineMeeting: Joi.boolean().optional()
-            });
-            
-            const { error, value } = validateAndLog(req, meetingSchema, 'Schedule meeting', { endpoint });
-            if (error) {
-                return res.status(400).json({ 
-                    error: 'Invalid request', 
-                    details: error.details 
-                });
-            }
-            
-            // Create safe version of request data (redact attendee details for privacy)
-            const safeReqBody = { ...value };
-            if (safeReqBody.attendees) {
-                safeReqBody.attendees = Array.isArray(safeReqBody.attendees) ? 
-                    `[${safeReqBody.attendees.length} attendees]` : 'attendees present';
-            }
-            
-            MonitoringService?.info('Processing schedule meeting request', { 
-                subject: safeReqBody.subject,
-                hasPreferredTimes: !!safeReqBody.preferredTimes,
-                preferredTimesCount: safeReqBody.preferredTimes?.length || 0,
-                duration: safeReqBody.duration
-            }, 'calendar');
-            
-            // Format the body parameter correctly before passing to the module
-            const formattedRequestBody = { ...value };
-            
-            // Handle body parameter specifically to ensure it's in the correct format
-            if (formattedRequestBody.body) {
-                MonitoringService?.info('Formatting meeting body parameter', {
-                    bodyType: typeof formattedRequestBody.body
-                }, 'calendar');
-                
-                // Convert string body to proper object format
-                if (typeof formattedRequestBody.body === 'string') {
-                    formattedRequestBody.body = {
-                        contentType: 'html',
-                        content: formattedRequestBody.body
-                    };
-                    MonitoringService?.info('Converted string body to object format', {}, 'calendar');
-                } 
-                // Ensure object has required properties
-                else if (typeof formattedRequestBody.body === 'object') {
-                    if (!formattedRequestBody.body.content) {
-                        MonitoringService?.warn('Body object missing content property', {}, 'calendar');
-                        formattedRequestBody.body.content = '';
-                    }
-                    
-                    if (!formattedRequestBody.body.contentType) {
-                        MonitoringService?.warn('Body object missing contentType property, defaulting to html', {}, 'calendar');
-                        formattedRequestBody.body.contentType = 'html';
-                    }
-                }
-            }
-            
-            // Try to use the module's scheduleMeeting method if available
-            let scheduledEvent;
-            let isMock = false;
-            try {
-                MonitoringService?.info('Attempting to schedule meeting using module with formatted data', {
-                    subject: formattedRequestBody.subject,
-                    attendeeCount: formattedRequestBody.attendees?.length
-                }, 'calendar');
-                
-                const methodName = 'scheduleMeeting';
-                
-                if (isModuleMethodAvailable(methodName, calendarModule)) {
-                    scheduledEvent = await calendarModule[methodName](formattedRequestBody);
-                    MonitoringService?.info('Successfully scheduled meeting using module', { 
-                        eventId: scheduledEvent.id 
-                    }, 'calendar');
-                } else {
-                    throw new Error(`calendarModule.${methodName} is not implemented`);
-                }
-            } catch (moduleError) {
-                const moduleCallError = ErrorService?.createError('api', 'Error scheduling meeting', 'error', { 
-                    error: moduleError.message,
-                    stack: moduleError.stack,
-                    subject: formattedRequestBody.subject
-                });
-                MonitoringService?.logError(moduleCallError);
-                MonitoringService?.info('Falling back to mock scheduling', {}, 'calendar');
-                
-                // If module method fails, create a mock scheduled event
-                const { attendees, subject, preferredTimes, duration } = value;
-                const defaultDuration = duration || 60; // Default to 60 minutes
-                
-                // Use the first preferred time slot or default to tomorrow
-                let startTimeDate, endTimeDate;
-                if (preferredTimes && preferredTimes.length > 0) {
-                    startTimeDate = new Date(preferredTimes[0].start.dateTime);
-                    // Use specified end time or calculate from duration
-                    endTimeDate = new Date(preferredTimes[0].end.dateTime);
-                } else {
-                    // Default to tomorrow at 10 AM
-                    const tomorrow = new Date();
-                    tomorrow.setDate(tomorrow.getDate() + 1);
-                    tomorrow.setHours(10, 0, 0, 0);
-                    startTimeDate = tomorrow;
-                    endTimeDate = new Date(startTimeDate.getTime() + defaultDuration * 60 * 1000);
-                }
-                
-                scheduledEvent = {
-                    id: 'mock-scheduled-' + Date.now(),
-                    subject: subject,
-                    start: { dateTime: startTimeDate.toISOString(), timeZone: 'UTC' },
-                    end: { dateTime: endTimeDate.toISOString(), timeZone: 'UTC' },
-                    attendees: attendees.map(email => ({
-                        name: email.split('@')[0],
-                        email: email,
-                        status: 'needsAction'
-                    })),
-                    organizer: {
-                        name: 'Current User',
-                        email: 'current.user@example.com'
-                    },
-                    isAllDay: false,
-                    recurrence: null,
-                    bestSlot: {
-                        start: startTimeDate.toISOString(),
-                        end: endTimeDate.toISOString(),
-                        score: 0.95
-                    },
-                    isMock: true // Flag to indicate this is mock data
-                };
-                isMock = true;
-                MonitoringService?.info('Generated mock scheduled meeting', { 
-                    eventId: scheduledEvent.id 
-                }, 'calendar');
-            }
-            
-            // Track scheduling time
-            const duration = Date.now() - startTime;
-            MonitoringService?.trackMetric('calendar.scheduleMeeting.duration', duration, { 
-                eventId: scheduledEvent.id,
-                subject: scheduledEvent.subject,
-                isMock
-            });
-            
-            res.json(scheduledEvent);
-        } catch (err) {
-            const mcpError = ErrorService?.createError('api', 'Error scheduling calendar meeting', 'error', { 
-                stack: err.stack,
-                endpoint,
-                error: err.message
-            });
-            MonitoringService?.logError(mcpError);
-            
-            // Track error metric
-            MonitoringService?.trackMetric('calendar.scheduleMeeting.error', 1, { 
-                errorId: mcpError.id,
-                reason: err.message
-            });
-            
-            res.status(500).json({ error: 'Internal error', message: err.message });
-        }
-    },
     
     /**
      * POST /api/calendar/findMeetingTimes
@@ -1306,49 +1107,150 @@ module.exports = ({ calendarModule }) => ({
             const startTime = Date.now();
             const endpoint = '/api/calendar/findMeetingTimes';
             
-            // Validate request body with standardized dateTime validation
+            // Log incoming request for debugging
+            MonitoringService?.debug('findMeetingTimes request received', {
+                requestBody: req.body,
+                contentType: req.headers['content-type'],
+                method: req.method,
+                endpoint,
+                timestamp: new Date().toISOString()
+            }, 'calendar');
+            
+            // Validate request body with backward compatibility for Claude's format
             const optionsSchema = Joi.object({
-                attendees: Joi.array().items(Joi.string().email()).min(1).required(),
+                // Attendees - support both simple emails (Claude format) and objects (Graph API format)
+                attendees: Joi.array().items(
+                    Joi.alternatives().try(
+                        // Simple email string (Claude format)
+                        Joi.string().email(),
+                        // Full Graph API format
+                        Joi.object({
+                            type: Joi.string().valid('required', 'optional', 'resource').default('required'),
+                            emailAddress: Joi.object({
+                                address: Joi.string().email().required(),
+                                name: Joi.string().optional()
+                            }).required()
+                        })
+                    )
+                ).min(1).required(),
+                
+                // Time constraint - support both timeConstraint (Graph API) and timeConstraints (Claude format)
+                timeConstraint: Joi.object({
+                    activityDomain: Joi.string().valid('work', 'personal', 'unrestricted').default('work'),
+                    timeSlots: Joi.array().items(Joi.object({
+                        start: Joi.object({
+                            dateTime: Joi.string().required(), // Accept any string, let Graph API validate
+                            timeZone: Joi.string().default('UTC')
+                        }).required(),
+                        end: Joi.object({
+                            dateTime: Joi.string().required(), // Accept any string, let Graph API validate
+                            timeZone: Joi.string().default('UTC')
+                        }).required()
+                    })).min(1).required()
+                }).optional(),
+                
+                // Alternative: timeConstraints (plural) for backward compatibility with Claude
                 timeConstraints: Joi.object({
-                    startTime: Joi.object({
-                        dateTime: Joi.date().iso().required(),
-                        timeZone: Joi.string().default('UTC')
-                    }).required(),
-                    endTime: Joi.object({
-                        dateTime: Joi.date().iso().required(),
-                        timeZone: Joi.string().default('UTC')
-                    }).required(),
-                    meetingDuration: Joi.number().min(15).max(480).default(60) // Duration in minutes
-                }).required(),
+                    activityDomain: Joi.string().valid('work', 'personal', 'unrestricted').default('work'),
+                    timeSlots: Joi.array().items(Joi.object({
+                        start: Joi.object({
+                            dateTime: Joi.string().required(), // Accept any string, let Graph API validate
+                            timeZone: Joi.string().default('UTC')
+                        }).required(),
+                        end: Joi.object({
+                            dateTime: Joi.string().required(), // Accept any string, let Graph API validate
+                            timeZone: Joi.string().default('UTC')
+                        }).required()
+                    })).min(1).required()
+                }).optional(),
+                
+                // Meeting duration in ISO8601 format (e.g., "PT1H" for 1 hour)
+                meetingDuration: Joi.string().pattern(/^PT(\d+H)?(\d+M)?(\d+S)?$/).default('PT30M'),
+                
+                // Location constraint
                 locationConstraint: Joi.object({
                     isRequired: Joi.boolean().default(false),
                     suggestLocation: Joi.boolean().default(false),
                     locations: Joi.array().items(Joi.object({
                         displayName: Joi.string().required(),
-                        locationEmailAddress: Joi.string().email().optional()
+                        locationEmailAddress: Joi.string().email().optional(),
+                        resolveAvailability: Joi.boolean().default(false)
                     })).optional()
                 }).optional(),
-                maxCandidates: Joi.number().min(1).max(100).default(10)
-            });
+                
+                // Additional Graph API parameters
+                maxCandidates: Joi.number().min(1).max(100).default(20),
+                minimumAttendeePercentage: Joi.number().min(0).max(100).default(50),
+                returnSuggestionReasons: Joi.boolean().default(true),
+                isOrganizerOptional: Joi.boolean().default(false)
+            }).or('timeConstraint', 'timeConstraints'); // Require at least one time constraint
             
             const { error, value } = validateAndLog(req, optionsSchema, 'Find meeting times', { endpoint });
             if (error) {
+                // Enhanced error logging for debugging
+                MonitoringService?.error('findMeetingTimes validation failed', {
+                    validationError: error.details,
+                    requestBody: req.body,
+                    endpoint,
+                    timestamp: new Date().toISOString()
+                }, 'calendar');
+                
                 return res.status(400).json({ 
                     error: 'Invalid request', 
-                    details: error.details 
+                    details: error.details,
+                    message: error.details.map(d => d.message).join('; ')
                 });
             }
             
+            // Log successful validation
+            MonitoringService?.info('findMeetingTimes validation succeeded', {
+                validatedValue: value,
+                timestamp: new Date().toISOString()
+            }, 'calendar');
+            
+            // Normalize the data to Graph API format
+            const normalizedValue = {
+                ...value,
+                // Convert simple email strings to Graph API attendee format
+                attendees: value.attendees.map(attendee => {
+                    if (typeof attendee === 'string') {
+                        return {
+                            type: 'required',
+                            emailAddress: {
+                                address: attendee,
+                                name: attendee.split('@')[0] // Use part before @ as name
+                            }
+                        };
+                    }
+                    return attendee; // Already in correct format
+                }),
+                // Normalize timeConstraint (handle both timeConstraint and timeConstraints)
+                timeConstraint: value.timeConstraint || value.timeConstraints
+            };
+            
+            // Remove the old timeConstraints field if it was used
+            delete normalizedValue.timeConstraints;
+            
+            // Log normalized data for debugging
+            MonitoringService?.debug('findMeetingTimes normalized data', {
+                normalizedValue,
+                timestamp: new Date().toISOString()
+            }, 'calendar');
+            
             // Create safe request data for logging (redact attendee details)
-            const attendeeCount = value.attendees?.length || 0;
-            const timeConstraints = value.timeConstraints;
-            const meetingDuration = timeConstraints?.meetingDuration || 60;
+            const attendeeCount = normalizedValue.attendees?.length || 0;
+            const timeConstraint = normalizedValue.timeConstraint;
+            const firstTimeSlot = timeConstraint?.timeSlots?.[0];
+            const lastTimeSlot = timeConstraint?.timeSlots?.[timeConstraint.timeSlots.length - 1];
             
             MonitoringService?.info('Finding meeting times', { 
                 attendeeCount,
-                startTime: timeConstraints?.startTime?.dateTime,
-                endTime: timeConstraints?.endTime?.dateTime,
-                meetingDuration
+                activityDomain: timeConstraint?.activityDomain,
+                timeSlotsCount: timeConstraint?.timeSlots?.length || 0,
+                startTime: firstTimeSlot?.start?.dateTime,
+                endTime: lastTimeSlot?.end?.dateTime,
+                meetingDuration: normalizedValue.meetingDuration,
+                maxCandidates: normalizedValue.maxCandidates
             }, 'calendar');
 
             // Try to use the module's findMeetingTimes method if available
@@ -1363,7 +1265,7 @@ module.exports = ({ calendarModule }) => ({
                 const methodName = 'findMeetingTimes';
                 
                 if (isModuleMethodAvailable(methodName, calendarModule)) {
-                    suggestions = await calendarModule[methodName](value);
+                    suggestions = await calendarModule[methodName](normalizedValue);
                     MonitoringService?.info('Successfully found meeting times using module', {
                         suggestionCount: suggestions.meetingTimeSuggestions?.length || 0
                     }, 'calendar');
@@ -1380,39 +1282,52 @@ module.exports = ({ calendarModule }) => ({
                 MonitoringService?.info('Falling back to mock meeting time suggestions', {}, 'calendar');
                 
                 // If module method fails, create mock meeting time suggestions
-                const { attendees, timeConstraints } = value;
-                const startTimeDate = new Date(timeConstraints.startTime.dateTime);
-                const endTimeDate = new Date(timeConstraints.endTime.dateTime);
+                const { attendees, timeConstraint, meetingDuration } = normalizedValue;
+                const firstTimeSlot = timeConstraint.timeSlots[0];
+                const startTimeDate = new Date(firstTimeSlot.start.dateTime);
+                const endTimeDate = new Date(firstTimeSlot.end.dateTime);
+                
+                // Parse meeting duration from ISO8601 format (e.g., "PT1H" = 60 minutes)
+                const durationMatch = meetingDuration.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/);
+                let durationMinutes = 30; // Default to 30 minutes
+                if (durationMatch) {
+                    const hours = parseInt(durationMatch[1] || '0', 10);
+                    const minutes = parseInt(durationMatch[2] || '0', 10);
+                    const seconds = parseInt(durationMatch[3] || '0', 10);
+                    durationMinutes = (hours * 60) + minutes + Math.floor(seconds / 60);
+                }
                 
                 // Generate a few mock suggestions within the time constraints
                 const mockSuggestions = [];
                 const totalMinutes = (endTimeDate - startTimeDate) / (1000 * 60);
-                const possibleSlots = Math.floor(totalMinutes / meetingDuration);
-                const maxSuggestions = Math.min(possibleSlots, 5); // Generate up to 5 suggestions
+                const possibleSlots = Math.floor(totalMinutes / durationMinutes);
+                const maxSuggestions = Math.min(possibleSlots, normalizedValue.maxCandidates || 5);
                 
                 for (let i = 0; i < maxSuggestions; i++) {
-                    const slotStart = new Date(startTimeDate.getTime() + (i * meetingDuration * 60 * 1000));
-                    const slotEnd = new Date(Math.min(slotStart.getTime() + (meetingDuration * 60 * 1000), endTimeDate.getTime()));
+                    const slotStart = new Date(startTimeDate.getTime() + (i * durationMinutes * 60 * 1000));
+                    const slotEnd = new Date(Math.min(slotStart.getTime() + (durationMinutes * 60 * 1000), endTimeDate.getTime()));
                     
                     mockSuggestions.push({
-                        confidence: 1.0 - (i * 0.1), // Decreasing confidence for later slots
+                        confidence: Math.max(1.0 - (i * 0.1), 0.5), // Decreasing confidence for later slots
+                        order: i + 1,
                         organizerAvailability: 'free',
-                        suggestionReason: 'Organizer is available',
+                        suggestionReason: normalizedValue.returnSuggestionReasons ? 
+                            'Suggested because it is one of the nearest times when all attendees are available.' : undefined,
                         meetingTimeSlot: {
                             start: {
                                 dateTime: slotStart.toISOString(),
-                                timeZone: 'UTC'
+                                timeZone: firstTimeSlot.start.timeZone || 'UTC'
                             },
                             end: {
                                 dateTime: slotEnd.toISOString(),
-                                timeZone: 'UTC'
+                                timeZone: firstTimeSlot.end.timeZone || 'UTC'
                             }
                         },
-                        attendeeAvailability: attendees.map(email => ({
+                        attendeeAvailability: attendees.map(attendee => ({
                             attendee: {
                                 emailAddress: {
-                                    address: email,
-                                    name: email.split('@')[0]
+                                    address: attendee.emailAddress.address,
+                                    name: attendee.emailAddress.name || attendee.emailAddress.address.split('@')[0]
                                 }
                             },
                             availability: 'free'

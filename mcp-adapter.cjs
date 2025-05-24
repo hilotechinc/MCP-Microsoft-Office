@@ -22,7 +22,16 @@ const https = require('https');
 const { URLSearchParams } = require('url');
 const Joi = require('joi'); // For parameter validation
 
-// Import services
+// CRITICAL: Set MCP mode flag and silence console BEFORE importing any services
+// This prevents service initialization logs from polluting stdout
+process.env.MCP_SILENT_MODE = 'true';
+console.log = () => {};
+console.debug = () => {};
+console.info = () => {};
+console.warn = () => {};
+console.error = () => {};
+
+// Import services AFTER silencing console
 const monitoringService = require('./src/core/monitoring-service.cjs');
 const errorService = require('./src/core/error-service.cjs');
 const createToolsService = require('./src/core/tools-service.cjs');
@@ -47,72 +56,23 @@ const originalConsole = {
     error: console.error
 };
 
-// Helper: Write logs to stderr and use monitoring service for backend logging
-function writeToLogFile(level, ...args) {
-    try {
-        // First, check if any of the arguments contain the MonitoringService recursion pattern
-        // This prevents the infinite logging loop
-        for (const arg of args) {
-            if (typeof arg === 'string' && arg.includes('[MonitoringService] Emitted')) {
-                // Skip logging this message to prevent recursion
-                return;
-            }
-        }
+// Essential logging categories - only log what's needed for debugging
+const ESSENTIAL_LOG_CATEGORIES = {
+    MCP_REQUEST: true,    // Incoming MCP requests
+    MCP_RESPONSE: true,   // Outgoing MCP responses 
+    API_CALL: true,       // API calls to backend
+    API_RESPONSE: true,   // API responses from backend
+    ERROR: true,          // Errors
+    STARTUP: true         // Startup/initialization
+};
 
-        const prefix = `[MCP ADAPTER ${level.toUpperCase()}]`;
-        const formattedArgs = args.map(arg => {
-            if (typeof arg === 'object') {
-                try {
-                    return JSON.stringify(arg);
-                } catch (e) {
-                    return `[Object: ${Object.prototype.toString.call(arg)}]`;
-                }
-            }
-            return String(arg);
-        }).join(' ');
-        
-        // CRITICAL: NEVER write to stdout in an MCP adapter - it corrupts the JSON-RPC stream
-        // Only write to stderr and use monitoring service for backend logging
-        
-        // Write to stderr (safe for MCP protocol)
-        process.stderr.write(`${prefix} ${formattedArgs}\n`);
-        
-        // Use monitoring service to log through the backend (where file permissions are available)
-        try {
-            setImmediate(() => {
-                if (level === 'error') {
-                    monitoringService.logError({
-                        message: `${prefix} ${formattedArgs}`,
-                        category: 'MCP_ADAPTER',
-                        severity: 'ERROR',
-                        context: {}
-                    });
-                } else if (level === 'warn') {
-                    monitoringService.warn(`${prefix} ${formattedArgs}`, {});
-                } else if (level === 'debug') {
-                    monitoringService.debug(`${prefix} ${formattedArgs}`, {});
-                } else {
-                    monitoringService.info(`${prefix} ${formattedArgs}`, {});
-                }
-            });
-        } catch (monitoringErr) {
-            // Silently ignore monitoring errors - we already logged to stderr
-        }
-    } catch (err) {
-        // Last resort fallback - write directly to stderr
-        process.stderr.write(`[ERROR LOGGING] Failed to log message: ${err.message}\n`);
-    }
+// Helper: Completely silent for MCP protocol compliance
+function writeToLogFile(level, ...args) {
+    // MCP requires absolute silence - no logging whatsoever
+    // All logging is completely disabled
 }
 
-// Replace console methods with our safe versions that NEVER write to stdout
-console.log = (...args) => {
-    // NEVER use originalConsole.log as it writes to stdout
-    writeToLogFile('info', ...args);
-};
-console.debug = (...args) => writeToLogFile('debug', ...args);
-console.info = (...args) => writeToLogFile('info', ...args);
-console.warn = (...args) => writeToLogFile('warn', ...args);
-console.error = (...args) => writeToLogFile('error', ...args);
+// Console methods already silenced above to prevent service import pollution
 
 // Adapter state
 let adapterState = {
@@ -125,14 +85,14 @@ let adapterState = {
 const stubModuleRegistry = {
     getAllModules: () => [
         { id: 'mail', name: 'mail', capabilities: ['getInbox', 'sendEmail', 'searchEmails', 'flagEmail', 'getEmailDetails', 'markAsRead', 'readMailDetails', 'getMailAttachments', 'markEmailRead'] },
-        { id: 'calendar', name: 'calendar', capabilities: ['getEvents', 'create', 'update', 'scheduleMeeting', 'getAvailability', 'findMeetingTimes', 'cancelEvent'] },
+        { id: 'calendar', name: 'calendar', capabilities: ['getEvents', 'create', 'update', 'getAvailability', 'findMeetingTimes', 'cancelEvent'] },
         { id: 'files', name: 'files', capabilities: ['listFiles', 'uploadFile', 'downloadFile', 'getFileMetadata'] },
         { id: 'people', name: 'people', capabilities: ['find', 'search', 'getRelevantPeople', 'getPersonById'] }
     ],
     getModule: (moduleName) => {
         const modules = {
             'mail': { id: 'mail', capabilities: ['getInbox', 'sendEmail', 'searchEmails', 'flagEmail', 'getEmailDetails', 'markAsRead', 'readMailDetails', 'getMailAttachments', 'markEmailRead'] },
-            'calendar': { id: 'calendar', capabilities: ['getEvents', 'create', 'update', 'scheduleMeeting', 'getAvailability', 'findMeetingTimes', 'cancelEvent'] },
+            'calendar': { id: 'calendar', capabilities: ['getEvents', 'create', 'update', 'getAvailability', 'findMeetingTimes', 'cancelEvent'] },
             'files': { id: 'files', capabilities: ['listFiles', 'uploadFile', 'downloadFile', 'getFileMetadata'] },
             'people': { id: 'people', capabilities: ['find', 'search', 'getRelevantPeople', 'getPersonById'] }
         };
@@ -142,10 +102,10 @@ const stubModuleRegistry = {
 const toolsService = createToolsService({ 
     moduleRegistry: stubModuleRegistry, 
     logger: {
-        debug: (...args) => logDebug('[ToolsService]', ...args),
-        info: (...args) => logDebug('[ToolsService]', ...args),
-        warn: (...args) => logDebug('[ToolsService] WARN:', ...args),
-        error: (...args) => process.stderr.write(`[MCP ADAPTER ERROR] [ToolsService] ${args.join(' ')}\n`)
+        debug: (...args) => {/* Silent */},
+        info: (...args) => {/* Silent */},
+        warn: (...args) => {/* Silent */},
+        error: (...args) => {/* Silent */}
     }
 });
 
@@ -282,133 +242,28 @@ async function callApi(method, path, data = null) {
                 const jitter = 1 - JITTER_FACTOR + (Math.random() * JITTER_FACTOR * 2);
                 const delay = Math.floor(exponentialDelay * jitter);
                 
-                // Log retry attempt with calculated delay
-                logDebug(`[callApi] Attempt ${attempt} failed (${error.message}), retrying in ${delay}ms...`);
-                
                 // Wait for the calculated delay before retrying
                 await new Promise(resolve => setTimeout(resolve, delay));
             } else {
-                // Log failure details with metrics
-                const totalDuration = Date.now() - startTime;
-                logDebug(`[callApi] Failed after ${attempt} attempts: ${error.message}`, {
-                    method,
-                    path,
-                    attempts: attemptMetrics,
-                    totalDuration,
-                    retryable: !!error.isRetryable
-                });
-                
                 // Throw the last encountered error
                 throw lastError;
             }
         }
     }
     // This line should technically not be reached if MAX_RETRIES >= 1
-    // Calculate total duration for metrics
-    const totalDuration = Date.now() - startTime;
-    
-    // Log comprehensive error information
-    logDebug(`[callApi] Exhausted all ${MAX_RETRIES} retry attempts`, {
-        method,
-        path,
-        attempts: attemptMetrics,
-        totalDuration
-    });
-    
-    // Ensure we clean up any large objects before throwing
-    attemptMetrics = null;
-    
-    // Throw with detailed error information
     throw lastError || new Error(`callApi failed after ${MAX_RETRIES} retries: ${path}`);
 }
 
-// Helper: log debug messages safely (never to stdout)
+// Helper: Completely silent for MCP protocol compliance
 function logDebug(message, ...args) {
-    try {
-        // Format the message with args
-        let formattedMessage = message;
-        if (args.length > 0) {
-            try {
-                const formattedArgs = args.map(arg => {
-                    if (arg instanceof Error) {
-                        return `${arg.message}\n${arg.stack || 'No stack trace'}`;
-                    } else if (typeof arg === 'object') {
-                        try {
-                            return JSON.stringify(arg, null, 2);
-                        } catch (e) {
-                            return `[Object: ${Object.prototype.toString.call(arg)}]`;
-                        }
-                    }
-                    return String(arg);
-                }).join(' ');
-                formattedMessage = `${message} ${formattedArgs}`;
-            } catch (formatErr) {
-                formattedMessage = `${message} [Error formatting args: ${formatErr.message}]`;
-            }
-        }
-        
-        // CRITICAL: NEVER write to stdout in an MCP adapter - it corrupts the JSON-RPC stream
-        // Only write to stderr or use the monitoring service
-        
-        // Determine if this is a calendar-related message for better categorization
-        const isCalendarRelated = 
-            message.toLowerCase().includes('calendar') || 
-            (args.length > 0 && JSON.stringify(args).toLowerCase().includes('calendar'));
-            
-        // Write to stderr (safe for MCP)
-        process.stderr.write(`[DEBUG${isCalendarRelated ? '-CALENDAR' : ''}] ${formattedMessage}\n`);
-        
-        // Also log to monitoring service if available
-        try {
-            setImmediate(() => {
-                monitoringService.debug(formattedMessage, {
-                    source: 'mcp-adapter',
-                    category: isCalendarRelated ? 'calendar' : 'adapter',
-                    timestamp: new Date().toISOString(),
-                    messageType: isCalendarRelated ? 'calendar-interaction' : 'general'
-                }, isCalendarRelated ? 'calendar' : 'adapter');
-            });
-        } catch (monitoringErr) {
-            // Silently ignore monitoring errors - we already logged to stderr
-        }
-    } catch (err) {
-        // Last resort fallback - write directly to stderr
-        process.stderr.write(`[ERROR LOGGING] Failed to log debug message: ${err.message}\n`);
-    }
+    // MCP requires absolute silence - no logging at all
+    // All logging is completely disabled
 }
 
-// Helper: log protocol messages via monitoring service (never to stdout)
-// Uses MonitoringService for centralized logging through the backend
+// Helper: Completely silent for MCP protocol compliance
 function logToFile(prefix, method, data) {
-    try {
-        // Format the data for logging
-        const formattedData = typeof data === 'object' ? JSON.stringify(data) : String(data);
-        
-        // Use monitoring service for centralized logging through the backend
-        try {
-            // Use setImmediate to avoid blocking the main thread
-            setImmediate(() => {
-                try {
-                    // Use debug level for protocol logs
-                    monitoringService.debug(`[MCP PROTOCOL] ${prefix} ${method}`, {
-                        protocol: true,
-                        prefix,
-                        method,
-                        data: typeof data === 'object' ? data : { value: data }
-                    });
-                } catch (innerErr) {
-                    // Log monitoring errors to stderr only
-                    process.stderr.write(`[MONITORING ERROR] ${innerErr.message}\n`);
-                }
-            });
-        } catch (err) {
-            // Last resort: log to stderr
-            process.stderr.write(`[MCP PROTOCOL LOG ERROR] ${err.message}\n`);
-        }
-    } catch (err) {
-        // Last resort: log to stderr
-        process.stderr.write(`[MCP PROTOCOL LOG ERROR] ${err.message}\n`);
-    }
+    // MCP requires absolute silence - no logging at all
+    // All logging is completely disabled
 }
 
 // Helper: send JSON-RPC response
@@ -434,8 +289,7 @@ function sendResponse(id, result, error) {
         // to avoid any potential interference from console monkey-patching
         process.stdout.write(jsonResponse + '\n');
     } catch (err) {
-        // Log error to stderr (never stdout)
-        process.stderr.write(`[ERROR] Failed to send response: ${err.message}\n`);
+        // Silent - no error logging for MCP
         
         // Try to send a simplified error response
         try {
@@ -471,10 +325,8 @@ async function initializeAdapter() {
         const healthResponse = await callApi('GET', '/health');
 
         if (!healthResponse || healthResponse.status !== 'ok') {
-            logDebug('[MCP Adapter] Error: Backend API server not available');
             adapterState.backendAvailable = false;
         } else {
-            logDebug('[MCP Adapter] Successfully connected to backend API server');
             adapterState.backendAvailable = true;
             adapterState.initialized = true;
 
@@ -485,7 +337,6 @@ async function initializeAdapter() {
                         const healthResponse = await callApi('GET', '/health');
                         if (healthResponse && healthResponse.status === 'ok') {
                             if (!adapterState.backendAvailable) {
-                                logDebug('[MCP Adapter] Backend API server became available again.');
                                 adapterState.backendAvailable = true;
                                 // TODO: Reset consecutive failure count here
                             }
@@ -494,7 +345,6 @@ async function initializeAdapter() {
                         }
                     } catch (error) {
                         if (adapterState.backendAvailable) {
-                            logDebug(`[MCP Adapter] Periodic health check failed: ${error.message}. Marking backend as unavailable.`);
                             adapterState.backendAvailable = false;
                             // TODO: Increment consecutive failure count here
                             // TODO: Implement fail-fast: if consecutive failures > threshold, clearInterval(healthCheckInterval) and log permanent failure.
@@ -508,7 +358,6 @@ async function initializeAdapter() {
         }
         return adapterState.backendAvailable;
     } catch (error) {
-        logDebug(`[MCP Adapter] Initialization error: ${error.message}`);
         adapterState.initialized = true;
         adapterState.backendAvailable = false;
         return false;
@@ -526,24 +375,19 @@ async function checkModuleAccess() {
         }
 
         if (!adapterState.backendAvailable) {
-            logDebug('[MCP Adapter] checkModuleAccess: Backend API server is not available (cached state).');
             return false;
         }
 
         // Check if tools are accessible via the API
-        logDebug('[MCP Adapter] checkModuleAccess: Checking /v1/tools endpoint...');
         const toolsResponse = await callApi('GET', '/v1/tools');
 
         // Check for a successful response and a non-empty tools array
         if (toolsResponse && Array.isArray(toolsResponse.tools) && toolsResponse.tools.length > 0) {
-            logDebug(`[MCP Adapter] checkModuleAccess: Success - ${toolsResponse.tools.length} tools reported by API.`);
             return true;
         } else {
-            logDebug('[MCP Adapter] checkModuleAccess: Failed - API did not return a valid tools list.', toolsResponse);
             return false;
         }
     } catch (error) {
-        logDebug(`[MCP Adapter] checkModuleAccess: Error checking /v1/tools - ${error.message}`);
         return false;
     }
 }
@@ -563,17 +407,6 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
         // Instead of validating parameters, we'll transform them as needed
         // to match the format expected by the backend API
         
-        // Log the parameters being processed
-        logDebug(`[MCP Adapter] Processing parameters for ${moduleName}.${methodName}:`, params);
-        
-        // Add enhanced logging for calendar module interactions
-        if (moduleName === 'calendar') {
-            logDebug(`[MCP Adapter] Calendar module call: ${methodName}`, {
-                method: methodName,
-                params: params,
-                timestamp: new Date().toISOString()
-            });
-        }
         
         // Transform parameters based on the module and method
         // This ensures compatibility with the backend API expectations
@@ -587,7 +420,7 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
         const moduleMethod = `${moduleName}.${methodName}`;
         
         // Log the module method being executed for debugging
-        logDebug(`[MCP Adapter] Executing module method: ${moduleMethod} with params:`, transformedParams);
+        
         
         // Helper function to transform attendees from string or array to proper format
         const transformAttendees = (attendees) => {
@@ -647,8 +480,6 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                     query: transformedParams.query,
                     context: transformedParams.context
                 };
-                // Log the API call for debugging
-                logDebug(`[MCP Adapter] Making POST request to ${apiPath} with data:`, apiData);
                 break;
             
             // Email details endpoint
@@ -657,7 +488,7 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
             case 'outlook mail.readMailDetails':
                 if (!transformedParams.id) {
                     const errorMessage = 'Email ID is required for getting email details. Please provide an ID parameter with the email ID.';
-                    logDebug(`[MCP Adapter] Error: ${errorMessage}`);
+                    
                     throw new Error(errorMessage);
                 }
                 // Properly format the path with the ID parameter
@@ -683,7 +514,7 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 }
                 
                 // Log the API call for debugging
-                logDebug(`[MCP Adapter] Making ${apiMethod} request to ${apiPath}`);
+                
                 break;
             case 'mail.getInbox':
             case 'mail.readMail':
@@ -720,7 +551,7 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 }
                 
                 // Log the API call for debugging
-                logDebug(`[MCP Adapter] Making ${apiMethod} request to ${apiPath}`);
+                
                 break;
                 
             case 'mail.sendEmail':
@@ -748,9 +579,9 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 
                 // Log if attachments are being sent
                 if (params.attachments && Array.isArray(params.attachments) && params.attachments.length > 0) {
-                    logDebug(`[MCP Adapter] Sending email with ${params.attachments.length} attachments`);
+                    
                 }
-                logDebug(`[MCP Adapter] Handling ${moduleName}.${methodName} with path ${apiPath} and data:`, apiData);
+                
                 break;
             case 'mail.searchMail':
             case 'mail.searchEmails':
@@ -777,14 +608,14 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                     flag: transformedParams.flag !== false // Default to true if not explicitly set to false
                 };
                 // Log the API call for debugging
-                logDebug(`[MCP Adapter] Making ${apiMethod} request to ${apiPath} with data:`, apiData);
+                
                 break;
             case 'mail.markEmailRead':
             case 'mail.markAsRead':
             case 'outlook mail.markEmailRead':
                 if (!transformedParams.id) {
                     const errorMessage = 'Email ID is required for marking as read/unread. Please provide an ID parameter with the email ID.';
-                    logDebug(`[MCP Adapter] Error: ${errorMessage}`);
+                    
                     throw new Error(errorMessage);
                 }
                 // Properly format the path with the ID parameter
@@ -795,14 +626,14 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                     isRead: transformedParams.isRead !== false // Default to true if not explicitly set to false
                 };
                 // Log the API call for debugging
-                logDebug(`[MCP Adapter] Making ${apiMethod} request to ${apiPath} with data:`, apiData);
+                
                 break;
             case 'mail.getAttachments':
             case 'mail.getMailAttachments':
             case 'outlook mail.getMailAttachments':
                 if (!transformedParams.id) {
                     const errorMessage = 'Email ID is required for getting attachments. Please provide an ID parameter with the email ID.';
-                    logDebug(`[MCP Adapter] Error: ${errorMessage}`);
+                    
                     throw new Error(errorMessage);
                 }
                 
@@ -832,7 +663,7 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 }
                 
                 // Log the API call for debugging
-                logDebug(`[MCP Adapter] Making ${apiMethod} request to ${apiPath}`);
+                
                 break;
 
             // Calendar module endpoints
@@ -873,23 +704,8 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 const start = { ...transformedParams.start };
                 const end = { ...transformedParams.end };
                 
-                // Log the original time zones for debugging
-                if (start && start.timeZone) {
-                    console.log(`[MCP Adapter] Original start time zone: ${start.timeZone}`);
-                    // Note that we're NOT converting here - the server will handle it
-                }
-                
-                if (end && end.timeZone) {
-                    console.log(`[MCP Adapter] Original end time zone: ${end.timeZone}`);
-                    // Note that we're NOT converting here - the server will handle it
-                }
-                
-                // Pass the user's timeZone parameter if provided - this helps the server
-                // determine the preferred timezone when not specified in start/end
+                // Silent - no timezone logging for MCP protocol compliance
                 const timeZone = transformedParams.timeZone;
-                if (timeZone) {
-                    console.log(`[MCP Adapter] Using provided timeZone parameter: ${timeZone}`);
-                }
                 
                 // Transform parameters to match the controller's expectations
                 apiData = {
@@ -940,7 +756,7 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                     }
                 }
                 // Log the API call for debugging
-                logDebug(`[MCP Adapter] Making POST request to ${apiPath} with data:`, apiData);
+                
                 break;
             case 'calendar.events': // Handle the events endpoint for fetching events
                 apiPath = '/v1/calendar';  // Changed from /v1/calendar/events to /v1/calendar
@@ -955,7 +771,7 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 };
                 
                 // Log the API call for debugging
-                logDebug(`[MCP Adapter] Making GET request to ${apiPath} with params:`, apiParams);
+                
                 break;
             case 'calendar.updateEvent':
             case 'calendar.update':
@@ -1027,12 +843,12 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                     
                     apiData = updateData;
                 } catch (error) {
-                    logDebug(`[MCP Adapter] Error in updateEvent parameter transformation: ${error.message}`);
+                    
                     throw new Error(`Failed to transform updateEvent parameters: ${error.message}`);
                 }
                 
                 // Log the update data for debugging
-                logDebug(`[MCP Adapter] Updating event ${transformedParams.id} with data:`, apiData);
+                
                 break;
             case 'calendar.getAvailability':
             case 'calendar.availability':
@@ -1040,7 +856,7 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 apiMethod = 'POST';
                 
                 // ENHANCED LOGGING: Log the raw input parameters for debugging
-                logDebug(`[MCP Adapter] getAvailability raw input parameters:`, JSON.stringify(transformedParams, null, 2));
+                
                 
                 // Use the tools service for parameter transformation, following separation of concerns
                 try {
@@ -1051,15 +867,15 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                     apiData = transformedAvailabilityParams;
                     
                     // ENHANCED LOGGING: Log the transformed API data for debugging
-                    logDebug(`[MCP Adapter] getAvailability transformed API data (via tools service):`, JSON.stringify(apiData, null, 2));
+                    
                 } catch (error) {
                     // Log the error and rethrow
-                    logDebug(`[MCP Adapter] Error transforming getAvailability parameters:`, error.message);
+                    
                     throw error;
                 }
                 
                 // Log the transformed data for debugging
-                logDebug(`[MCP Adapter] Transformed availability data:`, apiData);
+                
                 break;
             case 'calendar.acceptEvent':
                 apiPath = `/v1/calendar/events/${params.eventId}/accept`;
@@ -1088,7 +904,7 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 apiData = transformedParams.comment ? { comment: transformedParams.comment } : {};
                 
                 // Log the cancel request
-                logDebug(`[MCP Adapter] Cancelling event ${cancelEventId}`);
+                
                 break;
             case 'calendar.findMeetingTimes':
             case 'calendar.findtimes': // Add this case to handle the findtimes endpoint
@@ -1199,180 +1015,11 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                     }
                     
                     // Log the transformed parameters for debugging
-                    logDebug(`[MCP Adapter] Transformed findMeetingTimes parameters:`, apiData);
+                    
                 } catch (error) {
-                    logDebug(`[MCP Adapter] Error in findMeetingTimes parameter transformation: ${error.message}`);
+                    
                     throw new Error(`Failed to transform findMeetingTimes parameters: ${error.message}`);
                 }
-                break;
-            case 'calendar.scheduleMeeting':
-            case 'calendar.schedule': // Add alias for backward compatibility
-            case 'microsoft calendar.scheduleMeeting':
-                apiPath = '/v1/calendar/events'; // Map to the same endpoint as createEvent
-                apiMethod = 'POST';
-                
-                try {
-                    // Start tracking execution time for performance monitoring
-                    const startTime = Date.now();
-                    
-                    // Extract start and end time information
-                    let meetingStartTime = transformedParams.start;
-                    let meetingEndTime = transformedParams.end;
-                    const defaultTimeZone = transformedParams.timeZone || 'UTC';
-                    
-                    // Check for preferredTimes first (highest priority)
-                    if (transformedParams.preferredTimes && Array.isArray(transformedParams.preferredTimes) && transformedParams.preferredTimes.length > 0) {
-                        const preferredTime = transformedParams.preferredTimes[0];
-                        
-                        if (preferredTime.start) {
-                            meetingStartTime = preferredTime.start;
-                        }
-                        
-                        if (preferredTime.end) {
-                            meetingEndTime = preferredTime.end;
-                        }
-                        
-                        logDebug(`[MCP Adapter] Using preferred meeting times`);
-                    }
-                    
-                    // If both start and end are missing, set default values (1 hour from now)
-                    if (!meetingStartTime && !meetingEndTime) {
-                        const now = new Date();
-                        const oneHourLater = new Date(now.getTime() + 60 * 60 * 1000);
-                        const twoHoursLater = new Date(now.getTime() + 120 * 60 * 1000);
-                        
-                        meetingStartTime = {
-                            dateTime: oneHourLater.toISOString(),
-                            timeZone: defaultTimeZone
-                        };
-                        
-                        meetingEndTime = {
-                            dateTime: twoHoursLater.toISOString(),
-                            timeZone: defaultTimeZone
-                        };
-                        
-                        logDebug(`[MCP Adapter] Using default meeting times: ${oneHourLater.toISOString()} to ${twoHoursLater.toISOString()}`);
-                    }
-                    
-                    // If we have start but no end, set end to 1 hour after start
-                    if (meetingStartTime && !meetingEndTime) {
-                        // Parse the start time if it's a string
-                        let startDate;
-                        if (typeof meetingStartTime === 'string') {
-                            startDate = new Date(meetingStartTime);
-                            meetingStartTime = {
-                                dateTime: startDate.toISOString(),
-                                timeZone: defaultTimeZone
-                            };
-                        } else if (typeof meetingStartTime === 'object' && meetingStartTime.dateTime) {
-                            startDate = new Date(meetingStartTime.dateTime);
-                        } else {
-                            // Handle null or undefined by setting a default
-                            const now = new Date();
-                            const oneHourLater = new Date(now.getTime() + 60 * 60 * 1000);
-                            startDate = oneHourLater;
-                            meetingStartTime = {
-                                dateTime: startDate.toISOString(),
-                                timeZone: defaultTimeZone
-                            };
-                            logDebug(`[MCP Adapter] Using default start time: ${startDate.toISOString()}`);
-                        }
-                        
-                        // Set end time to 1 hour after start
-                        const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
-                        meetingEndTime = {
-                            dateTime: endDate.toISOString(),
-                            timeZone: meetingStartTime.timeZone || defaultTimeZone
-                        };
-                        logDebug(`[MCP Adapter] Calculated end time based on start time: ${endDate.toISOString()}`);
-                    }
-                    
-                    // If we have end but no start, set start to 1 hour before end
-                    if (!meetingStartTime && meetingEndTime) {
-                        // Parse the end time if it's a string
-                        let endDate;
-                        if (typeof meetingEndTime === 'string') {
-                            endDate = new Date(meetingEndTime);
-                            meetingEndTime = {
-                                dateTime: endDate.toISOString(),
-                                timeZone: defaultTimeZone
-                            };
-                        } else if (typeof meetingEndTime === 'object' && meetingEndTime.dateTime) {
-                            endDate = new Date(meetingEndTime.dateTime);
-                        } else {
-                            // Handle null or undefined by setting a default
-                            const now = new Date();
-                            const twoHoursLater = new Date(now.getTime() + 120 * 60 * 1000);
-                            endDate = twoHoursLater;
-                            meetingEndTime = {
-                                dateTime: endDate.toISOString(),
-                                timeZone: defaultTimeZone
-                            };
-                            logDebug(`[MCP Adapter] Using default end time: ${endDate.toISOString()}`);
-                        }
-                        
-                        // Set start time to 1 hour before end
-                        const startDate = new Date(endDate.getTime() - 60 * 60 * 1000);
-                        meetingStartTime = {
-                            dateTime: startDate.toISOString(),
-                            timeZone: meetingEndTime.timeZone || defaultTimeZone
-                        };
-                        logDebug(`[MCP Adapter] Calculated start time based on end time: ${startDate.toISOString()}`);
-                    }
-                    
-                    // Ensure both start and end are in the correct format
-                    if (typeof meetingStartTime === 'string') {
-                        meetingStartTime = {
-                            dateTime: new Date(meetingStartTime).toISOString(),
-                            timeZone: defaultTimeZone
-                        };
-                    }
-                    
-                    if (typeof meetingEndTime === 'string') {
-                        meetingEndTime = {
-                            dateTime: new Date(meetingEndTime).toISOString(),
-                            timeZone: defaultTimeZone
-                        };
-                    }
-                    
-                    // Ensure body content is properly formatted for HTML
-                    let bodyContent = transformedParams.body || transformedParams.content || '';
-                    if (bodyContent && !bodyContent.startsWith('<')) {
-                        // If it doesn't start with HTML tag, wrap it in paragraph tags
-                        bodyContent = `<p>${bodyContent}</p>`;
-                    }
-                    
-                    // Create the API data with proper structure
-                    apiData = {
-                        subject: transformedParams.subject || 'New Meeting',
-                        body: {
-                            contentType: 'html',
-                            content: bodyContent
-                        },
-                        start: meetingStartTime,
-                        end: meetingEndTime,
-                        location: transformedParams.location ? { displayName: transformedParams.location } : null,
-                        attendees: transformAttendees(transformedParams.attendees) || []
-                    };
-                    
-                    // Add isOnlineMeeting if specified
-                    if (transformedParams.isOnlineMeeting !== undefined) {
-                        // Convert string 'true'/'false' to boolean if needed
-                        apiData.isOnlineMeeting = transformedParams.isOnlineMeeting === true || 
-                            transformedParams.isOnlineMeeting === 'true' || 
-                            transformedParams.isOnlineMeeting === '1';
-                    }
-                    
-                    // Calculate execution time for metrics
-                    const executionTime = Date.now() - startTime;
-                    logDebug(`[MCP Adapter] scheduleMeeting parameter transformation completed in ${executionTime}ms`);
-                } catch (error) {
-                    logError(`[MCP Adapter] Error transforming scheduleMeeting parameters: ${error.message}`);
-                    throw new Error(`Failed to transform parameters for scheduleMeeting: ${error.message}`);
-                }
-                
-                // Log the API call for debugging
-                logDebug(`[MCP Adapter] Making POST request to ${apiPath} with data:`, apiData);
                 break;
                 
             case 'calendar.getRooms':
@@ -1413,14 +1060,14 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 }
                 
                 // Log the API call for debugging
-                logDebug(`[MCP Adapter] Making ${apiMethod} request to ${apiPath}`);
+                
                 break;
                 
             case 'calendar.acceptEvent':
             case 'microsoft calendar.acceptEvent':
                 if (!transformedParams.id) {
                     const errorMessage = 'Event ID is required for accepting an event. Please provide an ID parameter with the event ID.';
-                    logDebug(`[MCP Adapter] Error: ${errorMessage}`);
+                    
                     throw new Error(errorMessage);
                 }
                 apiPath = `/v1/calendar/events/${transformedParams.id}/accept`;
@@ -1436,7 +1083,7 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
             case 'microsoft calendar.declineEvent':
                 if (!transformedParams.id) {
                     const errorMessage = 'Event ID is required for declining an event. Please provide an ID parameter with the event ID.';
-                    logDebug(`[MCP Adapter] Error: ${errorMessage}`);
+                    
                     throw new Error(errorMessage);
                 }
                 apiPath = `/v1/calendar/events/${transformedParams.id}/decline`;
@@ -1452,7 +1099,7 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
             case 'microsoft calendar.tentativelyAcceptEvent':
                 if (!transformedParams.id) {
                     const errorMessage = 'Event ID is required for tentatively accepting an event. Please provide an ID parameter with the event ID.';
-                    logDebug(`[MCP Adapter] Error: ${errorMessage}`);
+                    
                     throw new Error(errorMessage);
                 }
                 apiPath = `/v1/calendar/events/${transformedParams.id}/tentativelyAccept`;
@@ -1490,7 +1137,7 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 }
                 
                 // Log the API call for debugging
-                logDebug(`[MCP Adapter] Making ${apiMethod} request to ${apiPath}`);
+                
                 break;
             case 'calendar.acceptEvent':
             case 'calendar.accept':
@@ -1509,7 +1156,7 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 }
                 
                 // Log the API call for debugging
-                logDebug(`[MCP Adapter] Making ${apiMethod} request to ${apiPath} with data:`, apiData);
+                
                 break;
                 
             case 'calendar.tentativelyAcceptEvent':
@@ -1529,7 +1176,7 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 }
                 
                 // Log the API call for debugging
-                logDebug(`[MCP Adapter] Making ${apiMethod} request to ${apiPath} with data:`, apiData);
+                
                 break;
                 
             case 'calendar.declineEvent':
@@ -1549,7 +1196,7 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 }
                 
                 // Log the API call for debugging
-                logDebug(`[MCP Adapter] Making ${apiMethod} request to ${apiPath} with data:`, apiData);
+                
                 break;
                 
             case 'calendar.cancelEvent':
@@ -1569,7 +1216,7 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 }
                 
                 // Log the API call for debugging
-                logDebug(`[MCP Adapter] Making ${apiMethod} request to ${apiPath} with data:`, apiData);
+                
                 break;
                 
             case 'calendar.addAttachment':
@@ -1709,7 +1356,7 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
             }
         }
 
-        logDebug(`[MCP Adapter] Executing ${moduleName}.${methodName} via API: ${apiMethod} ${apiPath}`);
+        
         // Add enhanced logging for calendar controller API calls
         if (moduleName === 'calendar' || apiPath.includes('/v1/calendar')) {
             logDebug(`[MCP Adapter] Making calendar API call: ${apiMethod} ${apiPath}`, {
@@ -1754,7 +1401,7 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
 
         return result;
     } catch (error) {
-        logDebug(`[MCP Adapter] Error executing ${moduleName}.${methodName}:`, error.message);
+        
         if (error.message.includes('authentication') || error.message.includes('unauthorized') || error.message.includes('401')) {
             return { 
                 error: 'Authentication required. Please log in via the web UI.',
@@ -1807,7 +1454,7 @@ function processCalendarTimeframe(toolArgs) {
             end = todayStr;
     }
 
-    logDebug(`[MCP Adapter] Calendar request with date range: ${start} to ${end}`);
+    
 
     // Add date range to the arguments
     return {
@@ -1827,8 +1474,6 @@ async function handleToolCall(toolName, toolArgs) {
 
         // Update last activity timestamp
         adapterState.lastActivity = Date.now();
-        
-        logDebug(`[MCP Adapter] Handling tool call: ${toolName}`);
         
         // Special handling for calendar date ranges
         if ((toolName === 'getEvents' || toolName === 'getCalendar') && toolArgs.timeframe) {
@@ -1854,7 +1499,6 @@ async function handleToolCall(toolName, toolArgs) {
         // If the tool is a file operation, map it directly
         if (fileOperations[toolName]) {
             const [moduleName, methodName] = fileOperations[toolName].split('.');
-            logDebug(`[MCP Adapter] Direct mapping for file operation: ${toolName} -> ${moduleName}.${methodName}`);
             return await executeModuleMethod(moduleName, methodName, toolArgs);
         }
         
@@ -1862,7 +1506,6 @@ async function handleToolCall(toolName, toolArgs) {
         const { mapping, params } = toolsService.transformToolParameters(toolName, toolArgs);
         
         if (mapping) {
-            logDebug(`[MCP Adapter] Using tools service mapping: ${toolName} -> ${mapping.moduleName}.${mapping.methodName}`);
             return await executeModuleMethod(mapping.moduleName, mapping.methodName, params);
         }
         
@@ -1894,21 +1537,17 @@ async function handleToolCall(toolName, toolArgs) {
                             methodName = methodMappings[moduleName][''];
                         }
 
-                        logDebug(`[MCP Adapter] Using API mapping: ${toolName} -> ${moduleName}.${methodName}`);
                         return await executeModuleMethod(moduleName, methodName, toolArgs);
                     }
                 }
             }
         } catch (error) {
-            // If API call fails, log the error
-            logDebug(`[MCP Adapter] Failed to get tool mapping from API: ${error.message}`);
+            // If API call fails, silently continue
         }
         
         // If we get here, we couldn't map the tool
-        logDebug(`[MCP Adapter] Could not map tool: ${toolName}`);
         return { error: `Unknown tool: ${toolName}` };
     } catch (error) {
-        logDebug(`[MCP Adapter] Error handling tool call ${toolName}:`, error.message);
         return { 
             error: `Error handling tool call: ${error.message}`,
             errorType: 'tool_error'
@@ -1920,9 +1559,7 @@ async function handleToolCall(toolName, toolArgs) {
 async function handleRequest(msg) {
     const { id, method, params } = msg;
 
-    // Debug: log every request to stderr and file
-    logDebug(`[MCP Adapter] Received: ${method}`, params);
-    logToFile('Received:', method, params);
+    // Silent - no logging for MCP protocol compliance
 
     try {
         let result;
@@ -1943,8 +1580,6 @@ async function handleRequest(msg) {
                     }
                 };
                 sendResponse(id, result, null);
-                logToFile('Responded:', method, { id, result });
-                logDebug("[MCP Adapter] Responded to initialize with protocolVersion:", result.protocolVersion);
                 return;
             }
             case 'tools/call': {
@@ -1955,14 +1590,12 @@ async function handleRequest(msg) {
 
                 const toolName = params.name;
                 const toolArgs = params.arguments || {};
-                logDebug(`[MCP Adapter] Calling tool: ${toolName} with args:`, toolArgs);
 
                 try {
                     // Use the handleToolCall function to process the tool call
                     const toolResult = await handleToolCall(toolName, toolArgs);
 
                     if (toolResult && toolResult.error) {
-                        logDebug(`[MCP Adapter] Tool error (${toolName}):`, toolResult.error);
                         sendResponse(id, null, { code: -32603, message: `Tool error: ${toolResult.error}` });
                         return;
                     }
@@ -1980,10 +1613,8 @@ async function handleRequest(msg) {
 
                     // Success response
                     sendResponse(id, formattedResult, null);
-                    logDebug(`[MCP Adapter] Tool ${toolName} succeeded:`, JSON.stringify(toolResult).substring(0, 100) + '...');
                     return;
                 } catch (err) {
-                    logDebug(`[MCP Adapter] Tool error (${toolName}):`, err);
                     sendResponse(id, null, { code: -32603, message: `Tool error: ${err.message}` });
                     return;
                 }
@@ -1992,11 +1623,9 @@ async function handleRequest(msg) {
             case 'tools/list':
                 // Try to get tools list from the API first, then fallback to tools service if needed
                 try {
-                    logDebug('[MCP Adapter] Getting tools list from API');
                     const toolsResult = await callApi('GET', '/tools');
 
                     if (!toolsResult || !toolsResult.tools) {
-                        logDebug('[MCP Adapter] API returned invalid tools list, falling back to tools service');
                         
                         // Use the tools service to get the tools list
                         const toolsFromService = toolsService.getAllTools();
@@ -2058,8 +1687,6 @@ async function handleRequest(msg) {
                         };
                     }
                 } catch (error) {
-                    logDebug('[MCP Adapter] Error getting tools list from API:', error.message);
-                    logDebug('[MCP Adapter] Falling back to tools service');
                     
                     // Use the tools service as fallback
                     try {
@@ -2097,7 +1724,6 @@ async function handleRequest(msg) {
                             };
                         }
                     } catch (serviceError) {
-                        logDebug('[MCP Adapter] Error getting tools from service:', serviceError.message);
                         // Final fallback - empty list
                         result = {
                             protocolVersion: (params && params.protocolVersion) ? params.protocolVersion : "2024-11-05",
@@ -2106,8 +1732,6 @@ async function handleRequest(msg) {
                     }
                 }
                 sendResponse(id, result, null);
-                logToFile('Responded:', method, { id, result });
-                logDebug("[MCP Adapter] Responded to tools/list");
                 return;
             case 'getManifest':
                 // Legacy method - same as tools/list for compatibility
@@ -2124,39 +1748,29 @@ async function handleRequest(msg) {
                     }
                 };
                 sendResponse(id, result, null);
-                logToFile('Responded:', method, { id, result });
-                logDebug("[MCP Adapter] Responded to getManifest");
                 return;
             case 'resources/list':
                 // Return empty resources list (not implemented yet)
-                logDebug('[MCP Adapter] Returning empty resources list');
                 result = { resources: [] };
                 sendResponse(id, result, null);
-                logToFile('Responded:', method, { id, result });
-                logDebug("[MCP Adapter] Responded to resources/list");
                 return;
             case 'prompts/list':
                 // Return empty prompts list (not implemented yet)
-                logDebug('[MCP Adapter] Returning empty prompts list');
                 result = { prompts: [] };
                 sendResponse(id, result, null);
-                logToFile('Responded:', method, { id, result });
-                logDebug("[MCP Adapter] Responded to prompts/list");
                 return;
             default:
-                logDebug(`[MCP Adapter] Unknown method: ${method}`);
                 sendResponse(id, null, { code: -32601, message: `Method not found: ${method}` });
                 return;
         }
     } catch (err) {
-        logDebug(`[MCP Adapter] Error handling ${method}:`, err);
         sendResponse(id, null, { code: -32603, message: `Internal error: ${err.message}` });
     }
 }
 
 // Helper: handle core requests (manifest, listResources)
 async function _handleCoreRequest(coreMethodName, requestId, coreParams = {}) {
-    logDebug(`[MCP Adapter] Handling core request: ${coreMethodName}`);
+    
     try {
         const hasAccess = await checkModuleAccess();
         if (!hasAccess) {
@@ -2166,7 +1780,7 @@ async function _handleCoreRequest(coreMethodName, requestId, coreParams = {}) {
         const result = await executeModuleMethod('core', coreMethodName, coreParams);
         sendResponse(requestId, result);
     } catch (error) { 
-        logDebug(`[MCP Adapter] Error handling ${coreMethodName}:`, error);
+        
         sendResponse(requestId, null, createJsonRpcError(-32603, 'Internal Error', `Error handling ${coreMethodName}: ${error.message}`));
     }
 }
@@ -2175,29 +1789,29 @@ async function _handleCoreRequest(coreMethodName, requestId, coreParams = {}) {
 async function initialize() {
     // Allow skipping initialization for specific test environments
     if (process.env.MCP_SKIP_INIT === 'true') {
-        logDebug('[MCP Adapter] Skipping initialization due to MCP_SKIP_INIT flag.');
+        
         adapterState.initialized = true; // Mark as initialized to avoid re-triggering
         adapterState.backendAvailable = true; // Assume available for tests
         return Promise.resolve(true);
     }
 
-    logDebug('[MCP Adapter] Initializing (API isolation approach)...');
+    
     const ok = await initializeAdapter();
     if (!ok) {
-        logDebug('[MCP Adapter] Initialization failed: Backend API not available.');
+        
     } else {
-        logDebug('[MCP Adapter] Initialization successful: Backend API available.');
+        
     }
     return Promise.resolve(ok);
 }
 
 // Graceful shutdown
 async function shutdown() {
-    logDebug('[MCP Adapter] Shutting down...');
+    
     if (healthCheckInterval) {
         clearInterval(healthCheckInterval);
         healthCheckInterval = null;
-        logDebug('[MCP Adapter] Health check interval cleared.');
+        
     }
     // TODO: [Cleanup] Add any other necessary cleanup (e.g., close connections) (LOW)
 }
@@ -2210,41 +1824,34 @@ rl.on('line', (line) => {
         const { id, method, params } = msg;
         // MCP PATCH: Ignore JSON-RPC notifications (method present, id undefined)
         if (method && typeof id === 'undefined') {
-            logToFile('Received', method, { params });
-            logDebug(`[MCP Adapter] Received notification: ${method} ${JSON.stringify(params)}`);
             // Do not respond to notifications, per JSON-RPC spec
             return;
         }
         // Normal request: handle as before
         handleRequest(msg);
     } catch (err) {
-        logDebug('[MCP Adapter] Invalid JSON-RPC:', line, err);
+        // Silent - invalid JSON-RPC
     }
 });
 
-// Log if stdin closes unexpectedly
+// Handle stdin close
 rl.on('close', () => {
-    logDebug('[MCP Adapter] Stdin closed. Exiting.');
+    
     process.exit(0);
 });
 
 // Handle process signals for clean shutdown
 process.on('SIGINT', () => {
-    logDebug('[MCP Adapter] Received SIGINT. Exiting.');
+    
     shutdown().then(() => process.exit(0));
 });
 
 process.on('SIGTERM', () => {
-    logDebug('[MCP Adapter] Received SIGTERM. Exiting.');
+    
     shutdown().then(() => process.exit(0));
 });
 
-// Properly apply the console monkey-patching to ensure no logs go to stdout
-console.log = (...args) => writeToLogFile('log', ...args);
-console.debug = (...args) => writeToLogFile('debug', ...args);
-console.info = (...args) => writeToLogFile('info', ...args);
-console.warn = (...args) => writeToLogFile('warn', ...args);
-console.error = (...args) => writeToLogFile('error', ...args);
+// Console methods already silenced above - MCP requires absolute silence
 
 // Run initialization (proxy approach)
 initialize();

@@ -1664,14 +1664,16 @@ async function cancelEvent(eventId, options = {}) {
 
 /**
  * Find suitable meeting times for attendees.
- * @param {object} options - Options for finding meeting times
- * @param {Array<string>} [options.attendees=[]] - List of attendee email addresses
+ * @param {object} options - Options for finding meeting times (in Microsoft Graph API format)
+ * @param {Array<object>} [options.attendees=[]] - Attendees with type and emailAddress
  * @param {object} [options.timeConstraint] - Time constraints for the meeting
- * @param {string} [options.timeConstraint.start] - Start time in ISO format
- * @param {string} [options.timeConstraint.end] - End time in ISO format
- * @param {string} [options.timeConstraint.timeZone] - Time zone for the constraints
- * @param {number} [options.timeConstraint.meetingDuration=60] - Duration in minutes
- * @param {number} [options.maxCandidates=10] - Maximum number of time slots to return
+ * @param {string} [options.timeConstraint.activityDomain='work'] - Activity domain (work/personal/unrestricted)
+ * @param {Array<object>} [options.timeConstraint.timeSlots] - Array of time slots with start/end
+ * @param {string} [options.meetingDuration='PT30M'] - Duration in ISO8601 format (e.g., 'PT1H')
+ * @param {number} [options.maxCandidates=20] - Maximum number of time slots to return
+ * @param {number} [options.minimumAttendeePercentage=50] - Minimum attendee percentage
+ * @param {boolean} [options.returnSuggestionReasons=true] - Whether to return suggestion reasons
+ * @param {boolean} [options.isOrganizerOptional=false] - Whether organizer attendance is optional
  * @param {object} [options.locationConstraint] - Location constraints
  * @param {string} [options.userId='me'] - User ID to find meeting times for
  * @returns {Promise<object>} Meeting time suggestions with normalized error handling
@@ -1679,78 +1681,52 @@ async function cancelEvent(eventId, options = {}) {
 async function findMeetingTimes(options = {}, userId = 'me') {
   const client = await graphClientFactory.createClient();
   
-  // Validate timeConstraint if provided
+  // Validate timeConstraint if provided (now expects Graph API format with timeSlots)
   if (options.timeConstraint) {
-    // Check that start and end are valid ISO date strings
-    const isoDateRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?(Z|[+-]\d{2}:\d{2})?$/;
-    
-    if (options.timeConstraint.start && !isoDateRegex.test(options.timeConstraint.start)) {
-      throw new Error('timeConstraint.start must be a valid ISO date string (YYYY-MM-DDThh:mm:ss)');
-    }
-    
-    if (options.timeConstraint.end && !isoDateRegex.test(options.timeConstraint.end)) {
-      throw new Error('timeConstraint.end must be a valid ISO date string (YYYY-MM-DDThh:mm:ss)');
-    }
-    
-    // Check that meetingDuration is a positive number
-    if (options.timeConstraint.meetingDuration !== undefined) {
-      const duration = Number(options.timeConstraint.meetingDuration);
-      if (isNaN(duration) || duration <= 0) {
-        throw new Error('timeConstraint.meetingDuration must be a positive number');
+    if (options.timeConstraint.timeSlots && Array.isArray(options.timeConstraint.timeSlots)) {
+      // Validate each time slot
+      for (const slot of options.timeConstraint.timeSlots) {
+        const isoDateRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?(Z|[+-]\d{2}:\d{2})?$/;
+        
+        if (slot.start?.dateTime && !isoDateRegex.test(slot.start.dateTime)) {
+          throw new Error('timeConstraint.timeSlots[].start.dateTime must be a valid ISO date string');
+        }
+        
+        if (slot.end?.dateTime && !isoDateRegex.test(slot.end.dateTime)) {
+          throw new Error('timeConstraint.timeSlots[].end.dateTime must be a valid ISO date string');
+        }
       }
     }
   }
   
-  // Get user's preferred time zone if not specified
-  let timeZone;
-  try {
-    timeZone = options.timeConstraint?.timeZone || await getUserPreferredTimeZone(client, userId);
-  } catch (error) {
-    if (process.env.NODE_ENV !== 'production') {
-      MonitoringService?.warn('Could not get user\'s preferred time zone for findMeetingTimes', {
-        userId: redactSensitiveData({ userId }),
-        errorMessage: error.message || 'No message',
-        statusCode: error.statusCode || 'unknown',
-        timestamp: new Date().toISOString()
-      }, 'calendar');
-    }
-    timeZone = process.env.DEFAULT_TIMEZONE || 'UTC';
-  }
-  
-  // Set default start and end times if not provided
-  const now = new Date();
-  const oneWeekLater = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-  
-  const startTime = options.timeConstraint?.start || now.toISOString();
-  const endTime = options.timeConstraint?.end || oneWeekLater.toISOString();
-  const meetingDuration = options.timeConstraint?.meetingDuration || 60;
-  
-  // Format the request body according to Microsoft Graph API requirements
+  // Build the request body from the provided options (now in Graph API format)
   const requestBody = {
-    attendees: (options.attendees || []).map(attendee => {
-      // Handle both string email and object with email property
-      const email = typeof attendee === 'string' ? attendee : attendee.email || attendee.address;
-      const type = (typeof attendee === 'object' && attendee.type) ? attendee.type : 'required';
-      
-      return {
-        type,
-        emailAddress: { address: email }
-      };
-    }),
-    timeConstraint: {
+    // Attendees - already in correct Graph API format from controller
+    attendees: options.attendees || [],
+    
+    // Time constraint - use provided timeSlots or create default
+    timeConstraint: options.timeConstraint || {
+      activityDomain: 'work',
       timeSlots: [{
         start: {
-          dateTime: startTime,
-          timeZone: timeZone
+          dateTime: new Date().toISOString(),
+          timeZone: 'UTC'
         },
         end: {
-          dateTime: endTime,
-          timeZone: timeZone
+          dateTime: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+          timeZone: 'UTC'
         }
       }]
     },
-    meetingDuration: meetingDuration,
-    maxCandidates: options.maxCandidates || 10
+    
+    // Meeting duration - already in ISO8601 format from controller
+    meetingDuration: options.meetingDuration || 'PT30M',
+    
+    // Additional Graph API parameters
+    maxCandidates: options.maxCandidates || 20,
+    minimumAttendeePercentage: options.minimumAttendeePercentage || 50,
+    returnSuggestionReasons: options.returnSuggestionReasons !== undefined ? options.returnSuggestionReasons : true,
+    isOrganizerOptional: options.isOrganizerOptional || false
   };
   
   // Add location constraints if provided

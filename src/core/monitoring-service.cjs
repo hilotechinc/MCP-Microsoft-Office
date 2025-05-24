@@ -119,6 +119,33 @@ function initLogger(logFilePath, logLevel = 'info') {
         winston.format.json()
     );
     
+    // Configure transports - exclude console transport in MCP silent mode
+    const transports = [
+        new winston.transports.File({ 
+            filename: LOG_FILE_PATH, 
+            maxsize: 2097152,
+            maxFiles: 5,
+            tailable: true,
+            format: fileFormat,
+            handleExceptions: true,
+            handleRejections: true
+        })
+    ];
+    
+    // Only add console transport if not in MCP silent mode
+    if (process.env.MCP_SILENT_MODE !== 'true') {
+        transports.push(new winston.transports.Console({ 
+            format: winston.format.combine(
+                winston.format.colorize(),
+                consoleFormat
+            ),
+            stderrLevels: ['error', 'warn'],
+            consoleWarnLevels: [],
+            handleExceptions: true,
+            handleRejections: true
+        }));
+    }
+
     logger = winston.createLogger({
         level: logLevel,
         defaultMeta: {
@@ -126,27 +153,7 @@ function initLogger(logFilePath, logLevel = 'info') {
             hostname: os.hostname(),
             version: appVersion
         },
-        transports: [
-            new winston.transports.File({ 
-                filename: LOG_FILE_PATH, 
-                maxsize: 2097152,
-                maxFiles: 5,
-                tailable: true,
-                format: fileFormat,
-                handleExceptions: true,
-                handleRejections: true
-            }),
-            new winston.transports.Console({ 
-                format: winston.format.combine(
-                    winston.format.colorize(),
-                    consoleFormat
-                ),
-                stderrLevels: ['error', 'warn'],
-                consoleWarnLevels: [],
-                handleExceptions: true,
-                handleRejections: true
-            })
-        ],
+        transports: transports,
         exitOnError: false
     });
 }
