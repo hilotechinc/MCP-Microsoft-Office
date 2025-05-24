@@ -1,8 +1,9 @@
-export default {
+module.exports = {
     setupFilesAfterEnv: ["<rootDir>/jest.setup.js"],
-    testEnvironment: 'jsdom',
+    testEnvironment: 'node',
     transform: {
-        '^.+\\.js$': 'babel-jest'
+        '^.+\\.(js|cjs)$': 'babel-jest'
     },
-    moduleFileExtensions: ['js', 'json', 'node'],
+    moduleFileExtensions: ['js', 'cjs', 'json', 'node'],
+    testMatch: ['**/__tests__/**/*.(js|cjs)', '**/*.(test|spec).(js|cjs)']
 };

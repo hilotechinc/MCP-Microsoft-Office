@@ -4,10 +4,10 @@
  */
 
 const express = require('express');
-const queryControllerFactory = require('./controllers/query-controller.cjs');
-const mailControllerFactory = require('./controllers/mail-controller.cjs');
-const calendarControllerFactory = require('./controllers/calendar-controller.cjs');
-const filesControllerFactory = require('./controllers/files-controller.cjs');
+const queryControllerFactory = require('./controllers/query-controller.js');
+const mailControllerFactory = require('./controllers/mail-controller.js');
+const calendarControllerFactory = require('./controllers/calendar-controller.js');
+const filesControllerFactory = require('./controllers/files-controller.js');
 const peopleControllerFactory = require('./controllers/people-controller.cjs');
 const logController = require('./controllers/log-controller.cjs');
 const { requireAuth } = require('./middleware/auth-middleware.cjs');

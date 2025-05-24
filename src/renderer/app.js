@@ -335,29 +335,9 @@ export class App {
             const logsContainer = document.getElementById('recent-logs');
             if (!logsContainer) return;
             
-            // Store any existing error logs if we're not clearing
+            // DISABLED: Error preservation was causing exponential duplication
+            // The circular buffer in the monitoring service now handles persistence
             let existingErrorLogs = [];
-            if (!clearExisting) {
-                try {
-                    // Find any error logs that are currently displayed
-                    document.querySelectorAll('.log-entry.log-error').forEach(errorLog => {
-                        const message = errorLog.querySelector('.log-entry-message')?.textContent;
-                        const timestamp = errorLog.querySelector('.log-entry-timestamp')?.textContent;
-                        const category = errorLog.querySelector('.log-entry-category')?.textContent;
-                        
-                        if (message && timestamp) {
-                            existingErrorLogs.push({
-                                message,
-                                timestamp,
-                                category,
-                                severity: 'error'
-                            });
-                        }
-                    });
-                } catch (e) {
-                    console.warn('Error preserving existing error logs:', e);
-                }
-            }
             
             // Fetch logs from the API with increased limit to ensure we get enough meaningful logs
             const response = await fetch('/api/v1/logs?limit=100&category=all');
@@ -367,28 +347,8 @@ export class App {
             
             const logs = await response.json();
             
-            // Combine with any existing error logs we preserved
+            // Use logs directly from the monitoring service (no frontend preservation needed)
             const combinedLogs = [...logs];
-            if (existingErrorLogs.length > 0) {
-                // Add existing error logs that aren't already in the new logs
-                existingErrorLogs.forEach(errorLog => {
-                    // Check if this error is already in the logs
-                    const isDuplicate = logs.some(log => 
-                        log.message === errorLog.message && 
-                        new Date(log.timestamp).toLocaleTimeString() === errorLog.timestamp
-                    );
-                    
-                    if (!isDuplicate) {
-                        combinedLogs.push({
-                            message: errorLog.message,
-                            timestamp: new Date().toISOString(), // Use current time for sorting
-                            category: errorLog.category || 'preserved',
-                            severity: 'error',
-                            context: { preserved: true, originalTimestamp: errorLog.timestamp }
-                        });
-                    }
-                });
-            }
             
             if (!Array.isArray(combinedLogs) || combinedLogs.length === 0) {
                 logsContainer.innerHTML = '<p>No recent activity to display</p>';
@@ -514,11 +474,11 @@ export class App {
                 requestLogs.forEach(log => {
                     // Determine component based on category or context
                     let component = log.category;
-                    if (log.message.includes('routes')) component = 'routes';
-                    else if (log.message.includes('controller')) component = 'controller';
-                    else if (log.message.includes('module')) component = 'module';
-                    else if (log.message.includes('service')) component = 'service';
-                    else if (log.message.includes('normalizer')) component = 'normalizer';
+                    if (log.message && log.message.includes('routes')) component = 'routes';
+                    else if (log.message && log.message.includes('controller')) component = 'controller';
+                    else if (log.message && log.message.includes('module')) component = 'module';
+                    else if (log.message && log.message.includes('service')) component = 'service';
+                    else if (log.message && log.message.includes('normalizer')) component = 'normalizer';
                     
                     // Only add unique components
                     if (!components.includes(component)) {

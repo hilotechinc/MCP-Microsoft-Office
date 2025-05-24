@@ -16,37 +16,47 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
         // Start tracking execution time
         const startTime = Date.now();
         
-        // Log the request with detailed parameters
-        monitoringService.debug('Files controller method call requested', { 
-            methodName,
-            params: params.map(p => typeof p === 'object' ? 'object' : p),
-            timestamp: new Date().toISOString(),
-            source: `files-controller.${methodName}`
-        }, 'files-api');
+        // Log the request (only in development)
+        if (process.env.NODE_ENV === 'development') {
+            monitoringService.debug('Files controller method call requested', { 
+                methodName,
+                params: params.map(p => typeof p === 'object' ? 'object' : p),
+                timestamp: new Date().toISOString(),
+                source: `files-controller.${methodName}`
+            }, 'files');
+        }
         
         let result;
         try {
-            monitoringService.debug(`Attempting to call ${methodName} with real data`, {
-                timestamp: new Date().toISOString()
-            }, 'files-api');
+            if (process.env.NODE_ENV === 'development') {
+                monitoringService.debug(`Attempting to call ${methodName} with real data`, {
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
             
             if (typeof filesModule[methodName] === 'function') {
                 result = await filesModule[methodName](...params);
-                monitoringService.debug(`Successfully executed ${methodName} with real data`, {
-                    timestamp: new Date().toISOString()
-                }, 'files-api');
+                if (process.env.NODE_ENV === 'development') {
+                    monitoringService.debug(`Successfully executed ${methodName} with real data`, {
+                        timestamp: new Date().toISOString()
+                    }, 'files');
+                }
             } else if (typeof filesModule.handleIntent === 'function') {
-                monitoringService.debug(`Falling back to handleIntent for ${methodName}`, {
-                    timestamp: new Date().toISOString()
-                }, 'files-api');
+                if (process.env.NODE_ENV === 'development') {
+                    monitoringService.debug(`Falling back to handleIntent for ${methodName}`, {
+                        timestamp: new Date().toISOString()
+                    }, 'files');
+                }
                 
                 const intentResult = await filesModule.handleIntent(methodName, params[0], { req });
                 result = intentResult && intentResult.items ? intentResult.items : 
                         intentResult && intentResult.file ? intentResult.file : intentResult;
                         
-                monitoringService.debug(`Executed ${methodName} via handleIntent`, {
-                    timestamp: new Date().toISOString()
-                }, 'files-api');
+                if (process.env.NODE_ENV === 'development') {
+                    monitoringService.debug(`Executed ${methodName} via handleIntent`, {
+                        timestamp: new Date().toISOString()
+                    }, 'files');
+                }
             } else {
                 throw new Error(`No files module method available for ${methodName}`);
             }
@@ -69,7 +79,7 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                 error: moduleError.message,
                 stack: moduleError.stack,
                 timestamp: new Date().toISOString()
-            }, 'files-api');
+            }, 'files');
             
             // Track failure metrics
             monitoringService.trackMetric(`files_controller_${methodName}_failure`, executionTime, {
@@ -85,19 +95,19 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                 // Log fallback to mock data in development mode
                 monitoringService.warn(`Falling back to mock data for ${methodName} (development mode)`, {
                     timestamp: new Date().toISOString()
-                }, 'files-api');
+                }, 'files');
                 
                 result = mockGenerator();
                 
                 monitoringService.debug(`Generated mock data for ${methodName}`, {
                     timestamp: new Date().toISOString()
-                }, 'files-api');
+                }, 'files');
             } else {
                 // In production or when mock data is disabled, create a standardized error
-                const mcpError = errorService.createError(
-                    errorService.CATEGORIES.GRAPH,
+                const mcpError = ErrorService.createError(
+                    ErrorService.CATEGORIES.GRAPH,
                     `Failed to execute ${methodName}: ${moduleError.message}`,
-                    errorService.SEVERITIES.ERROR,
+                    ErrorService.SEVERITIES.ERROR,
                     {
                         method: methodName,
                         params: params.map(p => typeof p === 'object' ? 'object' : p),
@@ -125,13 +135,15 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
         // Start tracking execution time
         const startTime = Date.now();
         
-        // Log the request
-        monitoringService.debug('Files listing requested', { 
-            parentId: req.query.parentId || 'root',
-            timestamp: new Date().toISOString(),
-            source: 'files-controller.listFiles',
-            requestId: req.id
-        }, 'files-api');
+        // Log the request (only in development)
+        if (process.env.NODE_ENV === 'development') {
+            monitoringService.debug('Files listing requested', { 
+                parentId: req.query.parentId || 'root',
+                timestamp: new Date().toISOString(),
+                source: 'files-controller.listFiles',
+                requestId: req.id
+            }, 'files');
+        }
         
         try {
             // Use the helper function to get files
@@ -178,7 +190,7 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                 parentId: req.query.parentId || 'root',
                 executionTimeMs: executionTime,
                 timestamp: new Date().toISOString()
-            }, 'files-api');
+            }, 'files');
             
             res.json(files);
         } catch (err) {
@@ -186,10 +198,10 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
             const executionTime = Date.now() - startTime;
             
             // Create standardized error
-            const mcpError = errorService.createError(
-                'api', 
+            const mcpError = ErrorService.createError(
+                ErrorService.CATEGORIES.API, 
                 `Files listing API error: ${err.message}`, 
-                'error', 
+                ErrorService.SEVERITIES.ERROR, 
                 { 
                     parentId: req.query.parentId || 'root',
                     stack: err.stack,
@@ -219,16 +231,16 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
         try {
             // Validate input
             const schema = Joi.object({
-                name: Joi.string().min(1).required(),
-                content: Joi.string().min(1).required()
+                name: Joi.string().min(1).max(255).pattern(/^[^<>:"/\\|?*]+$/).required(),
+                content: Joi.string().min(1).max(10485760).required() // 10MB limit
             });
             
             const { error, value } = schema.validate(req.body);
             if (error) {
-                const mcpError = errorService.createError(
-                    'api',
+                const mcpError = ErrorService.createError(
+                    ErrorService.CATEGORIES.API,
                     'Invalid request',
-                    'warn',
+                    ErrorService.SEVERITIES.WARNING,
                     { 
                         timestamp: new Date().toISOString(),
                         validationError: 'invalid_request',
@@ -239,14 +251,16 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                 return res.status(400).json({ error: 'Invalid request', details: error.details });
             }
             
-            // Log the request
-            monitoringService.debug('File upload requested', { 
-                fileName: value.name,
-                fileSize: value.content.length,
-                timestamp: new Date().toISOString(),
-                source: 'files-controller.uploadFile',
-                requestId: req.id
-            }, 'files-api');
+            // Log the request (only in development)
+            if (process.env.NODE_ENV === 'development') {
+                monitoringService.debug('File upload requested', { 
+                    fileName: value.name,
+                    fileSize: value.content.length,
+                    timestamp: new Date().toISOString(),
+                    source: 'files-controller.uploadFile',
+                    requestId: req.id
+                }, 'files');
+            }
             
             // Try to upload the file using the module, or return mock data if it fails
             const result = await callModuleWithFallback(
@@ -283,7 +297,7 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                 fileId: result.id,
                 executionTimeMs: executionTime,
                 timestamp: new Date().toISOString()
-            }, 'files-api');
+            }, 'files');
             
             res.json(result);
         } catch (err) {
@@ -291,10 +305,10 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
             const executionTime = Date.now() - startTime;
             
             // Create standardized error
-            const mcpError = errorService.createError(
-                'api', 
+            const mcpError = ErrorService.createError(
+                ErrorService.CATEGORIES.API, 
                 `File upload API error: ${err.message}`, 
-                'error', 
+                ErrorService.SEVERITIES.ERROR, 
                 { 
                     fileName: req.body?.name,
                     fileSize: req.body?.content?.length,
@@ -326,10 +340,10 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
         try {
             // Validate input
             if (!req.query.q) {
-                const err = errorService.createError(
-                    'api',
+                const err = ErrorService.createError(
+                    ErrorService.CATEGORIES.API,
                     'Search query is required',
-                    'warn',
+                    ErrorService.SEVERITIES.WARNING,
                     { 
                         timestamp: new Date().toISOString(),
                         validationError: 'missing_query',
@@ -342,13 +356,15 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
             
             const query = req.query.q;
             
-            // Log the request
-            monitoringService.debug('Files search requested', { 
-                query,
-                timestamp: new Date().toISOString(),
-                source: 'files-controller.searchFiles',
-                requestId: req.id
-            }, 'files-api');
+            // Log the request (only in development)
+            if (process.env.NODE_ENV === 'development') {
+                monitoringService.debug('Files search requested', { 
+                    query,
+                    timestamp: new Date().toISOString(),
+                    source: 'files-controller.searchFiles',
+                    requestId: req.id
+                }, 'files');
+            }
             
             // Use the helper function to search files
             const files = await callModuleWithFallback(
@@ -394,7 +410,7 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                 queryLength: query.length,
                 executionTimeMs: executionTime,
                 timestamp: new Date().toISOString()
-            }, 'files-api');
+            }, 'files');
             
             res.json(files);
         } catch (err) {
@@ -402,10 +418,10 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
             const executionTime = Date.now() - startTime;
             
             // Create standardized error
-            const mcpError = errorService.createError(
-                'api', 
+            const mcpError = ErrorService.createError(
+                ErrorService.CATEGORIES.API, 
                 `Files search API error: ${err.message}`, 
-                'error', 
+                ErrorService.SEVERITIES.ERROR, 
                 { 
                     query: req.query.q,
                     stack: err.stack,
@@ -434,10 +450,10 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
         
         try {
             if (!req.query.id) {
-                const err = errorService.createError(
-                    'api',
+                const err = ErrorService.createError(
+                    ErrorService.CATEGORIES.API,
                     'File ID is required for download',
-                    'warn',
+                    ErrorService.SEVERITIES.WARNING,
                     { 
                         timestamp: new Date().toISOString(),
                         validationError: 'missing_file_id',
@@ -450,13 +466,15 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
             
             const fileId = req.query.id;
             
-            // Log the request
-            monitoringService.debug('File download requested', { 
-                fileId,
-                timestamp: new Date().toISOString(),
-                source: 'files-controller.downloadFile',
-                requestId: req.id
-            }, 'files-api');
+            // Log the request (only in development)
+            if (process.env.NODE_ENV === 'development') {
+                monitoringService.debug('File download requested', { 
+                    fileId,
+                    timestamp: new Date().toISOString(),
+                    source: 'files-controller.downloadFile',
+                    requestId: req.id
+                }, 'files');
+            }
             
             // Try to download the file from the module, or return mock data if it fails
             const fileContent = await callModuleWithFallback(
@@ -485,7 +503,7 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                 contentSize: fileContent ? fileContent.length : 0,
                 executionTimeMs: executionTime,
                 timestamp: new Date().toISOString()
-            }, 'files-api');
+            }, 'files');
             
             // For MCP adapter compatibility, return a JSON response with base64-encoded file content
             // instead of sending the raw binary data directly
@@ -502,10 +520,10 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
             const executionTime = Date.now() - startTime;
             
             // Create standardized error
-            const mcpError = errorService.createError(
-                'api', 
+            const mcpError = ErrorService.createError(
+                ErrorService.CATEGORIES.API, 
                 `File download API error: ${err.message}`, 
-                'error', 
+                ErrorService.SEVERITIES.ERROR, 
                 { 
                     fileId: req.query.id,
                     stack: err.stack,
@@ -534,10 +552,10 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
         
         try {
             if (!req.query.id) {
-                const err = errorService.createError(
-                    'api',
+                const err = ErrorService.createError(
+                    ErrorService.CATEGORIES.API,
                     'File ID is required',
-                    'warn',
+                    ErrorService.SEVERITIES.WARNING,
                     { 
                         timestamp: new Date().toISOString(),
                         validationError: 'missing_file_id',
@@ -550,13 +568,13 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
             
             const fileId = req.query.id;
             
-            // Log the request
+            // Log the request (only in development)
             monitoringService.debug('File metadata requested', { 
                 fileId,
                 timestamp: new Date().toISOString(),
                 source: 'files-controller.getFileMetadata',
                 requestId: req.id
-            }, 'files-api');
+            }, 'files');
             
             // Try to get file metadata from the module, or return mock data if it fails
             const metadata = await callModuleWithFallback(
@@ -590,7 +608,7 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                 fileId,
                 executionTimeMs: executionTime,
                 timestamp: new Date().toISOString()
-            }, 'files-api');
+            }, 'files');
             
             res.json(metadata);
         } catch (err) {
@@ -598,10 +616,10 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
             const executionTime = Date.now() - startTime;
             
             // Create standardized error
-            const mcpError = errorService.createError(
-                'api', 
+            const mcpError = ErrorService.createError(
+                ErrorService.CATEGORIES.API, 
                 `File metadata API error: ${err.message}`, 
-                'error', 
+                ErrorService.SEVERITIES.ERROR, 
                 { 
                     fileId: req.query.id,
                     stack: err.stack,
@@ -631,10 +649,10 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
         
         try {
             if (!req.query.id) {
-                const err = errorService.createError(
-                    'api',
+                const err = ErrorService.createError(
+                    ErrorService.CATEGORIES.API,
                     'File ID is required',
-                    'warn',
+                    ErrorService.SEVERITIES.WARNING,
                     { 
                         timestamp: new Date().toISOString(),
                         validationError: 'missing_file_id',
@@ -647,13 +665,13 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
             
             const fileId = req.query.id;
             
-            // Log the request
+            // Log the request (only in development)
             monitoringService.debug('File content requested', { 
                 fileId,
                 timestamp: new Date().toISOString(),
                 source: 'files-controller.getFileContent',
                 requestId: req.id
-            }, 'files-api');
+            }, 'files');
             
             // Try to get file content from the module, or return mock data if it fails
             const fileContent = await callModuleWithFallback(
@@ -683,7 +701,7 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                 fileId,
                 executionTimeMs: executionTime,
                 timestamp: new Date().toISOString()
-            }, 'files-api');
+            }, 'files');
             
             // Set the appropriate content type header if returning raw content
             if (req.query.raw === 'true' && fileContent && fileContent.contentType) {
@@ -703,10 +721,10 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
             const executionTime = Date.now() - startTime;
             
             // Create standardized error
-            const mcpError = errorService.createError(
-                'api', 
+            const mcpError = ErrorService.createError(
+                ErrorService.CATEGORIES.API, 
                 `File content API error: ${err.message}`, 
-                'error', 
+                ErrorService.SEVERITIES.ERROR, 
                 { 
                     fileId: req.query.id,
                     stack: err.stack,
@@ -735,16 +753,16 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
         
         try {
             const schema = Joi.object({
-                id: Joi.string().required(),
-                content: Joi.required()
+                id: Joi.string().min(1).max(255).required(),
+                content: Joi.string().min(1).max(10485760).required() // 10MB limit
             });
             
             const { error, value } = schema.validate(req.body);
             if (error) {
-                const mcpError = errorService.createError(
-                    'api',
+                const mcpError = ErrorService.createError(
+                    ErrorService.CATEGORIES.API,
                     'Invalid request',
-                    'warn',
+                    ErrorService.SEVERITIES.WARNING,
                     { 
                         timestamp: new Date().toISOString(),
                         validationError: 'invalid_request',
@@ -755,13 +773,13 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                 return res.status(400).json({ error: 'Invalid request', details: error.details });
             }
             
-            // Log the request
+            // Log the request (only in development)
             monitoringService.debug('Set file content requested', { 
                 fileId: value.id,
                 timestamp: new Date().toISOString(),
                 source: 'files-controller.setFileContent',
                 requestId: req.id
-            }, 'files-api');
+            }, 'files');
             
             // Try to set file content using the module, or return mock data if it fails
             const result = await callModuleWithFallback(
@@ -794,7 +812,7 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                 fileId: value.id,
                 executionTimeMs: executionTime,
                 timestamp: new Date().toISOString()
-            }, 'files-api');
+            }, 'files');
             
             res.json(result);
         } catch (err) {
@@ -802,10 +820,10 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
             const executionTime = Date.now() - startTime;
             
             // Create standardized error
-            const mcpError = errorService.createError(
-                'api', 
+            const mcpError = ErrorService.createError(
+                ErrorService.CATEGORIES.API, 
                 `Set file content API error: ${err.message}`, 
-                'error', 
+                ErrorService.SEVERITIES.ERROR, 
                 { 
                     fileId: req.body?.id,
                     stack: err.stack,
@@ -834,16 +852,16 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
         
         try {
             const schema = Joi.object({
-                id: Joi.string().required(),
-                content: Joi.required()
+                id: Joi.string().min(1).max(255).required(),
+                content: Joi.string().min(1).max(10485760).required() // 10MB limit
             });
             
             const { error, value } = schema.validate(req.body);
             if (error) {
-                const mcpError = errorService.createError(
-                    'api',
+                const mcpError = ErrorService.createError(
+                    ErrorService.CATEGORIES.API,
                     'Invalid request',
-                    'warn',
+                    ErrorService.SEVERITIES.WARNING,
                     { 
                         timestamp: new Date().toISOString(),
                         validationError: 'invalid_request',
@@ -854,13 +872,13 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                 return res.status(400).json({ error: 'Invalid request', details: error.details });
             }
             
-            // Log the request
+            // Log the request (only in development)
             monitoringService.debug('Update file content requested', { 
                 fileId: value.id,
                 timestamp: new Date().toISOString(),
                 source: 'files-controller.updateFileContent',
                 requestId: req.id
-            }, 'files-api');
+            }, 'files');
             
             // Try to update file content using the module, or return mock data if it fails
             const result = await callModuleWithFallback(
@@ -893,7 +911,7 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                 fileId: value.id,
                 executionTimeMs: executionTime,
                 timestamp: new Date().toISOString()
-            }, 'files-api');
+            }, 'files');
             
             res.json(result);
         } catch (err) {
@@ -901,10 +919,10 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
             const executionTime = Date.now() - startTime;
             
             // Create standardized error
-            const mcpError = errorService.createError(
-                'api', 
+            const mcpError = ErrorService.createError(
+                ErrorService.CATEGORIES.API, 
                 `Update file content API error: ${err.message}`, 
-                'error', 
+                ErrorService.SEVERITIES.ERROR, 
                 { 
                     fileId: req.body?.id,
                     stack: err.stack,
@@ -931,26 +949,26 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
         // Start tracking execution time
         const startTime = Date.now();
         
-        // Log the request
+        // Log the request (only in development)
         monitoringService.debug('Files sharing link creation requested', { 
             timestamp: new Date().toISOString(),
             source: 'files-controller.createSharingLink',
             requestId: req.id
-        }, 'files-api');
+        }, 'files');
         
         try {
             const schema = Joi.object({
-                id: Joi.string().required(),
+                id: Joi.string().min(1).max(255).required(),
                 type: Joi.string().valid('view', 'edit').default('view')
             });
             
             const { error, value } = schema.validate(req.body);
             if (error) {
                 // Create validation error
-                const validationError = errorService.createError(
-                    'api',
+                const validationError = ErrorService.createError(
+                    ErrorService.CATEGORIES.API,
                     'Invalid sharing link request',
-                    'error',
+                    ErrorService.SEVERITIES.ERROR,
                     {
                         details: error.details,
                         timestamp: new Date().toISOString()
@@ -995,7 +1013,7 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                 type: value.type,
                 executionTimeMs: executionTime,
                 timestamp: new Date().toISOString()
-            }, 'files-api');
+            }, 'files');
             
             res.json(result);
         } catch (err) {
@@ -1003,10 +1021,10 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
             const executionTime = Date.now() - startTime;
             
             // Create standardized error
-            const mcpError = errorService.createError(
-                'api', 
+            const mcpError = ErrorService.createError(
+                ErrorService.CATEGORIES.API, 
                 `Files sharing link creation error: ${err.message}`, 
-                'error', 
+                ErrorService.SEVERITIES.ERROR, 
                 { 
                     fileId: req.body?.id,
                     type: req.body?.type,
@@ -1034,21 +1052,21 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
         // Start tracking execution time
         const startTime = Date.now();
         
-        // Log the request
+        // Log the request (only in development)
         monitoringService.debug('Files sharing links requested', { 
             fileId: req.query.id || 'missing',
             timestamp: new Date().toISOString(),
             source: 'files-controller.getSharingLinks',
             requestId: req.id
-        }, 'files-api');
+        }, 'files');
         
         try {
             if (!req.query.id) {
                 // Create validation error
-                const validationError = errorService.createError(
-                    'api',
+                const validationError = ErrorService.createError(
+                    ErrorService.CATEGORIES.API,
                     'Missing file ID for sharing links request',
-                    'error',
+                    ErrorService.SEVERITIES.ERROR,
                     {
                         timestamp: new Date().toISOString(),
                         validationError: 'missing_file_id'
@@ -1103,7 +1121,7 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                 linkCount: Array.isArray(links) ? links.length : 0,
                 executionTimeMs: executionTime,
                 timestamp: new Date().toISOString()
-            }, 'files-api');
+            }, 'files');
             
             res.json(links);
         } catch (err) {
@@ -1111,10 +1129,10 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
             const executionTime = Date.now() - startTime;
             
             // Create standardized error
-            const mcpError = errorService.createError(
-                'api', 
+            const mcpError = ErrorService.createError(
+                ErrorService.CATEGORIES.API, 
                 `Files sharing links retrieval error: ${err.message}`, 
-                'error', 
+                ErrorService.SEVERITIES.ERROR, 
                 { 
                     fileId: req.query.id,
                     stack: err.stack,
@@ -1142,26 +1160,26 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
         // Start tracking execution time
         const startTime = Date.now();
         
-        // Log the request
+        // Log the request (only in development)
         monitoringService.debug('Files sharing permission removal requested', { 
             timestamp: new Date().toISOString(),
             source: 'files-controller.removeSharingPermission',
             requestId: req.id
-        }, 'files-api');
+        }, 'files');
         
         try {
             const schema = Joi.object({
-                fileId: Joi.string().required(),
-                permissionId: Joi.string().required()
+                fileId: Joi.string().min(1).max(255).required(),
+                permissionId: Joi.string().min(1).max(255).required()
             });
             
             const { error, value } = schema.validate(req.body);
             if (error) {
                 // Create validation error
-                const validationError = errorService.createError(
-                    'api',
+                const validationError = ErrorService.createError(
+                    ErrorService.CATEGORIES.API,
                     'Invalid sharing permission removal request',
-                    'error',
+                    ErrorService.SEVERITIES.ERROR,
                     {
                         details: error.details,
                         timestamp: new Date().toISOString()
@@ -1202,7 +1220,7 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                 permissionId: value.permissionId,
                 executionTimeMs: executionTime,
                 timestamp: new Date().toISOString()
-            }, 'files-api');
+            }, 'files');
             
             res.json(result);
         } catch (err) {
@@ -1210,10 +1228,10 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
             const executionTime = Date.now() - startTime;
             
             // Create standardized error
-            const mcpError = errorService.createError(
-                'api', 
+            const mcpError = ErrorService.createError(
+                ErrorService.CATEGORIES.API, 
                 `Files sharing permission removal error: ${err.message}`, 
-                'error', 
+                ErrorService.SEVERITIES.ERROR, 
                 { 
                     fileId: req.body?.fileId,
                     permissionId: req.body?.permissionId,

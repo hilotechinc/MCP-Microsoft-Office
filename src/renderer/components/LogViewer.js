@@ -666,10 +666,10 @@ export class LogViewer {
             logEntry.appendChild(messageDiv);
             
             // Add context data if available
-            if (log.data && Object.keys(log.data).length > 0) {
+            if (log.context && Object.keys(log.context).length > 0) {
                 const contextDiv = document.createElement('div');
                 contextDiv.className = 'log-context';
-                contextDiv.innerHTML = this.formatContext(log.data);
+                contextDiv.innerHTML = this.formatContext(log.context);
                 logEntry.appendChild(contextDiv);
             }
             
@@ -707,17 +707,17 @@ export class LogViewer {
             const level = log.level || '';
             const message = log.message || '';
             
-            // Create a more comprehensive key that includes data fields if available
+            // Create a more comprehensive key that includes context fields if available
             let dataString = '';
-            if (log.data) {
+            if (log.context) {
                 try {
                     // Only include certain keys that are useful for deduplication
                     const relevantKeys = ['error', 'errorCode', 'statusCode', 'requestId', 'path', 'method'];
                     const relevantData = {};
                     
                     for (const key of relevantKeys) {
-                        if (log.data[key] !== undefined && typeof log.data[key] !== 'object') {
-                            relevantData[key] = log.data[key];
+                        if (log.context[key] !== undefined && typeof log.context[key] !== 'object') {
+                            relevantData[key] = log.context[key];
                         }
                     }
                     
@@ -894,14 +894,14 @@ export class LogViewer {
                     // Include logs from MCP adapter related to calendar
                     if ((log.category === 'adapter' || log.category === 'calendar-adapter') && 
                         ((log.message || '').toLowerCase().includes('calendar') || 
-                         JSON.stringify(log.data || {}).toLowerCase().includes('calendar'))) {
+                         JSON.stringify(log.context || {}).toLowerCase().includes('calendar'))) {
                         return true;
                     }
                     
                     // Include Microsoft Graph API calls
                     if (log.category === 'graph' && 
                         ((log.message || '').toLowerCase().includes('calendar') || 
-                         JSON.stringify(log.data || {}).toLowerCase().includes('calendar'))) {
+                         JSON.stringify(log.context || {}).toLowerCase().includes('calendar'))) {
                         return true;
                     }
                     
@@ -958,10 +958,10 @@ export class LogViewer {
                     logEntry.appendChild(messageDiv);
                     
                     // Add context data if available
-                    if (log.data && Object.keys(log.data).length > 0) {
+                    if (log.context && Object.keys(log.context).length > 0) {
                         const contextDiv = document.createElement('div');
                         contextDiv.className = 'log-context';
-                        contextDiv.innerHTML = this.formatContext(log.data);
+                        contextDiv.innerHTML = this.formatContext(log.context);
                         logEntry.appendChild(contextDiv);
                     }
                     

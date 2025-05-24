@@ -3,7 +3,7 @@
  * Logs detailed information about API requests and their flow through the system.
  */
 
-const monitoringService = require('../../core/monitoring-service.cjs');
+const MonitoringService = require('../../core/monitoring-service.cjs');
 const { v4: uuidv4 } = require('uuid');
 
 /**
@@ -33,12 +33,14 @@ function createRequestLogger(component) {
             bodyKeys: req.body ? Object.keys(req.body) : []
         };
         
-        // Log the request entry into this component
-        monitoringService.info(
-            `Request entered ${component}`,
-            context,
-            component
-        );
+        // Log the request entry into this component (only in development)
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.info(
+                `Request entered ${component}`,
+                context,
+                component
+            );
+        }
         
         // Capture the start time
         const startTime = process.hrtime();
@@ -55,17 +57,19 @@ function createRequestLogger(component) {
             const hrTime = process.hrtime(startTime);
             const processingTimeMs = hrTime[0] * 1000 + hrTime[1] / 1000000;
             
-            // Log the response
-            monitoringService.info(
-                `Request exiting ${component} - ${res.statusCode}`,
-                {
-                    ...context,
-                    statusCode: res.statusCode,
-                    processingTimeMs: processingTimeMs.toFixed(2),
-                    contentType: res.getHeader('content-type')
-                },
-                component
-            );
+            // Log the response (only in development)
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.info(
+                    `Request exiting ${component} - ${res.statusCode}`,
+                    {
+                        ...context,
+                        statusCode: res.statusCode,
+                        processingTimeMs: processingTimeMs.toFixed(2),
+                        contentType: res.getHeader('content-type')
+                    },
+                    component
+                );
+            }
             
             // Call the original end method
             return originalEnd.call(this, chunk, encoding);

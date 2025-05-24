@@ -6,6 +6,8 @@ const express = require('express');
 const router = express.Router();
 const msal = require('../auth/msal-service.cjs');
 const llm = require('../llm/llm-service.cjs');
+const MonitoringService = require('../core/monitoring-service.cjs');
+const ErrorService = require('../core/error-service.cjs');
 
 /**
  * GET /api/status
@@ -25,6 +27,16 @@ router.get('/', async (req, res) => {
             }
         });
     } catch (err) {
+        const mcpError = ErrorService.createError(
+            ErrorService.CATEGORIES.API,
+            `Status check failed: ${err.message}`,
+            ErrorService.SEVERITIES.ERROR,
+            {
+                stack: err.stack,
+                timestamp: new Date().toISOString()
+            }
+        );
+        MonitoringService.logError(mcpError);
         res.status(500).json({ error: 'Status check failed', details: err.message });
     }
 });
@@ -34,9 +46,20 @@ router.get('/', async (req, res) => {
 router.post('/auth/login', async (req, res) => {
     try {
         await msal.login(req, res);
-        console.log('User logged in successfully');
+        MonitoringService.info('User logged in successfully', {
+            timestamp: new Date().toISOString()
+        }, 'auth');
     } catch (error) {
-        console.error('Login failed:', error);
+        const mcpError = ErrorService.createError(
+            ErrorService.CATEGORIES.AUTH,
+            `Login failed: ${error.message}`,
+            ErrorService.SEVERITIES.ERROR,
+            {
+                stack: error.stack,
+                timestamp: new Date().toISOString()
+            }
+        );
+        MonitoringService.logError(mcpError);
         res.status(500).json({ error: 'Login failed', message: error.message });
     }
 });

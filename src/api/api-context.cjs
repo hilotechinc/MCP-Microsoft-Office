@@ -17,13 +17,13 @@ const filesService = require('../graph/files-service.cjs');
 const peopleService = require('../graph/people-service.cjs');
 
 // Import error and monitoring services
-const errorService = require('../core/error-service.cjs');
-const monitoringService = require('../core/monitoring-service.cjs');
+const ErrorService = require('../core/error-service.cjs');
+const MonitoringService = require('../core/monitoring-service.cjs');
 
 // Initialize modules with their dependencies
-const mailModule = MailModule.init({ graphService: mailService, cacheService, eventService, errorService, monitoringService });
-const calendarModule = CalendarModule.init({ graphService: calendarService, cacheService, eventService, errorService, monitoringService });
-const filesModule = FilesModule.init({ graphService: filesService, cacheService, errorService, monitoringService });
+const mailModule = MailModule.init({ graphService: mailService, cacheService, eventService, errorService: ErrorService, monitoringService: MonitoringService });
+const calendarModule = CalendarModule.init({ graphService: calendarService, cacheService, eventService, errorService: ErrorService, monitoringService: MonitoringService });
+const filesModule = FilesModule.init({ graphService: filesService, cacheService, errorService: ErrorService, monitoringService: MonitoringService });
 const peopleModule = PeopleModule.init({ graphService: peopleService, cacheService });
 
 // Register modules
@@ -117,5 +117,6 @@ module.exports = {
   toolsService,
   nluAgent,
   contextService,
-  errorService
+  errorService: ErrorService,
+  monitoringService: MonitoringService
 };

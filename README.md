@@ -305,35 +305,233 @@ npm run test:integration
 - **Centralized Logging**: All components log to a central service with consistent formatting
 - **Electron Integration**: Proper desktop application experience with tray and menu support
 
-## Logging System
+## Event-Based Logging System
 
-MCP Desktop uses a comprehensive logging system based on Winston with the following features:
+MCP Desktop uses a sophisticated event-based logging architecture designed for transparency in development and minimal noise in production. The system was rebuilt to eliminate memory leaks and provide comprehensive monitoring capabilities.
 
-- **Centralized Logging**: All logs are written to `logs/mcp.log`
-- **Console Output**: Formatted logs appear in the console during development
-- **Log Categories**: Each log entry includes a category (e.g., 'api', 'graph', 'auth')
-- **Log Levels**: Support for error, warn, info, and debug levels
-- **UI Integration**: View logs directly in the application UI
-- **Event-based Architecture**: Components can subscribe to log events
+### Architecture Overview
 
-Log format in the console:
+The logging system consists of three core components:
+
+1. **Event Service** (`src/core/event-service.cjs`): Pub/sub event system for decoupled communication
+2. **Monitoring Service** (`src/core/monitoring-service.cjs`): Central logging with circular buffer for memory safety
+3. **Error Service** (`src/core/error-service.cjs`): Standardized error creation and emission
+
+### Key Features
+
+- **Event-Based Architecture**: Components emit log events instead of calling monitoring directly
+- **Memory Safety**: Circular buffer (100 entries max) prevents unbounded memory growth
+- **Development Transparency**: Full logging in `npm run dev` mode for 100% visibility
+- **Production Minimal**: Only errors logged in production (`npm run`) for end-user experience
+- **Memory Monitoring**: Active monitoring with 85% warning, 95% emergency thresholds
+- **Error Throttling**: Max 10 errors/second/category prevents log storms
+- **Trace Correlation**: UUID-based tracing for request correlation
+- **Auto-Recovery**: Emergency logging disable at critical memory usage
+
+### Environment-Based Logging Behavior
+
+#### Development Mode (`npm run dev`)
+- **Full Transparency**: All log levels (debug, info, warn, error) are captured and displayed
+- **Console Output**: Formatted logs with category prefixes: `[MCP CATEGORY] Message`
+- **File Logging**: Detailed JSON logs written to `logs/mcp{date}.log`
+- **UI Integration**: Real-time log viewer in the application interface
+- **Memory Warnings**: Visible memory usage warnings and garbage collection triggers
+
+#### Production Mode (`npm run`)
+- **Errors Only**: Only error-level logs are captured and stored
+- **Minimal Console**: No verbose output to avoid cluttering end-user experience
+- **Essential File Logging**: Critical errors still logged to file for debugging
+- **Silent Operation**: Normal operations produce no console output
+
+### Component Registration and Logging
+
+All components in the system self-register with the monitoring system using consistent patterns:
+
+#### API Controllers (`src/api/controllers/`)
+
+Controllers import monitoring and error services directly:
+
+```javascript
+const MonitoringService = require('../../core/monitoring-service.cjs');
+const ErrorService = require('../../core/error-service.cjs');
+
+// Request logging
+MonitoringService.info(`Processing ${req.method} ${req.path}`, {
+    requestId: req.requestId,
+    method: req.method,
+    path: req.path,
+    query: req.query,
+    ip: req.ip
+}, 'api');
+
+// Error handling
+const error = ErrorService.createError(
+    'api', 
+    'Calendar validation error', 
+    'warning', 
+    { details: validationError.details, endpoint: '/api/v1/calendar' }
+);
 ```
-[MCP CATEGORY] Message
+
+**Categories used**: `api`, `api-request`, `validation`
+
+#### Functional Modules (`src/modules/`)
+
+Modules register capabilities and log their operations:
+
+```javascript
+// Module initialization
+MonitoringService.info('CalendarModule initialized successfully', {
+    capabilities: CALENDAR_CAPABILITIES,
+    moduleId: 'calendar'
+}, 'calendar');
+
+// Intent handling
+MonitoringService.debug(`Handling intent: ${intent}`, {
+    intent,
+    parameters: intentParams,
+    traceId
+}, 'calendar');
+
+// Error scenarios
+MonitoringService.error('Failed to get calendars', {
+    error: error.message,
+    traceId,
+    capability: 'getCalendars'
+}, 'calendar');
 ```
 
-Log format in the file (JSON):
+**Categories used**: `calendar`, `mail`, `files`, `people`, `module`, `intent`
+
+#### Graph Services (`src/graph/`)
+
+Graph services log Microsoft Graph API interactions:
+
+```javascript
+// API requests
+MonitoringService.debug('Making Graph API request', {
+    method: 'GET',
+    endpoint: '/me/events',
+    traceId
+}, 'graph');
+
+// API responses
+MonitoringService.info('Graph API response received', {
+    statusCode: response.status,
+    responseTime: `${Date.now() - startTime}ms`,
+    traceId
+}, 'graph');
+
+// Error handling
+MonitoringService.error('Graph API request failed', {
+    statusCode: error.code,
+    message: error.message,
+    endpoint,
+    traceId
+}, 'graph');
+```
+
+**Categories used**: `graph`, `auth`, `normalizer`
+
+#### Core Services (`src/core/`)
+
+Core services handle fundamental operations:
+
+```javascript
+// Authentication events
+MonitoringService.info('MSAL token acquired', {
+    scopes: tokenResponse.scopes,
+    expiresIn: tokenResponse.expiresOn,
+    account: tokenResponse.account?.username
+}, 'auth');
+
+// Storage operations
+MonitoringService.debug('Cache entry updated', {
+    key: cacheKey,
+    ttl: ttlSeconds,
+    size: JSON.stringify(data).length
+}, 'storage');
+```
+
+**Categories used**: `auth`, `storage`, `cache`, `system`
+
+### Log Entry Structure
+
+Each log entry follows a standardized format:
+
 ```json
 {
-  "timestamp": "2025-01-01T12:00:00.000Z",
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "timestamp": "2025-01-24T12:00:00.000Z",
   "level": "info",
-  "message": "Log message",
-  "category": "graph",
-  "context": { /* Additional data */ },
+  "category": "calendar",
+  "message": "Event created successfully",
+  "context": {
+    "eventId": "AAMkADA...",
+    "subject": "Team Meeting",
+    "attendeeCount": 5,
+    "traceId": "req_123456",
+    "duration": "45ms"
+  },
   "pid": 1234,
   "hostname": "computer-name",
   "version": "0.1.0"
 }
 ```
+
+### Memory Management
+
+The system includes sophisticated memory management:
+
+- **Circular Buffer**: Fixed 100-entry buffer prevents unbounded growth
+- **Memory Monitoring**: Checks every 30 seconds, warns at 85% usage
+- **Emergency Protection**: Disables logging at 95% memory usage
+- **Garbage Collection**: Forces GC when memory warnings occur
+- **Error Throttling**: Prevents log storms (10 errors/second/category max)
+
+### Event Flow
+
+1. **Component Action**: API controller, module, or service performs an operation
+2. **Log Creation**: Component calls monitoring service with appropriate level and category
+3. **Buffer Storage**: Log is added to circular buffer (replacing oldest if full)
+4. **File Writing**: Winston writes structured JSON to log file
+5. **Console Output**: Formatted console output (development only)
+6. **UI Update**: Real-time log viewer updates (if enabled)
+
+### Troubleshooting and Monitoring
+
+#### Viewing Logs
+
+- **Real-time UI**: Use the built-in log viewer in the application
+- **Log Files**: Check `logs/mcp{YYYYMMDD}.log` for historical data
+- **Console**: Run `npm run dev` for live console output
+- **Memory Usage**: Monitor for memory warnings in console
+
+#### Common Categories
+
+| Category | Purpose | Components |
+|----------|---------|------------|
+| `api` | HTTP request/response logging | Controllers |
+| `calendar` | Calendar operations | Calendar module, controller |
+| `mail` | Email operations | Mail module, controller |
+| `files` | File operations | Files module, controller |
+| `people` | People/contacts operations | People module, controller |
+| `graph` | Microsoft Graph API calls | Graph services |
+| `auth` | Authentication flows | MSAL service, auth service |
+| `module` | Module lifecycle events | Module registry |
+| `system` | System-level events | Core services |
+| `error` | Error creation and handling | Error service |
+
+#### Performance Monitoring
+
+The system automatically tracks:
+- Request duration and response times
+- Memory usage and garbage collection
+- API call success/failure rates
+- Error frequency and throttling
+- Cache hit/miss ratios
+
+This comprehensive logging system ensures complete transparency during development while maintaining a clean, minimal experience for end users.
 
 ## Contributing
 
