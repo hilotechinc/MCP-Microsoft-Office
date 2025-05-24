@@ -5,7 +5,7 @@ info:
   description: |
     Modular API for accessing Microsoft 365 mail, calendar, and files. Designed for LLM and agent integration.
 servers:
-  - url: http://localhost:3001/api/v1
+  - url: http://localhost:3000/api/v1
 paths:
   /query:
     post:
