@@ -1,11 +1,13 @@
 /**
  * @fileoverview init-modules - Initializes all discovered MCP modules with dependency injection.
  * Follows async, modular, and testable design. Aligned with phase1_architecture.md and MCP rules.
+ * Implements proper dependency injection to avoid circular dependencies.
  */
 
 const moduleRegistry = require('./module-registry');
 const MonitoringService = require('../core/monitoring-service.cjs');
 const ErrorService = require('../core/error-service.cjs');
+const StorageService = require('../core/storage-service.cjs');
 
 /**
  * Initializes all registered modules with provided dependencies/services.
@@ -19,10 +21,25 @@ const ErrorService = require('../core/error-service.cjs');
 async function initializeModules(services = {}) {
     const startTime = Date.now();
     
+    // Set up dependency injection between core services to avoid circular references
+    // This is critical to prevent infinite error loops
+    if (ErrorService && MonitoringService) {
+        // Set the logging service in the error service
+        ErrorService.setLoggingService(MonitoringService);
+    }
+    
+    // Ensure all core services are available in the services object
+    const enrichedServices = {
+        ...services,
+        errorService: ErrorService,
+        monitoringService: MonitoringService,
+        storageService: StorageService
+    };
+    
     // Log initialization start
     if (MonitoringService) {
         // Use helper function to redact sensitive information
-        const safeServicesInfo = redactSensitiveServiceInfo(services);
+        const safeServicesInfo = redactSensitiveServiceInfo(enrichedServices);
         
         MonitoringService.info('Starting module initialization process', { 
             moduleCount: moduleRegistry.getAllModules().length,
@@ -30,7 +47,7 @@ async function initializeModules(services = {}) {
         }, 'module');
     } else {
         // Use helper function to redact sensitive information for fallback logging
-        const safeServicesInfo = redactSensitiveServiceInfo(services);
+        const safeServicesInfo = redactSensitiveServiceInfo(enrichedServices);
         
         console.info('[MCP MODULE] Starting module initialization process', { 
             moduleCount: moduleRegistry.getAllModules().length,
@@ -51,26 +68,33 @@ async function initializeModules(services = {}) {
                     }, 'module');
                 }
                 
-                const instance = await mod.init(services);
+                // Use the enriched services object with proper dependency injection
+                const instance = await mod.init(enrichedServices);
                 
                 // Replace the module in the registry with the initialized instance
                 moduleRegistry.modules.set(mod.id, instance);
                 initialized.push(instance);
+                
+                // Generate a trace ID for this module initialization
+                const initTraceId = `module-init-${mod.id}-${Date.now()}`;
                 
                 // Log successful initialization
                 if (MonitoringService) {
                     MonitoringService.info('Module initialized successfully', { 
                         moduleId: mod.id, 
                         moduleName: mod.name,
-                        capabilities: Array.isArray(mod.capabilities) ? mod.capabilities.length : 0,
-                        timestamp: new Date().toISOString()
-                    }, 'module');
+                        capabilities: Array.isArray(instance.capabilities) ? instance.capabilities : []
+                    }, 'module', initTraceId);
                 } else {
                     console.info(`[MCP MODULE] Module initialized successfully: ${mod.id}`);
                 }
             } catch (error) {
-                // Handle module initialization errors
-                if (ErrorService) {
+                // Log initialization error but continue with other modules
+                if (ErrorService && MonitoringService) {
+                    // Generate a trace ID for this error
+                    const errorTraceId = `module-init-error-${mod.id}-${Date.now()}`;
+                    
+                    // Create standardized error
                     const mcpError = ErrorService.createError(
                         'module',
                         `Failed to initialize module: ${mod.id}`,
@@ -78,18 +102,14 @@ async function initializeModules(services = {}) {
                         { 
                             moduleId: mod.id, 
                             moduleName: mod.name,
-                            errorMessage: error.message,
-                            errorStack: error.stack,
-                            timestamp: new Date().toISOString()
-                        }
+                            error: error.message,
+                            stack: error.stack
+                        },
+                        errorTraceId
                     );
-                    if (MonitoringService) {
-                        MonitoringService.logError(mcpError);
-                    } else {
-                        console.error(`[MCP MODULE] Failed to initialize module: ${mod.id}`, {
-                            error: error.message
-                        });
-                    }
+                    
+                    // Log the error with the monitoring service
+                    MonitoringService.logError(mcpError);
                 } else {
                     console.error(`[MCP MODULE] Failed to initialize module: ${mod.id}`, {
                         error: error.message

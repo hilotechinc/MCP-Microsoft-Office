@@ -161,12 +161,29 @@ const HEALTH_CHECK_INTERVAL_MS = 60 * 1000; // Check every 60 seconds
  * @returns {Promise<object>} - API response
  */
 // TODO: [callApi] Implement circuit breaker pattern (e.g., using 'opossum') (HIGH)
-// TODO: [callApi] Refine retry logic (e.g., exponential backoff, specific status codes) (MEDIUM)
 // TODO: [callApi] Support PATCH/PUT; add retry + circuit breaker (HIGH) - Partially Implemented (PUT/PATCH support + Basic Retry added)
+// DONE: [callApi] Refine retry logic with exponential backoff and jitter
+
+/**
+ * Makes an HTTP request to the API server with exponential backoff retry logic
+ * @param {string} method - HTTP method (GET, POST, PUT, PATCH, DELETE)
+ * @param {string} path - API path to call
+ * @param {Object} data - Optional data to send in the request body
+ * @returns {Promise<Object>} - Parsed response data
+ */
 async function callApi(method, path, data = null) {
+    // Retry configuration
     const MAX_RETRIES = 3;
-    const RETRY_DELAY_MS = 100;
+    const BASE_DELAY_MS = 100;
+    const MAX_DELAY_MS = 3000;
+    const JITTER_FACTOR = 0.25; // 25% random jitter to prevent thundering herd
+    
+    // Track attempts and errors
     let lastError = null;
+    let attemptMetrics = [];
+    
+    // Start time for performance tracking
+    const startTime = Date.now();
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
@@ -240,18 +257,69 @@ async function callApi(method, path, data = null) {
                 req.end();
             });
         } catch (error) {
+            // Record attempt metrics for logging
+            const attemptDuration = Date.now() - startTime;
+            attemptMetrics.push({
+                attempt,
+                duration: attemptDuration,
+                error: error.message,
+                statusCode: error.statusCode || 'unknown'
+            });
+            
+            // Save the error for potential retries or final throw
             lastError = error;
+            
+            // Only retry if the error is marked as retryable and we haven't exceeded max retries
             if (error.isRetryable && attempt < MAX_RETRIES) {
-                logDebug(`[callApi] Attempt ${attempt} failed (${error.message}), retrying in ${RETRY_DELAY_MS * attempt}ms...`);
-                await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * attempt)); // Simple increasing delay
+                // Calculate exponential backoff with jitter
+                // Formula: min(maxDelay, baseDelay * 2^attempt) * (1 ± jitterFactor)
+                const exponentialDelay = Math.min(
+                    MAX_DELAY_MS,
+                    BASE_DELAY_MS * Math.pow(2, attempt - 1)
+                );
+                
+                // Add jitter to prevent thundering herd problem
+                const jitter = 1 - JITTER_FACTOR + (Math.random() * JITTER_FACTOR * 2);
+                const delay = Math.floor(exponentialDelay * jitter);
+                
+                // Log retry attempt with calculated delay
+                logDebug(`[callApi] Attempt ${attempt} failed (${error.message}), retrying in ${delay}ms...`);
+                
+                // Wait for the calculated delay before retrying
+                await new Promise(resolve => setTimeout(resolve, delay));
             } else {
-                logDebug(`[callApi] Failed after ${attempt} attempts: ${error.message}`);
-                throw lastError; // Throw the last encountered error
+                // Log failure details with metrics
+                const totalDuration = Date.now() - startTime;
+                logDebug(`[callApi] Failed after ${attempt} attempts: ${error.message}`, {
+                    method,
+                    path,
+                    attempts: attemptMetrics,
+                    totalDuration,
+                    retryable: !!error.isRetryable
+                });
+                
+                // Throw the last encountered error
+                throw lastError;
             }
         }
     }
     // This line should technically not be reached if MAX_RETRIES >= 1
-    throw lastError || new Error('callApi failed after all retries.');
+    // Calculate total duration for metrics
+    const totalDuration = Date.now() - startTime;
+    
+    // Log comprehensive error information
+    logDebug(`[callApi] Exhausted all ${MAX_RETRIES} retry attempts`, {
+        method,
+        path,
+        attempts: attemptMetrics,
+        totalDuration
+    });
+    
+    // Ensure we clean up any large objects before throwing
+    attemptMetrics = null;
+    
+    // Throw with detailed error information
+    throw lastError || new Error(`callApi failed after ${MAX_RETRIES} retries: ${path}`);
 }
 
 // Helper: log debug messages safely (never to stdout)

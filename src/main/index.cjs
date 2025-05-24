@@ -7,8 +7,24 @@ require('dotenv').config();
 const { app, BrowserWindow, dialog } = require('electron');
 const path = require('path');
 const { startCombinedServer } = require(path.join(__dirname, 'combined-server.cjs'));
+
+// Import core services
 const monitoringService = require('../core/monitoring-service.cjs');
 const errorService = require('../core/error-service.cjs');
+
+// Initialize core services with proper dependency injection
+// This must be done before using any of these services
+if (errorService && monitoringService) {
+    // Set up dependency injection between services
+    errorService.setLoggingService(monitoringService);
+    
+    // Initialize monitoring service if needed
+    if (typeof monitoringService.init === 'function') {
+        monitoringService.init();
+    }
+    
+    console.log('[Main Process] Core services initialized');
+}
 
 // Import IPC handlers
 const { initIpcHandlers } = require(path.join(__dirname, 'ipc-handlers.cjs'));

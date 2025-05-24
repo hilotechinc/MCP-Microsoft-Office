@@ -21,14 +21,17 @@ function setupMiddleware(expressApp) {
     // Middleware
     expressApp.use(cors());
     expressApp.use(bodyParser.json({ limit: '2mb' }));
-    // Configure morgan to skip logging for the /api/v1/logs endpoint
+    // Configure morgan to skip logging for all API endpoints to reduce log volume
     expressApp.use(morgan('dev', {
-        skip: (req, res) => req.originalUrl === '/api/v1/logs'
+        skip: (req, res) => req.originalUrl.startsWith('/api/')
     }));
 
-    // Request logging
+    // Request logging - skip API endpoints to reduce log volume
     expressApp.use((req, res, next) => {
-        monitoringService.info(`Request: ${req.method} ${req.url}`, { ip: req.ip });
+        // Skip logging API requests to reduce log volume and prevent memory issues
+        if (!req.originalUrl.startsWith('/api/')) {
+            monitoringService.info(`Request: ${req.method} ${req.url}`, { ip: req.ip });
+        }
         
         // IMPORTANT: Ensure API routes always return JSON
         if (req.url.startsWith('/api/v1/')) {

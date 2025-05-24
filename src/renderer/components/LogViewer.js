@@ -17,7 +17,7 @@ export class LogViewer {
         this.root = root;
         this.options = {
             apiEndpoint: options.apiEndpoint || '/api/v1/logs',
-            refreshInterval: options.refreshInterval || 5000,
+            refreshInterval: options.refreshInterval || 15000, // Increased from 5s to 15s to reduce request frequency
             autoScroll: options.autoScroll !== undefined ? options.autoScroll : true,
             maxEntries: options.maxEntries || 100
         };
@@ -549,6 +549,12 @@ export class LogViewer {
      */
     async fetchLogs() {
         try {
+            // EMERGENCY FIX: If we already have too many logs, clear them to prevent memory issues
+            if (this.logs && this.logs.length > 100) {
+                console.warn('Emergency log cleanup in LogViewer - too many logs');
+                this.logs = this.logs.slice(0, 20); // Keep only the 20 most recent logs
+            }
+            
             let url = this.options.apiEndpoint;
             const params = new URLSearchParams();
             
@@ -560,21 +566,34 @@ export class LogViewer {
                 params.append('category', this.filter.category);
             }
             
-            // Add limit
-            params.append('limit', this.options.maxEntries);
+            // CRITICAL FIX: Drastically reduce the limit to prevent memory issues
+            // This is a temporary measure until the root cause is fixed
+            const safeLimit = 20; // Hardcoded safe limit
+            params.append('limit', safeLimit);
             
             // Add params to URL if there are any
             if (params.toString()) {
                 url += '?' + params.toString();
             }
             
-            const response = await fetch(url);
+            // Add a header to identify if this is an auto-refresh request
+            const headers = {};
+            if (this.options.autoRefreshActive) {
+                headers['X-Requested-By'] = 'auto-refresh';
+            }
+            
+            const response = await fetch(url, { headers });
             if (!response.ok) {
                 throw new Error(`Failed to fetch logs: ${response.status} ${response.statusText}`);
             }
             
             const logs = await response.json();
-            this.logs = logs;
+            
+            // Deduplicate logs based on content to prevent duplication of preserved logs
+            const deduplicatedLogs = this.deduplicateLogs(logs);
+            
+            // CRITICAL FIX: Limit the number of logs to prevent memory issues
+            this.logs = deduplicatedLogs.slice(0, safeLimit);
             this.renderLogs();
         } catch (error) {
             console.error('Error fetching logs:', error);
@@ -665,6 +684,79 @@ export class LogViewer {
     }
     
     /**
+     * Deduplicate logs based on content with enhanced deduplication
+     * @param {Array} logs - Array of log entries
+     * @returns {Array} Deduplicated logs
+     */
+    deduplicateLogs(logs) {
+        // Use a Map to deduplicate logs based on content
+        const uniqueLogs = new Map();
+        
+        // Track log entries by their message and category for more aggressive deduplication
+        const messageCategories = new Map();
+        
+        // Process logs in reverse order (oldest to newest)
+        // This ensures we keep the newest version of duplicate logs
+        for (let i = logs.length - 1; i >= 0; i--) {
+            const log = logs[i];
+            
+            // Create a unique key for each log based on its content
+            // Include originalTimestamp if it exists to handle preserved logs
+            const timestamp = log.originalTimestamp || log.timestamp;
+            const category = log.category || '';
+            const level = log.level || '';
+            const message = log.message || '';
+            
+            // Create a more comprehensive key that includes data fields if available
+            let dataString = '';
+            if (log.data) {
+                try {
+                    // Only include certain keys that are useful for deduplication
+                    const relevantKeys = ['error', 'errorCode', 'statusCode', 'requestId', 'path', 'method'];
+                    const relevantData = {};
+                    
+                    for (const key of relevantKeys) {
+                        if (log.data[key] !== undefined && typeof log.data[key] !== 'object') {
+                            relevantData[key] = log.data[key];
+                        }
+                    }
+                    
+                    if (Object.keys(relevantData).length > 0) {
+                        dataString = JSON.stringify(relevantData);
+                    }
+                } catch (e) {
+                    // Ignore errors in data serialization
+                }
+            }
+            
+            const key = `${timestamp}:${category}:${level}:${message}${dataString ? ':' + dataString : ''}`;
+            
+            // Only add if we haven't seen this log before
+            if (!uniqueLogs.has(key)) {
+                uniqueLogs.set(key, log);
+                
+                // Also track by message+category for more aggressive deduplication
+                // This helps catch logs with the same content but different timestamps
+                const messageCategoryKey = `${category}:${message}`;
+                if (!messageCategories.has(messageCategoryKey)) {
+                    messageCategories.set(messageCategoryKey, 1);
+                } else {
+                    // If we've seen too many of the same message+category, skip it
+                    const count = messageCategories.get(messageCategoryKey) + 1;
+                    if (count > 3) { // Allow up to 3 instances of the same message+category
+                        uniqueLogs.delete(key);
+                    } else {
+                        messageCategories.set(messageCategoryKey, count);
+                    }
+                }
+            }
+        }
+        
+        // Convert back to array and reverse to maintain newest-first order
+        return Array.from(uniqueLogs.values()).reverse();
+    }
+    
+    /**
      * Format context object for display
      * @param {Object} context - Context data to format
      * @returns {string} Formatted HTML string
@@ -711,6 +803,9 @@ export class LogViewer {
             checkbox.checked = true;
         }
         
+        // Track that auto-refresh is active to add the header to requests
+        this.options.autoRefreshActive = true;
+        
         // Start new interval
         this.refreshIntervalId = setInterval(() => {
             this.fetchLogs();
@@ -725,6 +820,9 @@ export class LogViewer {
             clearInterval(this.refreshIntervalId);
             this.refreshIntervalId = null;
         }
+        
+        // Track that auto-refresh is no longer active
+        this.options.autoRefreshActive = false;
         
         // Update checkbox
         const checkbox = this.container.querySelector('.auto-refresh');

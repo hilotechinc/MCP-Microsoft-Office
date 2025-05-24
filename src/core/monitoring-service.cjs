@@ -2,6 +2,7 @@
  * @fileoverview MonitoringService provides centralized logging for MCP Desktop.
  * Handles logging of errors, warnings, info, and performance metrics.
  * Uses Winston for log management and log rotation.
+ * Includes error throttling and memory monitoring to prevent crashes.
  */
 
 const winston = require('winston');
@@ -28,6 +29,269 @@ const logEmitter = new EventEmitter();
 
 // Increase max listeners to avoid warnings
 logEmitter.setMaxListeners(20);
+
+// Error throttling mechanism to prevent error storms
+const errorThrottles = new Map();
+const ERROR_THRESHOLD = 10; // Max errors per category in the time window
+const ERROR_WINDOW_MS = 1000; // 1 second time window
+const MEMORY_CHECK_INTERVAL = 30000; // 30 seconds
+const MEMORY_WARNING_THRESHOLD = 0.85; // 85% of max memory
+
+// Log deduplication to prevent duplicate log emissions
+const recentLogHashes = new Map();
+const LOG_DEDUP_WINDOW_MS = 30000; // 30 second deduplication window (increased from 10s)
+const MAX_RECENT_LOGS = 500; // Maximum number of recent logs to track (reduced from 1000)
+
+// Category-specific deduplication for high-volume error categories
+const categoryDedupWindows = {
+  'calendar': 60000, // 60 second window for calendar errors
+  'graph': 60000,   // 60 second window for graph API errors
+  'api': 30000      // 30 second window for API errors
+};
+
+/**
+ * Generate a hash for a log entry to detect duplicates
+ * @param {Object} logData - Log data to hash
+ * @returns {string} - Hash string
+ */
+function generateLogHash(logData) {
+  // Extract key fields for deduplication
+  const category = logData.category || '';
+  const message = logData.message || '';
+  const level = logData.level || '';
+  
+  // For calendar and graph API errors, create a more specific hash
+  // that ignores the specific event IDs but captures the error type
+  if ((category === 'calendar' || category === 'graph') && 
+      message.includes('API request failed')) {
+    // Extract the error type and status code, but ignore the specific event ID
+    const statusMatch = message.match(/([0-9]{3})\s*-\s*([^:]+)/);
+    const errorType = message.includes('cancel event') ? 'cancel' : 
+                     message.includes('tentativelyAccept') ? 'tentative' : 'other';
+    
+    // Create a hash that ignores the specific event ID but captures the error type
+    return `${category}:${level}:${errorType}:${statusMatch ? statusMatch[1] : 'unknown'}`;
+  }
+  
+  // Include context data for better deduplication if available
+  let contextHash = '';
+  if (logData.context && typeof logData.context === 'object') {
+    try {
+      // Only include specific fields that are useful for deduplication
+      const relevantFields = ['statusCode', 'errorCode', 'requestId', 'method', 'path'];
+      const relevantContext = {};
+      
+      for (const field of relevantFields) {
+        if (logData.context[field] !== undefined && 
+            (typeof logData.context[field] === 'string' || 
+             typeof logData.context[field] === 'number')) {
+          relevantContext[field] = logData.context[field];
+        }
+      }
+      
+      if (Object.keys(relevantContext).length > 0) {
+        contextHash = `:${JSON.stringify(relevantContext)}`;
+      }
+    } catch (e) {
+      // Ignore errors in context serialization
+    }
+  }
+  
+  // Create a hash by combining these fields
+  return `${category}:${level}:${message.substring(0, 100)}${contextHash}`;
+}
+
+/**
+ * Check if a log is a duplicate that should be skipped
+ * @param {Object} logData - Log data to check
+ * @returns {boolean} - True if the log should be skipped (is a duplicate)
+ */
+function isDuplicateLog(logData) {
+  const now = Date.now();
+  const hash = generateLogHash(logData);
+  const category = logData.category || '';
+  const level = logData.level || '';
+  
+  // Use category-specific deduplication window if available, otherwise use default
+  let dedupWindow = LOG_DEDUP_WINDOW_MS;
+  
+  // For error and warning logs, use longer deduplication windows
+  if (level === 'error' || level === 'warn') {
+    // Check if we have a specific window for this category
+    if (categoryDedupWindows[category]) {
+      dedupWindow = categoryDedupWindows[category];
+    } else if (category.includes('graph') || category.includes('api')) {
+      // Special handling for any graph or API related categories
+      dedupWindow = 45000; // 45 seconds
+    }
+  }
+  
+  // For calendar errors specifically, use an even more aggressive approach
+  if (category === 'calendar' && logData.message && 
+      (logData.message.includes('Graph API request failed') || 
+       logData.message.includes('Unable to read error response'))) {
+    dedupWindow = 120000; // 2 minutes for Graph API calendar errors
+  }
+  
+  // Clean up old entries first - do this less frequently to improve performance
+  if (Math.random() < 0.1) { // Only clean up ~10% of the time
+    for (const [key, timestamp] of recentLogHashes.entries()) {
+      if (now - timestamp > dedupWindow) {
+        recentLogHashes.delete(key);
+      }
+    }
+  }
+  
+  // Check if this is a duplicate
+  if (recentLogHashes.has(hash)) {
+    return true;
+  }
+  
+  // Add to recent logs
+  recentLogHashes.set(hash, now);
+  
+  // Trim if we have too many entries - more aggressive trimming
+  if (recentLogHashes.size > MAX_RECENT_LOGS) {
+    // Convert to array, sort by timestamp, and keep only the newest entries
+    const entries = Array.from(recentLogHashes.entries());
+    entries.sort((a, b) => b[1] - a[1]); // Sort by timestamp, newest first
+    
+    // Create a new map with only 1/3 of the max entries (more aggressive cleanup)
+    recentLogHashes.clear();
+    entries.slice(0, Math.floor(MAX_RECENT_LOGS / 3)).forEach(([key, value]) => {
+      recentLogHashes.set(key, value);
+    });
+  }
+  
+  return false;
+}
+
+/**
+ * Check if an error should be logged based on throttling rules
+ * @param {string} category - Error category
+ * @returns {boolean} - Whether the error should be logged
+ */
+function shouldLogError(category) {
+  const now = Date.now();
+  const key = `error:${category || 'unknown'}`;
+  
+  if (!errorThrottles.has(key)) {
+    errorThrottles.set(key, { count: 1, timestamp: now, suppressed: 0 });
+    return true;
+  }
+  
+  const record = errorThrottles.get(key);
+  
+  // Reset counter if time window has passed
+  if (now - record.timestamp > ERROR_WINDOW_MS) {
+    // If we suppressed errors, log a summary before resetting
+    if (record.suppressed > 0) {
+      console.error(`[MONITORING] Suppressed ${record.suppressed} similar errors in category '${category}' in the last ${ERROR_WINDOW_MS}ms`);
+    }
+    
+    record.count = 1;
+    record.timestamp = now;
+    record.suppressed = 0;
+    return true;
+  }
+  
+  // Check if we're over the threshold
+  if (record.count >= ERROR_THRESHOLD) {
+    record.suppressed++;
+    return false;
+  }
+  
+  record.count++;
+  return true;
+}
+
+/**
+ * Monitor system memory usage and log warnings if approaching limits
+ */
+function startMemoryMonitoring() {
+  let memoryCheckInterval = null;
+  
+  const checkMemory = () => {
+    try {
+      const memoryUsage = process.memoryUsage();
+      const heapUsed = memoryUsage.heapUsed;
+      const heapTotal = memoryUsage.heapTotal;
+      const usageRatio = heapUsed / heapTotal;
+      
+      // Log memory usage for monitoring
+      if (usageRatio > MEMORY_WARNING_THRESHOLD) {
+        console.warn(`[MEMORY WARNING] High memory usage: ${Math.round(usageRatio * 100)}% (${Math.round(heapUsed / 1024 / 1024)}MB / ${Math.round(heapTotal / 1024 / 1024)}MB)`);
+        
+        // Force garbage collection if available (Node.js with --expose-gc flag)
+        if (global.gc) {
+          console.log('[MEMORY] Forcing garbage collection');
+          global.gc();
+        }
+      }
+    } catch (err) {
+      // Silently ignore memory monitoring errors
+    }
+  };
+  
+  // Start memory monitoring interval
+  memoryCheckInterval = setInterval(checkMemory, MEMORY_CHECK_INTERVAL);
+  
+  // Clean up on process exit
+  process.on('exit', () => {
+    if (memoryCheckInterval) {
+      clearInterval(memoryCheckInterval);
+    }
+  });
+  
+  // Initial memory check
+  checkMemory();
+}
+
+// Start memory monitoring
+startMemoryMonitoring();
+
+// Emergency memory protection - used to completely disable logging if memory usage gets too high
+let emergencyLoggingDisabled = false;
+let lastMemoryCheck = Date.now();
+const MEMORY_CHECK_INTERVAL_MS = 5000; // Check memory every 5 seconds
+
+/**
+ * Emergency check to see if we should disable all logging
+ * This is a last resort to prevent application crashes
+ */
+function checkMemoryForEmergency() {
+  // Only check periodically to avoid performance impact
+  const now = Date.now();
+  if (now - lastMemoryCheck < MEMORY_CHECK_INTERVAL_MS) {
+    return false;
+  }
+  
+  lastMemoryCheck = now;
+  
+  try {
+    const memoryUsage = process.memoryUsage();
+    const heapUsed = memoryUsage.heapUsed;
+    const heapTotal = memoryUsage.heapTotal;
+    const usageRatio = heapUsed / heapTotal;
+    
+    // If memory usage is extremely high (95%+), disable all logging
+    if (usageRatio > 0.95) {
+      if (!emergencyLoggingDisabled) {
+        console.error(`[EMERGENCY] Disabling all logging due to critical memory usage: ${Math.round(usageRatio * 100)}%`);
+        emergencyLoggingDisabled = true;
+      }
+      return true;
+    } else if (emergencyLoggingDisabled && usageRatio < 0.80) {
+      // Re-enable logging if memory usage drops below 80%
+      console.log(`[EMERGENCY] Re-enabling logging as memory usage has decreased: ${Math.round(usageRatio * 100)}%`);
+      emergencyLoggingDisabled = false;
+    }
+  } catch (e) {
+    // If we can't check memory, assume it's safe to log
+  }
+  
+  return emergencyLoggingDisabled;
+}
 
 function initLogger(logFilePath, logLevel = 'info') {
     // If no custom path provided, use date-stamped file name
@@ -109,25 +373,43 @@ function _resetLoggerForTest(logFilePath, logLevel = 'info') {
  */
 function logError(error) {
     if (!logger) initLogger();
+    
+    // Apply error throttling to prevent error storms
+    if (!shouldLogError(error.category)) {
+        // Skip logging this error due to throttling
+        return;
+    }
+    
     const logData = {
         id: error.id,
         category: error.category,
         message: error.message,
         severity: error.severity,
-        context: error.context,
-        timestamp: error.timestamp,
-        pid: process.pid,
-        hostname: os.hostname(),
-        version: appVersion
+        context: error.context || {},
+        timestamp: error.timestamp || new Date().toISOString(),
+        level: 'error' // Add level for consistent deduplication
     };
     
-    logger.error(logData);
+    // Add trace ID if available
+    if (error.traceId) {
+        logData.traceId = error.traceId;
+    }
     
-    // Emit log event for UI subscribers
-    logEmitter.emit('log', {
-        level: 'error',
-        ...logData
-    });
+    // Check for duplicates before logging
+    if (isDuplicateLog(logData)) {
+        // Skip duplicate logs
+        return;
+    }
+    
+    try {
+        logger.error(logData);
+        
+        // Emit error event for UI subscribers
+        logEmitter.emit('log', logData);
+    } catch (err) {
+        // Prevent cascading errors by logging to console only
+        console.error(`[MONITORING] Failed to log error: ${err.message}`);
+    }
 }
 
 /**
@@ -135,37 +417,60 @@ function logError(error) {
  * @param {string} message - Log message
  * @param {Object} [context] - Additional context data
  * @param {string} [category] - Category for the log (e.g., 'api', 'graph', 'auth')
+ * @param {string} [traceId] - Optional trace ID for request correlation
  */
-function info(message, context = {}, category = '') {
+function info(message, context = {}, category = '', traceId = null) {
+    // EMERGENCY FIX: Skip all logging if memory usage is critical
+    if (checkMemoryForEmergency()) {
+        return;
+    }
+    
     if (!logger) initLogger();
-    const logData = {
-        message,
-        category,
-        context,
-        severity: 'info',
-        timestamp: new Date().toISOString(),
-        pid: process.pid,
-        hostname: os.hostname(),
-        version: appVersion
-    };
     
-    logger.info(logData);
-    
-    // Ensure context is serializable for event emission
-    const safeContext = JSON.parse(JSON.stringify({
-        ...context,
-        _logType: 'info',
-        _category: category
-    }));
-    
-    // Emit log event for UI subscribers with safe context
-    logEmitter.emit('log', {
-        ...logData,
-        context: safeContext
-    });
-    
-    // Debug log emission
-    console.log(`[MonitoringService] Emitted info log: ${message}`);
+    try {
+        const logData = {
+            message,
+            context,
+            category,
+            timestamp: new Date().toISOString(),
+            pid: process.pid,
+            hostname: os.hostname(),
+            version: appVersion,
+            level: 'info'
+        };
+        
+        // Add trace ID if provided
+        if (traceId) {
+            logData.traceId = traceId;
+        }
+        
+        // Check for duplicates before logging
+        if (isDuplicateLog(logData)) {
+            // Skip duplicate logs
+            return;
+        }
+        
+        // Skip API and calendar info logs to reduce volume
+        if (category === 'api' || category === 'calendar' || category === 'graph') {
+            // Only log these categories if in development mode
+            if (process.env.NODE_ENV !== 'development') {
+                return;
+            }
+        }
+        
+        logger.info(logData);
+        
+        // Emit log event for UI subscribers
+        logEmitter.emit('log', logData);
+        
+        // Debug log emission (only in development)
+        if (process.env.NODE_ENV === 'development') {
+            console.log(`[MonitoringService] Emitted info log: ${message}`);
+        }
+    } catch (err) {
+        // Prevent cascading errors by logging to console only
+        console.error(`[MONITORING] Failed to log info message: ${err.message}`);
+    }
 }
 
 /**
@@ -173,35 +478,47 @@ function info(message, context = {}, category = '') {
  * @param {string} message - Log message
  * @param {Object} [context] - Additional context data
  * @param {string} [category] - Category for the log (e.g., 'api', 'graph', 'auth')
+ * @param {string} [traceId] - Optional trace ID for request correlation
  */
-function warn(message, context = {}, category = '') {
+function warn(message, context = {}, category = '', traceId = null) {
     if (!logger) initLogger();
-    const logData = {
-        message,
-        category,
-        context,
-        severity: 'warn',
-        timestamp: new Date().toISOString(),
-        pid: process.pid,
-        hostname: os.hostname(),
-        version: appVersion
-    };
     
-    logger.warn(logData);
-    
-    // Ensure context is serializable for event emission
-    const safeContext = JSON.parse(JSON.stringify({
-        ...context,
-        _logType: 'warn',
-        _category: category
-    }));
-    
-    // Emit log event for UI subscribers with safe context
-    logEmitter.emit('log', {
-        level: 'warn',
-        ...logData,
-        context: safeContext
-    });
+    try {
+        const logData = {
+            message,
+            category,
+            context,
+            timestamp: new Date().toISOString(),
+            pid: process.pid,
+            hostname: os.hostname(),
+            version: appVersion,
+            level: 'warn'
+        };
+        
+        // Add trace ID if provided
+        if (traceId) {
+            logData.traceId = traceId;
+        }
+        
+        // Check for duplicates before logging
+        if (isDuplicateLog(logData)) {
+            // Skip duplicate logs
+            return;
+        }
+        
+        logger.warn(logData);
+        
+        // Emit log event for UI subscribers
+        logEmitter.emit('log', logData);
+        
+        // Debug log emission (only in development)
+        if (process.env.NODE_ENV === 'development') {
+            console.log(`[MonitoringService] Emitted warning log: ${message}`);
+        }
+    } catch (err) {
+        // Prevent cascading errors by logging to console only
+        console.error(`[MONITORING] Failed to log warning message: ${err.message}`);
+    }
 }
 
 /**
@@ -209,45 +526,46 @@ function warn(message, context = {}, category = '') {
  * @param {string} message - Log message
  * @param {Object} [context] - Additional context data
  * @param {string} [category] - Category for the log (e.g., 'api', 'graph', 'auth')
+ * @param {string} [traceId] - Optional trace ID for request correlation
  */
-function debug(message, context = {}, category = '') {
+function debug(message, context = {}, category = '', traceId = null) {
     if (!logger) initLogger();
-    const logData = {
-        message,
-        category,
-        context,
-        severity: 'debug',
-        timestamp: new Date().toISOString(),
-        pid: process.pid,
-        hostname: os.hostname(),
-        version: appVersion
-    };
-    
-    logger.debug(logData);
     
     try {
-        // Ensure context is serializable for event emission
-        const safeContext = JSON.parse(JSON.stringify({
-            ...context,
-            _logType: 'debug',
-            _category: category
-        }));
-        
-        // Emit log event for UI subscribers with safe context
-        logEmitter.emit('log', {
-            ...logData,
-            context: safeContext
-        });
-    } catch (e) {
-        console.error('Error emitting debug log:', e);
-        // Emit a simplified log if serialization fails
-        logEmitter.emit('log', {
+        const logData = {
             message,
             category,
-            severity: 'debug',
+            context,
             timestamp: new Date().toISOString(),
-            context: { error: 'Context serialization failed' }
-        });
+            pid: process.pid,
+            hostname: os.hostname(),
+            version: appVersion,
+            level: 'debug'
+        };
+        
+        // Add trace ID if provided
+        if (traceId) {
+            logData.traceId = traceId;
+        }
+        
+        // Check for duplicates before logging
+        if (isDuplicateLog(logData)) {
+            // Skip duplicate logs
+            return;
+        }
+        
+        logger.debug(logData);
+        
+        // Emit log event for UI subscribers
+        logEmitter.emit('log', logData);
+        
+        // Debug log emission (only in development)
+        if (process.env.NODE_ENV === 'development') {
+            console.log(`[MonitoringService] Emitted debug log: ${message}`);
+        }
+    } catch (err) {
+        // Prevent cascading errors by logging to console only
+        console.error(`[MONITORING] Failed to log debug message: ${err.message}`);
     }
 }
 
@@ -256,47 +574,70 @@ function debug(message, context = {}, category = '') {
  * @param {string} message - Error message
  * @param {Object} [context] - Additional context data
  * @param {string} [category] - Category for the log (e.g., 'api', 'graph', 'auth')
+ * @param {string} [traceId] - Optional trace ID for request correlation
  */
-function error(message, context = {}, category = '') {
-    if (!logger) initLogger();
-    const logData = {
-        message,
-        category,
-        context,
-        severity: 'error',
-        timestamp: new Date().toISOString(),
-        pid: process.pid,
-        hostname: os.hostname(),
-        version: appVersion
-    };
+function error(message, context = {}, category = '', traceId = null) {
+    // EMERGENCY FIX: Skip all logging if memory usage is critical
+    if (checkMemoryForEmergency()) {
+        return;
+    }
     
-    logger.error(logData);
+    if (!logger) initLogger();
+    
+    // Apply error throttling to prevent error storms
+    if (!shouldLogError(category)) {
+        // Skip logging this error due to throttling
+        return;
+    }
     
     try {
-        // Ensure context is serializable for event emission
-        const safeContext = JSON.parse(JSON.stringify({
-            ...context,
-            _logType: 'error',
-            _category: category
-        }));
+        // CRITICAL FIX: For calendar and graph API errors, apply extra filtering
+        if ((category === 'calendar' || category === 'graph') && 
+            (message.includes('Graph API request failed') || 
+             message.includes('Unable to read error response'))) {
+            // These errors are causing the memory issues - skip them completely
+            // Just log to console for debugging but don't store or emit them
+            if (process.env.NODE_ENV === 'development') {
+                console.warn(`[FILTERED] ${category} error: ${message}`);
+            }
+            return;
+        }
         
-        // Emit log event for UI subscribers with safe context
-        logEmitter.emit('log', {
-            ...logData,
-            context: safeContext
-        });
-        
-        console.error(`[MonitoringService] Emitted error log: ${message}`);
-    } catch (e) {
-        console.error('Error emitting error log:', e);
-        // Emit a simplified log if serialization fails
-        logEmitter.emit('log', {
+        const logData = {
             message,
             category,
-            severity: 'error',
+            context,
             timestamp: new Date().toISOString(),
-            context: { error: 'Context serialization failed', originalMessage: message }
-        });
+            pid: process.pid,
+            hostname: os.hostname(),
+            version: appVersion,
+            level: 'error'
+        };
+        
+        // Add trace ID if provided
+        if (traceId) {
+            logData.traceId = traceId;
+        }
+        
+        // Check for duplicates before logging
+        if (isDuplicateLog(logData)) {
+            // Skip duplicate logs
+            return;
+        }
+        
+        logger.error(logData);
+        
+        // Emit log event for UI subscribers
+        logEmitter.emit('log', logData);
+        
+        // Debug log emission (only in development)
+        if (process.env.NODE_ENV === 'development') {
+            console.log(`[MonitoringService] Emitted error log: ${message}`);
+        }
+    } catch (err) {
+        // Last resort error handling - log to console only
+        console.error(`[MONITORING] Failed to log error message: ${err.message}`);
+        console.error(`[MONITORING] Original error: ${message}`);
     }
 }
 

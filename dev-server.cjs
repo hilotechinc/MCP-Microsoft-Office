@@ -18,30 +18,65 @@ const http = require('http');
 // Import services
 const monitoringService = require('./src/core/monitoring-service.cjs');
 const errorService = require('./src/core/error-service.cjs');
+const storageService = require('./src/core/storage-service.cjs');
+
+// Set up dependency injection between services to avoid circular references
+// This is critical to prevent infinite error loops
+errorService.setLoggingService(monitoringService);
 
 // Import the server module but don't start it automatically
 const serverModule = require('./src/main/server.cjs');
 
 // Add global error handlers to prevent crashes
 process.on('uncaughtException', (err) => {
-  const mcpError = errorService.createError(
-    errorService.CATEGORIES.SYSTEM,
-    `Uncaught Exception: ${err.message}`,
-    errorService.SEVERITIES.CRITICAL,
-    { stack: err.stack }
-  );
-  monitoringService.error(`Uncaught Exception: ${err.message}`, { stack: err.stack }, 'system');
+  // Generate a trace ID for this error
+  const traceId = `uncaught-exception-${Date.now()}`;
+  
+  try {
+    const mcpError = errorService.createError(
+      errorService.CATEGORIES.SYSTEM,
+      `Uncaught Exception: ${err.message}`,
+      errorService.SEVERITIES.CRITICAL,
+      { stack: err.stack, timestamp: new Date().toISOString() },
+      traceId
+    );
+    
+    // Log the error with the monitoring service
+    monitoringService.logError(mcpError);
+    
+    // Also log to console for immediate visibility
+    console.error(`[CRITICAL ERROR] Uncaught Exception: ${err.message} (Trace ID: ${traceId})`);
+  } catch (loggingError) {
+    // Last resort error handling if our error handling itself fails
+    console.error(`[SYSTEM] Failed to log uncaught exception: ${loggingError.message}`);
+    console.error(`[SYSTEM] Original error: ${err.message}`);
+  }
   // Don't exit the process, just log the error
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  const mcpError = errorService.createError(
-    errorService.CATEGORIES.SYSTEM,
-    `Unhandled Promise Rejection: ${reason}`,
-    errorService.SEVERITIES.ERROR,
-    { reason }
-  );
-  monitoringService.error(`Unhandled Promise Rejection: ${reason}`, { reason }, 'system');
+  // Generate a trace ID for this error
+  const traceId = `unhandled-rejection-${Date.now()}`;
+  
+  try {
+    const mcpError = errorService.createError(
+      errorService.CATEGORIES.SYSTEM,
+      `Unhandled Promise Rejection: ${reason}`,
+      errorService.SEVERITIES.ERROR,
+      { reason, timestamp: new Date().toISOString() },
+      traceId
+    );
+    
+    // Log the error with the monitoring service
+    monitoringService.logError(mcpError);
+    
+    // Also log to console for immediate visibility
+    console.error(`[ERROR] Unhandled Promise Rejection (Trace ID: ${traceId})`);
+  } catch (loggingError) {
+    // Last resort error handling if our error handling itself fails
+    console.error(`[SYSTEM] Failed to log unhandled rejection: ${loggingError.message}`);
+    console.error(`[SYSTEM] Original rejection: ${reason}`);
+  }
   // Don't exit the process, just log the error
 });
 
