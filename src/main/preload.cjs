@@ -49,6 +49,22 @@ contextBridge.exposeInMainWorld('electron', {
                 ipcRenderer.send(channel, data);
             }
         },
+        // Expose invoke for API calls
+        invoke: (channel, data) => {
+            const validChannels = [
+                'api:status',
+                'api:logs',
+                'api:mail',
+                'api:calendar',
+                'api:files',
+                'api:people',
+                'api:query'
+            ];
+            if (validChannels.includes(channel)) {
+                return ipcRenderer.invoke(channel, data);
+            }
+            return Promise.reject(new Error(`Invalid channel: ${channel}`));
+        },
         // For receiving responses from the main process
         on: (channel, func) => {
             const validChannels = ['services:loaded'];

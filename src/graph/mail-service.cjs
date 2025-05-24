@@ -5,6 +5,14 @@
  */
 
 const graphClientFactory = require('./graph-client.cjs');
+const ErrorService = require('../core/error-service.cjs');
+const MonitoringService = require('../core/monitoring-service.cjs');
+
+// Log service initialization
+MonitoringService.info('Graph Mail Service initialized', {
+    serviceName: 'graph-mail-service',
+    timestamp: new Date().toISOString()
+}, 'graph');
 
 /**
  * Normalizes a Graph email object to MCP schema.
@@ -32,10 +40,66 @@ function normalizeEmail(graphEmail) {
  * @returns {Promise<Array<object>>}
  */
 async function getInbox(options = {}, req) {
-  const client = await graphClientFactory.createClient(req);
-  const top = options.top || 10;
-  const res = await client.api(`/me/mailFolders/inbox/messages?$top=${top}`).get();
-  return (res.value || []).map(normalizeEmail);
+  const startTime = Date.now();
+  
+  if (process.env.NODE_ENV === 'development') {
+    MonitoringService.debug('Mail getInbox operation started', {
+      method: 'getInbox',
+      optionKeys: Object.keys(options),
+      timestamp: new Date().toISOString()
+    }, 'graph');
+  }
+  
+  try {
+    const client = await graphClientFactory.createClient(req);
+    const top = options.top || options.limit || 10;
+    const res = await client.api(`/me/mailFolders/inbox/messages?$top=${top}`).get();
+    const emails = (res.value || []).map(normalizeEmail);
+    
+    const executionTime = Date.now() - startTime;
+    MonitoringService.trackMetric('graph_mail_get_inbox_success', executionTime, {
+      service: 'graph-mail-service',
+      method: 'getInbox',
+      emailCount: emails.length,
+      requestedTop: top,
+      timestamp: new Date().toISOString()
+    });
+    
+    if (process.env.NODE_ENV === 'development') {
+      MonitoringService.debug('Mail getInbox operation completed', {
+        emailCount: emails.length,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'graph');
+    }
+    
+    return emails;
+  } catch (error) {
+    const executionTime = Date.now() - startTime;
+    
+    const mcpError = ErrorService.createError(
+      ErrorService.CATEGORIES.API,
+      `Failed to get inbox emails: ${error.message}`,
+      ErrorService.SEVERITIES.ERROR,
+      {
+        service: 'graph-mail-service',
+        method: 'getInbox',
+        requestedTop: options.top || options.limit || 10,
+        stack: error.stack,
+        timestamp: new Date().toISOString()
+      }
+    );
+    
+    MonitoringService.logError(mcpError);
+    MonitoringService.trackMetric('graph_mail_get_inbox_failure', executionTime, {
+      service: 'graph-mail-service',
+      method: 'getInbox',
+      errorType: error.code || 'unknown',
+      timestamp: new Date().toISOString()
+    });
+    
+    throw mcpError;
+  }
 }
 
 /**
@@ -46,10 +110,97 @@ async function getInbox(options = {}, req) {
  * @returns {Promise<Array<object>>}
  */
 async function searchEmails(query, options = {}, req) {
-  const client = await graphClientFactory.createClient(req);
-  const top = options.top || 10;
-  const res = await client.api(`/me/messages?$search="${encodeURIComponent(query)}"&$top=${top}`).get();
-  return (res.value || []).map(normalizeEmail);
+  const startTime = Date.now();
+  
+  if (process.env.NODE_ENV === 'development') {
+    MonitoringService.debug('Mail searchEmails operation started', {
+      method: 'searchEmails',
+      queryLength: query ? query.length : 0,
+      optionKeys: Object.keys(options),
+      timestamp: new Date().toISOString()
+    }, 'graph');
+  }
+  
+  try {
+    if (!query || typeof query !== 'string') {
+      const mcpError = ErrorService.createError(
+        ErrorService.CATEGORIES.VALIDATION,
+        'Search query must be a non-empty string',
+        ErrorService.SEVERITIES.WARNING,
+        {
+          service: 'graph-mail-service',
+          method: 'searchEmails',
+          queryType: typeof query,
+          timestamp: new Date().toISOString()
+        }
+      );
+      MonitoringService.logError(mcpError);
+      throw mcpError;
+    }
+    
+    const client = await graphClientFactory.createClient(req);
+    const top = options.top || options.limit || 10;
+    const res = await client.api(`/me/messages?$search="${encodeURIComponent(query)}"&$top=${top}`).get();
+    const emails = (res.value || []).map(normalizeEmail);
+    
+    const executionTime = Date.now() - startTime;
+    MonitoringService.trackMetric('graph_mail_search_emails_success', executionTime, {
+      service: 'graph-mail-service',
+      method: 'searchEmails',
+      queryLength: query.length,
+      resultCount: emails.length,
+      requestedTop: top,
+      timestamp: new Date().toISOString()
+    });
+    
+    if (process.env.NODE_ENV === 'development') {
+      MonitoringService.debug('Mail searchEmails operation completed', {
+        queryLength: query.length,
+        resultCount: emails.length,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'graph');
+    }
+    
+    return emails;
+  } catch (error) {
+    const executionTime = Date.now() - startTime;
+    
+    // If it's already an MCP error, just track metrics and rethrow
+    if (error.category) {
+      MonitoringService.trackMetric('graph_mail_search_emails_failure', executionTime, {
+        service: 'graph-mail-service',
+        method: 'searchEmails',
+        errorType: error.code || 'validation_error',
+        timestamp: new Date().toISOString()
+      });
+      throw error;
+    }
+    
+    const mcpError = ErrorService.createError(
+      ErrorService.CATEGORIES.API,
+      `Failed to search emails: ${error.message}`,
+      ErrorService.SEVERITIES.ERROR,
+      {
+        service: 'graph-mail-service',
+        method: 'searchEmails',
+        query,
+        requestedTop: options.top || options.limit || 10,
+        stack: error.stack,
+        timestamp: new Date().toISOString()
+      }
+    );
+    
+    MonitoringService.logError(mcpError);
+    MonitoringService.trackMetric('graph_mail_search_emails_failure', executionTime, {
+      service: 'graph-mail-service',
+      method: 'searchEmails',
+      errorType: error.code || 'unknown',
+      timestamp: new Date().toISOString()
+    });
+    
+    throw mcpError;
+  }
 }
 
 /**
@@ -59,6 +210,17 @@ async function searchEmails(query, options = {}, req) {
  * @returns {Promise<boolean>}
  */
 async function sendEmail(emailData, req) {
+  const startTime = Date.now();
+  
+  if (process.env.NODE_ENV === 'development') {
+    MonitoringService.debug('Mail sendEmail operation started', {
+      method: 'sendEmail',
+      hasAttachments: emailData.attachments && Array.isArray(emailData.attachments),
+      attachmentCount: emailData.attachments ? emailData.attachments.length : 0,
+      timestamp: new Date().toISOString()
+    }, 'graph');
+  }
+  
   try {
     const client = await graphClientFactory.createClient(req);
     const { to, subject, body, cc, bcc, contentType, attachments } = emailData;
@@ -89,14 +251,24 @@ async function sendEmail(emailData, req) {
     
     // Add attachments if provided
     if (attachments && Array.isArray(attachments) && attachments.length > 0) {
-      console.log(`[MailService] Adding ${attachments.length} attachments to email`);
+      if (process.env.NODE_ENV === 'development') {
+        MonitoringService.debug('Processing email attachments', {
+          attachmentCount: attachments.length,
+          timestamp: new Date().toISOString()
+        }, 'graph');
+      }
       
       // Process attachments asynchronously
       const processedAttachments = await Promise.all(attachments.map(async attachment => {
         try {
           // Check if attachment is a file ID (string) or an attachment object
           if (typeof attachment === 'string') {
-            console.log(`[MailService] Processing file attachment by ID: ${attachment}`);
+            if (process.env.NODE_ENV === 'development') {
+              MonitoringService.debug('Processing file attachment by ID', {
+                fileId: attachment,
+                timestamp: new Date().toISOString()
+              }, 'graph');
+            }
             // This is a file ID from the files service
             // We need to get the file content from the files service
             try {
@@ -108,11 +280,22 @@ async function sendEmail(emailData, req) {
               const fileContent = await filesService.getFileContent(attachment, req);
               
               if (!fileMetadata || !fileContent) {
-                console.error(`[MailService] Could not retrieve file with ID: ${attachment}`);
+                MonitoringService.warn('Could not retrieve file for email attachment', {
+                  fileId: attachment,
+                  hasMetadata: !!fileMetadata,
+                  hasContent: !!fileContent,
+                  timestamp: new Date().toISOString()
+                }, 'graph');
                 return null;
               }
               
-              console.log(`[MailService] Retrieved file: ${fileMetadata.name}`);
+              if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Retrieved file for email attachment', {
+                  fileName: fileMetadata.name,
+                  fileSize: fileContent.length,
+                  timestamp: new Date().toISOString()
+                }, 'graph');
+              }
               
               // Convert file content to base64
               const contentBytes = Buffer.from(fileContent).toString('base64');
@@ -125,7 +308,19 @@ async function sendEmail(emailData, req) {
                 isInline: false
               };
             } catch (fileError) {
-              console.error(`[MailService] Error retrieving file: ${fileError.message}`);
+              const mcpError = ErrorService.createError(
+                ErrorService.CATEGORIES.API,
+                `Error retrieving file for email attachment: ${fileError.message}`,
+                ErrorService.SEVERITIES.WARNING,
+                {
+                  service: 'graph-mail-service',
+                  method: 'sendEmail',
+                  fileId: attachment,
+                  stack: fileError.stack,
+                  timestamp: new Date().toISOString()
+                }
+              );
+              MonitoringService.logError(mcpError);
               return null;
             }
           }
@@ -136,7 +331,12 @@ async function sendEmail(emailData, req) {
           
           // If we have content but not contentBytes, convert content to base64
           if (!contentBytes && attachment.content) {
-            console.log(`[MailService] Converting content to contentBytes for attachment: ${attachment.name}`);
+            if (process.env.NODE_ENV === 'development') {
+              MonitoringService.debug('Converting content to contentBytes for attachment', {
+                attachmentName: attachment.name,
+                timestamp: new Date().toISOString()
+              }, 'graph');
+            }
             contentBytes = Buffer.from(attachment.content).toString('base64');
           }
           
@@ -151,11 +351,12 @@ async function sendEmail(emailData, req) {
           
           // Ensure we have all required fields for a valid attachment
           if (!contentBytes || !attachment.name || !attachment.contentType) {
-            console.error(`[MailService] Invalid attachment: missing required fields`, {
+            MonitoringService.warn('Invalid attachment missing required fields', {
               hasName: !!attachment.name,
               hasContentType: !!attachment.contentType,
-              hasContentBytes: !!contentBytes
-            });
+              hasContentBytes: !!contentBytes,
+              timestamp: new Date().toISOString()
+            }, 'graph');
             return null; // Skip invalid attachments
           }
           
@@ -167,20 +368,52 @@ async function sendEmail(emailData, req) {
             isInline: attachment.isInline || false
           };
         } catch (attachmentError) {
-          console.error(`[MailService] Error processing attachment: ${attachmentError.message}`);
+          const mcpError = ErrorService.createError(
+            ErrorService.CATEGORIES.SYSTEM,
+            `Error processing email attachment: ${attachmentError.message}`,
+            ErrorService.SEVERITIES.WARNING,
+            {
+              service: 'graph-mail-service',
+              method: 'sendEmail',
+              attachmentName: attachment.name || 'unknown',
+              stack: attachmentError.stack,
+              timestamp: new Date().toISOString()
+            }
+          );
+          MonitoringService.logError(mcpError);
           return null;
         }
       }));
       
       // Filter out null entries from invalid attachments
       message.attachments = processedAttachments.filter(Boolean);
-      console.log(`[MailService] Processed ${message.attachments.length} valid attachments`);
+      
+      MonitoringService.trackMetric('graph_mail_attachments_processed', Date.now() - startTime, {
+        originalCount: attachments.length,
+        validCount: message.attachments.length,
+        timestamp: new Date().toISOString()
+      });
+      
+      if (process.env.NODE_ENV === 'development') {
+        MonitoringService.debug('Email attachments processed', {
+          originalCount: attachments.length,
+          validCount: message.attachments.length,
+          timestamp: new Date().toISOString()
+        }, 'graph');
+      }
     }
 
-    console.log('[MailService] Sending email with message:', JSON.stringify({
-      ...message,
-      attachments: message.attachments ? `${message.attachments.length} attachments` : 'none'
-    }));
+    if (process.env.NODE_ENV === 'development') {
+      MonitoringService.debug('Sending email via Graph API', {
+        hasSubject: !!message.subject,
+        toCount: message.toRecipients ? message.toRecipients.length : 0,
+        ccCount: message.ccRecipients ? message.ccRecipients.length : 0,
+        bccCount: message.bccRecipients ? message.bccRecipients.length : 0,
+        attachmentCount: message.attachments ? message.attachments.length : 0,
+        contentType: message.body.contentType,
+        timestamp: new Date().toISOString()
+      }, 'graph');
+    }
     
     // Explicitly set saveToSentItems to true to ensure the email is saved with attachments
     // Also explicitly set the hasAttachments flag if we have attachments
@@ -194,13 +427,55 @@ async function sendEmail(emailData, req) {
       saveToSentItems: true
     };
     
-    console.log('[MailService] Sending email with saveToSentItems: true');
     await client.api('/me/sendMail').post(requestBody);
-    console.log('[MailService] Email sent successfully');
+    
+    const executionTime = Date.now() - startTime;
+    MonitoringService.trackMetric('graph_mail_send_email_success', executionTime, {
+      service: 'graph-mail-service',
+      method: 'sendEmail',
+      toCount: message.toRecipients ? message.toRecipients.length : 0,
+      ccCount: message.ccRecipients ? message.ccRecipients.length : 0,
+      bccCount: message.bccRecipients ? message.bccRecipients.length : 0,
+      attachmentCount: message.attachments ? message.attachments.length : 0,
+      contentType: message.body.contentType,
+      timestamp: new Date().toISOString()
+    });
+    
+    if (process.env.NODE_ENV === 'development') {
+      MonitoringService.debug('Email sent successfully via Graph API', {
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'graph');
+    }
+    
     return true;
   } catch (error) {
-    console.error(`[MailService] Error sending email: ${error.message}`);
-    throw error;
+    const executionTime = Date.now() - startTime;
+    
+    const mcpError = ErrorService.createError(
+      ErrorService.CATEGORIES.API,
+      `Failed to send email: ${error.message}`,
+      ErrorService.SEVERITIES.ERROR,
+      {
+        service: 'graph-mail-service',
+        method: 'sendEmail',
+        hasSubject: emailData.subject && emailData.subject.length > 0,
+        hasTo: emailData.to && emailData.to.length > 0,
+        attachmentCount: emailData.attachments ? emailData.attachments.length : 0,
+        stack: error.stack,
+        timestamp: new Date().toISOString()
+      }
+    );
+    
+    MonitoringService.logError(mcpError);
+    MonitoringService.trackMetric('graph_mail_send_email_failure', executionTime, {
+      service: 'graph-mail-service',
+      method: 'sendEmail',
+      errorType: error.code || 'unknown',
+      timestamp: new Date().toISOString()
+    });
+    
+    throw mcpError;
   }
 }
 
@@ -212,11 +487,86 @@ async function sendEmail(emailData, req) {
  * @returns {Promise<boolean>}
  */
 async function flagEmail(id, flag = true, req) {
-  const client = await graphClientFactory.createClient(req);
-  await client.api(`/me/messages/${id}`).patch({
-    flag: { flagStatus: flag ? 'flagged' : 'notFlagged' }
-  });
-  return true;
+  const startTime = Date.now();
+  
+  if (process.env.NODE_ENV === 'development') {
+    MonitoringService.debug('Mail flagEmail operation started', {
+      method: 'flagEmail',
+      emailId: id,
+      flagState: flag,
+      timestamp: new Date().toISOString()
+    }, 'graph');
+  }
+  
+  try {
+    if (!id || typeof id !== 'string') {
+      const mcpError = ErrorService.createError(
+        ErrorService.CATEGORIES.VALIDATION,
+        'Email ID must be a non-empty string',
+        ErrorService.SEVERITIES.WARNING,
+        {
+          service: 'graph-mail-service',
+          method: 'flagEmail',
+          idType: typeof id,
+          timestamp: new Date().toISOString()
+        }
+      );
+      MonitoringService.logError(mcpError);
+      throw mcpError;
+    }
+    
+    const client = await graphClientFactory.createClient(req);
+    await client.api(`/me/messages/${id}`).patch({
+      flag: { flagStatus: flag ? 'flagged' : 'notFlagged' }
+    });
+    
+    const executionTime = Date.now() - startTime;
+    MonitoringService.trackMetric('graph_mail_flag_email_success', executionTime, {
+      service: 'graph-mail-service',
+      method: 'flagEmail',
+      flagState: flag,
+      timestamp: new Date().toISOString()
+    });
+    
+    return true;
+  } catch (error) {
+    const executionTime = Date.now() - startTime;
+    
+    // If it's already an MCP error, just track metrics and rethrow
+    if (error.category) {
+      MonitoringService.trackMetric('graph_mail_flag_email_failure', executionTime, {
+        service: 'graph-mail-service',
+        method: 'flagEmail',
+        errorType: error.code || 'validation_error',
+        timestamp: new Date().toISOString()
+      });
+      throw error;
+    }
+    
+    const mcpError = ErrorService.createError(
+      ErrorService.CATEGORIES.API,
+      `Failed to flag email: ${error.message}`,
+      ErrorService.SEVERITIES.ERROR,
+      {
+        service: 'graph-mail-service',
+        method: 'flagEmail',
+        emailId: id,
+        flagState: flag,
+        stack: error.stack,
+        timestamp: new Date().toISOString()
+      }
+    );
+    
+    MonitoringService.logError(mcpError);
+    MonitoringService.trackMetric('graph_mail_flag_email_failure', executionTime, {
+      service: 'graph-mail-service',
+      method: 'flagEmail',
+      errorType: error.code || 'unknown',
+      timestamp: new Date().toISOString()
+    });
+    
+    throw mcpError;
+  }
 }
 
 /**
@@ -226,27 +576,63 @@ async function flagEmail(id, flag = true, req) {
  * @returns {Promise<Array<object>>}
  */
 async function getAttachments(id, req) {
+  const startTime = Date.now();
+  
+  if (process.env.NODE_ENV === 'development') {
+    MonitoringService.debug('Mail getAttachments operation started', {
+      method: 'getAttachments',
+      emailId: id,
+      timestamp: new Date().toISOString()
+    }, 'graph');
+  }
+  
   try {
-    if (!id) {
-      console.error('[MailService] getAttachments called with invalid email ID');
-      return [];
+    if (!id || typeof id !== 'string') {
+      const mcpError = ErrorService.createError(
+        ErrorService.CATEGORIES.VALIDATION,
+        'Email ID must be a non-empty string',
+        ErrorService.SEVERITIES.WARNING,
+        {
+          service: 'graph-mail-service',
+          method: 'getAttachments',
+          idType: typeof id,
+          timestamp: new Date().toISOString()
+        }
+      );
+      MonitoringService.logError(mcpError);
+      throw mcpError;
     }
     
-    console.log(`[MailService] Getting attachments for email ID: ${id}`);
     const client = await graphClientFactory.createClient(req);
     
     // First check if the email exists and has attachments
     try {
       const emailDetails = await client.api(`/me/messages/${id}`).select('id,hasAttachments').get();
-      console.log(`[MailService] Email metadata hasAttachments flag: ${emailDetails.hasAttachments}`);
+      
+      if (process.env.NODE_ENV === 'development') {
+        MonitoringService.debug('Email metadata retrieved for attachments check', {
+          emailId: id,
+          hasAttachments: emailDetails.hasAttachments,
+          timestamp: new Date().toISOString()
+        }, 'graph');
+      }
       
       // If the email doesn't have attachments according to metadata, return empty array early
       if (!emailDetails.hasAttachments) {
-        console.log(`[MailService] Email ${id} has no attachments according to metadata`);
+        const executionTime = Date.now() - startTime;
+        MonitoringService.trackMetric('graph_mail_get_attachments_no_attachments', executionTime, {
+          service: 'graph-mail-service',
+          method: 'getAttachments',
+          timestamp: new Date().toISOString()
+        });
         return [];
       }
     } catch (metadataError) {
-      console.error(`[MailService] Error checking email metadata: ${metadataError.message}`);
+      MonitoringService.warn('Error checking email metadata for attachments', {
+        emailId: id,
+        error: metadataError.message,
+        timestamp: new Date().toISOString()
+      }, 'graph');
       // Continue anyway to try getting attachments directly
     }
     
@@ -256,45 +642,82 @@ async function getAttachments(id, req) {
       .get();
     
     const attachments = res.value || [];
-    console.log(`[MailService] Retrieved ${attachments.length} attachments for email ID: ${id}`);
     
-    if (attachments.length > 0) {
+    if (process.env.NODE_ENV === 'development' && attachments.length > 0) {
       // Log attachment details for debugging
       attachments.forEach(attachment => {
-        console.log(`[MailService] Attachment found: ${attachment.name}, Type: ${attachment.contentType}, Size: ${attachment.size || 'unknown'}`);
+        MonitoringService.debug('Email attachment found', {
+          emailId: id,
+          attachmentName: attachment.name,
+          contentType: attachment.contentType,
+          size: attachment.size || 'unknown',
+          timestamp: new Date().toISOString()
+        }, 'graph');
       });
-      
-      // Return normalized attachments with consistent structure
-      return attachments.map(attachment => ({
-        id: attachment.id,
-        name: attachment.name,
-        contentType: attachment.contentType,
-        size: attachment.size || 0,
-        isInline: attachment.isInline || false,
-        lastModifiedDateTime: attachment.lastModifiedDateTime || new Date().toISOString()
-      }));
     }
     
-    return [];
+    const normalizedAttachments = attachments.map(attachment => ({
+      id: attachment.id,
+      name: attachment.name,
+      contentType: attachment.contentType,
+      size: attachment.size || 0,
+      isInline: attachment.isInline || false,
+      lastModifiedDateTime: attachment.lastModifiedDateTime || new Date().toISOString()
+    }));
+    
+    const executionTime = Date.now() - startTime;
+    MonitoringService.trackMetric('graph_mail_get_attachments_success', executionTime, {
+      service: 'graph-mail-service',
+      method: 'getAttachments',
+      attachmentCount: normalizedAttachments.length,
+      timestamp: new Date().toISOString()
+    });
+    
+    if (process.env.NODE_ENV === 'development') {
+      MonitoringService.debug('Mail getAttachments operation completed', {
+        emailId: id,
+        attachmentCount: normalizedAttachments.length,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'graph');
+    }
+    
+    return normalizedAttachments;
   } catch (error) {
-    console.error(`[MailService] Error getting attachments for email ${id}: ${error.message}`);
-    // Create a standardized error using the ErrorService
+    const executionTime = Date.now() - startTime;
+    
+    // If it's already an MCP error, just track metrics and rethrow
+    if (error.category) {
+      MonitoringService.trackMetric('graph_mail_get_attachments_failure', executionTime, {
+        service: 'graph-mail-service',
+        method: 'getAttachments',
+        errorType: error.code || 'validation_error',
+        timestamp: new Date().toISOString()
+      });
+      throw error;
+    }
+    
     const mcpError = ErrorService.createError(
-      ErrorService.CATEGORIES.GRAPH,
+      ErrorService.CATEGORIES.API,
       `Failed to get email attachments: ${error.message}`,
       ErrorService.SEVERITIES.ERROR,
       {
+        service: 'graph-mail-service',
+        method: 'getAttachments',
         emailId: id,
-        graphErrorCode: error.code || 'unknown',
         stack: error.stack,
         timestamp: new Date().toISOString()
       }
     );
     
-    // Log the error with the MonitoringService
     MonitoringService.logError(mcpError);
+    MonitoringService.trackMetric('graph_mail_get_attachments_failure', executionTime, {
+      service: 'graph-mail-service',
+      method: 'getAttachments',
+      errorType: error.code || 'unknown',
+      timestamp: new Date().toISOString()
+    });
     
-    // Rethrow the error for the caller to handle
     throw mcpError;
   }
 }
@@ -306,10 +729,48 @@ async function getAttachments(id, req) {
  * @returns {Promise<Array<object>>}
  */
 async function getInboxRaw(options = {}, req) {
-  const client = await graphClientFactory.createClient(req);
-  const top = options.top || 10;
-  const res = await client.api(`/me/mailFolders/inbox/messages?$top=${top}`).get();
-  return res.value || [];
+  const startTime = Date.now();
+  
+  try {
+    const client = await graphClientFactory.createClient(req);
+    const top = options.top || options.limit || 10;
+    const res = await client.api(`/me/mailFolders/inbox/messages?$top=${top}`).get();
+    const emails = res.value || [];
+    
+    const executionTime = Date.now() - startTime;
+    MonitoringService.trackMetric('graph_mail_get_inbox_raw_success', executionTime, {
+      service: 'graph-mail-service',
+      method: 'getInboxRaw',
+      emailCount: emails.length,
+      timestamp: new Date().toISOString()
+    });
+    
+    return emails;
+  } catch (error) {
+    const executionTime = Date.now() - startTime;
+    
+    const mcpError = ErrorService.createError(
+      ErrorService.CATEGORIES.API,
+      `Failed to get raw inbox data: ${error.message}`,
+      ErrorService.SEVERITIES.ERROR,
+      {
+        service: 'graph-mail-service',
+        method: 'getInboxRaw',
+        stack: error.stack,
+        timestamp: new Date().toISOString()
+      }
+    );
+    
+    MonitoringService.logError(mcpError);
+    MonitoringService.trackMetric('graph_mail_get_inbox_raw_failure', executionTime, {
+      service: 'graph-mail-service',
+      method: 'getInboxRaw',
+      errorType: error.code || 'unknown',
+      timestamp: new Date().toISOString()
+    });
+    
+    throw mcpError;
+  }
 }
 
 /**
@@ -319,16 +780,45 @@ async function getInboxRaw(options = {}, req) {
  * @returns {Promise<object>}
  */
 async function getEmailDetails(id, req) {
+  const startTime = Date.now();
+  
   try {
+    if (!id || typeof id !== 'string') {
+      const mcpError = ErrorService.createError(
+        ErrorService.CATEGORIES.VALIDATION,
+        'Email ID must be a non-empty string',
+        ErrorService.SEVERITIES.WARNING,
+        {
+          service: 'graph-mail-service',
+          method: 'getEmailDetails',
+          idType: typeof id,
+          timestamp: new Date().toISOString()
+        }
+      );
+      MonitoringService.logError(mcpError);
+      throw mcpError;
+    }
+    
     const client = await graphClientFactory.createClient(req);
     const message = await client.api(`/me/messages/${id}`).get();
     
     if (!message) {
-      console.error(`[MailService] No message found with ID: ${id}`);
-      return null;
+      const mcpError = ErrorService.createError(
+        ErrorService.CATEGORIES.API,
+        `No message found with ID: ${id}`,
+        ErrorService.SEVERITIES.WARNING,
+        {
+          service: 'graph-mail-service',
+          method: 'getEmailDetails',
+          emailId: id,
+          timestamp: new Date().toISOString()
+        }
+      );
+      MonitoringService.logError(mcpError);
+      throw mcpError;
     }
     
-    return {
+    const emailDetails = {
       id: message.id,
       subject: message.subject,
       from: {
@@ -356,10 +846,52 @@ async function getEmailDetails(id, req) {
       hasAttachments: message.hasAttachments,
       categories: message.categories || []
     };
+    
+    const executionTime = Date.now() - startTime;
+    MonitoringService.trackMetric('graph_mail_get_email_details_success', executionTime, {
+      service: 'graph-mail-service',
+      method: 'getEmailDetails',
+      hasAttachments: emailDetails.hasAttachments,
+      timestamp: new Date().toISOString()
+    });
+    
+    return emailDetails;
   } catch (error) {
-    console.error(`[MailService] Error getting email details for ID ${id}: ${error.message}`);
-    // Re-throw to allow proper error handling up the chain
-    throw error;
+    const executionTime = Date.now() - startTime;
+    
+    // If it's already an MCP error, just track metrics and rethrow
+    if (error.category) {
+      MonitoringService.trackMetric('graph_mail_get_email_details_failure', executionTime, {
+        service: 'graph-mail-service',
+        method: 'getEmailDetails',
+        errorType: error.code || 'validation_error',
+        timestamp: new Date().toISOString()
+      });
+      throw error;
+    }
+    
+    const mcpError = ErrorService.createError(
+      ErrorService.CATEGORIES.API,
+      `Failed to get email details: ${error.message}`,
+      ErrorService.SEVERITIES.ERROR,
+      {
+        service: 'graph-mail-service',
+        method: 'getEmailDetails',
+        emailId: id,
+        stack: error.stack,
+        timestamp: new Date().toISOString()
+      }
+    );
+    
+    MonitoringService.logError(mcpError);
+    MonitoringService.trackMetric('graph_mail_get_email_details_failure', executionTime, {
+      service: 'graph-mail-service',
+      method: 'getEmailDetails',
+      errorType: error.code || 'unknown',
+      timestamp: new Date().toISOString()
+    });
+    
+    throw mcpError;
   }
 }
 
@@ -371,11 +903,77 @@ async function getEmailDetails(id, req) {
  * @returns {Promise<boolean>}
  */
 async function markAsRead(id, isRead = true, req) {
-  const client = await graphClientFactory.createClient(req);
-  await client.api(`/me/messages/${id}`).patch({
-    isRead
-  });
-  return true;
+  const startTime = Date.now();
+  
+  try {
+    if (!id || typeof id !== 'string') {
+      const mcpError = ErrorService.createError(
+        ErrorService.CATEGORIES.VALIDATION,
+        'Email ID must be a non-empty string',
+        ErrorService.SEVERITIES.WARNING,
+        {
+          service: 'graph-mail-service',
+          method: 'markAsRead',
+          idType: typeof id,
+          timestamp: new Date().toISOString()
+        }
+      );
+      MonitoringService.logError(mcpError);
+      throw mcpError;
+    }
+    
+    const client = await graphClientFactory.createClient(req);
+    await client.api(`/me/messages/${id}`).patch({
+      isRead
+    });
+    
+    const executionTime = Date.now() - startTime;
+    MonitoringService.trackMetric('graph_mail_mark_as_read_success', executionTime, {
+      service: 'graph-mail-service',
+      method: 'markAsRead',
+      isRead,
+      timestamp: new Date().toISOString()
+    });
+    
+    return true;
+  } catch (error) {
+    const executionTime = Date.now() - startTime;
+    
+    // If it's already an MCP error, just track metrics and rethrow
+    if (error.category) {
+      MonitoringService.trackMetric('graph_mail_mark_as_read_failure', executionTime, {
+        service: 'graph-mail-service',
+        method: 'markAsRead',
+        errorType: error.code || 'validation_error',
+        timestamp: new Date().toISOString()
+      });
+      throw error;
+    }
+    
+    const mcpError = ErrorService.createError(
+      ErrorService.CATEGORIES.API,
+      `Failed to mark email as read: ${error.message}`,
+      ErrorService.SEVERITIES.ERROR,
+      {
+        service: 'graph-mail-service',
+        method: 'markAsRead',
+        emailId: id,
+        isRead,
+        stack: error.stack,
+        timestamp: new Date().toISOString()
+      }
+    );
+    
+    MonitoringService.logError(mcpError);
+    MonitoringService.trackMetric('graph_mail_mark_as_read_failure', executionTime, {
+      service: 'graph-mail-service',
+      method: 'markAsRead',
+      errorType: error.code || 'unknown',
+      timestamp: new Date().toISOString()
+    });
+    
+    throw mcpError;
+  }
 }
 
 module.exports = {

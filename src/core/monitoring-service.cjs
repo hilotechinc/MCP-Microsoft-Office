@@ -10,8 +10,8 @@ const os = require('os');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 
-// Import event service for event-based architecture
-const eventService = require('./event-service.cjs');
+// Import event service for event-based architecture (lazy loaded to avoid circular dependency)
+let eventService = null;
 
 // Event types based on analysis
 const eventTypes = {
@@ -201,13 +201,19 @@ function startMemoryMonitoring() {
       if (usageRatio > MEMORY_WARNING_THRESHOLD) {
         console.warn(`[MEMORY WARNING] High memory usage: ${Math.round(usageRatio * 100)}% (${Math.round(heapUsed / 1024 / 1024)}MB / ${Math.round(heapTotal / 1024 / 1024)}MB)`);
         
-        // Emit memory warning event
-        eventService.emit(eventTypes.SYSTEM_MEMORY_WARNING, {
-          usageRatio,
-          heapUsed,
-          heapTotal,
-          timestamp: new Date().toISOString()
-        });
+        // Emit memory warning event if event service is available
+        if (eventService) {
+          try {
+            eventService.emit(eventTypes.SYSTEM_MEMORY_WARNING, {
+              usageRatio,
+              heapUsed,
+              heapTotal,
+              timestamp: new Date().toISOString()
+            });
+          } catch (error) {
+            // Silently ignore event emission errors
+          }
+        }
         
         if (global.gc) {
           console.log('[MEMORY] Forcing garbage collection');
@@ -252,12 +258,18 @@ function checkMemoryForEmergency() {
         console.error(`[EMERGENCY] Disabling all logging due to critical memory usage: ${Math.round(usageRatio * 100)}%`);
         emergencyLoggingDisabled = true;
         
-        // Emit emergency event
-        eventService.emit(eventTypes.SYSTEM_EMERGENCY, {
-          type: 'memory_critical',
-          usageRatio,
-          timestamp: new Date().toISOString()
-        });
+        // Emit emergency event if event service is available
+        if (eventService) {
+          try {
+            eventService.emit(eventTypes.SYSTEM_EMERGENCY, {
+              type: 'memory_critical',
+              usageRatio,
+              timestamp: new Date().toISOString()
+            });
+          } catch (error) {
+            // Silently ignore event emission errors
+          }
+        }
       }
       return true;
     } else if (emergencyLoggingDisabled && usageRatio < 0.80) {
@@ -294,14 +306,28 @@ function handleLogEvent(logData) {
 async function initialize() {
   subscriptions = [];
   
+  // Lazy load event service to avoid circular dependency
+  if (!eventService) {
+    try {
+      eventService = require('./event-service.cjs');
+    } catch (error) {
+      console.warn('[MONITORING] Event service not available for subscription:', error.message);
+      return;
+    }
+  }
+  
   // Subscribe to all log events
-  subscriptions.push(
-    await eventService.subscribe(eventTypes.ERROR, handleLogEvent),
-    await eventService.subscribe(eventTypes.INFO, handleLogEvent),
-    await eventService.subscribe(eventTypes.WARN, handleLogEvent),
-    await eventService.subscribe(eventTypes.DEBUG, handleLogEvent),
-    await eventService.subscribe(eventTypes.METRIC, handleLogEvent)
-  );
+  try {
+    subscriptions.push(
+      await eventService.subscribe(eventTypes.ERROR, handleLogEvent),
+      await eventService.subscribe(eventTypes.INFO, handleLogEvent),
+      await eventService.subscribe(eventTypes.WARN, handleLogEvent),
+      await eventService.subscribe(eventTypes.DEBUG, handleLogEvent),
+      await eventService.subscribe(eventTypes.METRIC, handleLogEvent)
+    );
+  } catch (error) {
+    console.warn('[MONITORING] Failed to subscribe to event service:', error.message);
+  }
 }
 
 /**
@@ -504,6 +530,16 @@ function subscribeToLogs(callback) {
     // For backward compatibility, subscribe to all log events
     const unsubscribeFunctions = [];
     
+    // Lazy load event service if not available
+    if (!eventService) {
+      try {
+        eventService = require('./event-service.cjs');
+      } catch (error) {
+        console.warn('[MONITORING] Event service not available for log subscription:', error.message);
+        return () => {}; // Return no-op unsubscribe function
+      }
+    }
+    
     const subscribeToEvent = async (eventType) => {
         const id = await eventService.subscribe(eventType, callback);
         return () => eventService.unsubscribe(id);
@@ -516,6 +552,8 @@ function subscribeToLogs(callback) {
         subscribeToEvent(eventTypes.DEBUG)
     ]).then(unsubscribes => {
         unsubscribeFunctions.push(...unsubscribes);
+    }).catch(error => {
+        console.warn('[MONITORING] Failed to subscribe to log events:', error.message);
     });
     
     // Return unsubscribe function that cleans up all subscriptions
@@ -530,8 +568,20 @@ function subscribeToLogs(callback) {
 function subscribeToMetrics(callback) {
     let unsubscribeFunction = null;
     
+    // Lazy load event service if not available
+    if (!eventService) {
+      try {
+        eventService = require('./event-service.cjs');
+      } catch (error) {
+        console.warn('[MONITORING] Event service not available for metrics subscription:', error.message);
+        return () => {}; // Return no-op unsubscribe function
+      }
+    }
+    
     eventService.subscribe(eventTypes.METRIC, callback).then(id => {
         unsubscribeFunction = () => eventService.unsubscribe(id);
+    }).catch(error => {
+        console.warn('[MONITORING] Failed to subscribe to metric events:', error.message);
     });
     
     return () => {
@@ -568,10 +618,16 @@ function _resetLoggerForTest(logFilePath, logLevel = 'info') {
     initLogger(logFilePath, logLevel);
 }
 
-// Initialize logger and event subscriptions at startup
+// Initialize logger and memory monitoring at startup
 initLogger();
-initialize();
 startMemoryMonitoring();
+
+// Defer event service initialization to avoid circular dependency
+setTimeout(() => {
+  initialize().catch(error => {
+    console.warn('[MONITORING] Event service initialization failed:', error.message);
+  });
+}, 100); // Small delay to ensure all modules are loaded
 
 module.exports = {
     logError,

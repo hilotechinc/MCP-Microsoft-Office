@@ -4,38 +4,96 @@
  */
 const process = require('process');
 const fetch = require('node-fetch');
+const ErrorService = require('../core/error-service.cjs');
+const MonitoringService = require('../core/monitoring-service.cjs');
 
 // Load environment variables
 const LLM_PROVIDER = process.env.LLM_PROVIDER || 'openai';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
 
-// Debug environment variables
-console.log('[LLM] Environment variables:');
-console.log('[LLM] LLM_PROVIDER:', LLM_PROVIDER);
-console.log('[LLM] OPENAI_API_KEY:', OPENAI_API_KEY ? 'Set' : 'Not set');
-console.log('[LLM] CLAUDE_API_KEY:', CLAUDE_API_KEY ? 'Set' : 'Not set');
+// Log service initialization
+MonitoringService.info('LLM Service initialized', {
+    serviceName: 'llm-service',
+    provider: LLM_PROVIDER,
+    hasOpenAIKey: !!OPENAI_API_KEY,
+    hasClaudeKey: !!CLAUDE_API_KEY,
+    timestamp: new Date().toISOString()
+}, 'llm');
 
 /**
  * Returns true if an LLM API key is configured in the environment.
  * @returns {Promise<boolean>}
  */
 async function isConfigured() {
-    console.log('[LLM] Checking if LLM is configured');
-    console.log('[LLM] Provider:', LLM_PROVIDER);
-    console.log('[LLM] API Key present:', LLM_PROVIDER === 'openai' ? !!OPENAI_API_KEY : !!CLAUDE_API_KEY);
+    const startTime = Date.now();
     
-    // For now, just check if the API key exists rather than making an API call
-    // This ensures the traffic light turns green without network issues
-    if (LLM_PROVIDER === 'openai' && OPENAI_API_KEY) {
-        console.log('[LLM] OpenAI API key is present, returning true');
-        return true;
-    } else if (LLM_PROVIDER === 'claude' && CLAUDE_API_KEY) {
-        console.log('[LLM] Claude API key is present, returning true');
-        return true;
+    if (process.env.NODE_ENV === 'development') {
+        MonitoringService.debug('LLM configuration check started', {
+            method: 'isConfigured',
+            provider: LLM_PROVIDER,
+            timestamp: new Date().toISOString()
+        }, 'llm');
     }
     
-    return false;
+    try {
+        let isConfigured = false;
+        
+        // Check if the API key exists for the configured provider
+        if (LLM_PROVIDER === 'openai' && OPENAI_API_KEY) {
+            isConfigured = true;
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('OpenAI API key found', {
+                    provider: 'openai',
+                    timestamp: new Date().toISOString()
+                }, 'llm');
+            }
+        } else if (LLM_PROVIDER === 'claude' && CLAUDE_API_KEY) {
+            isConfigured = true;
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Claude API key found', {
+                    provider: 'claude',
+                    timestamp: new Date().toISOString()
+                }, 'llm');
+            }
+        }
+        
+        const executionTime = Date.now() - startTime;
+        MonitoringService.trackMetric('llm_is_configured_check', executionTime, {
+            service: 'llm-service',
+            method: 'isConfigured',
+            provider: LLM_PROVIDER,
+            configured: isConfigured,
+            timestamp: new Date().toISOString()
+        });
+        
+        return isConfigured;
+    } catch (error) {
+        const executionTime = Date.now() - startTime;
+        
+        const mcpError = ErrorService.createError(
+            ErrorService.CATEGORIES.SYSTEM,
+            `LLM configuration check failed: ${error.message}`,
+            ErrorService.SEVERITIES.ERROR,
+            {
+                service: 'llm-service',
+                method: 'isConfigured',
+                provider: LLM_PROVIDER,
+                stack: error.stack,
+                timestamp: new Date().toISOString()
+            }
+        );
+        
+        MonitoringService.logError(mcpError);
+        MonitoringService.trackMetric('llm_is_configured_failure', executionTime, {
+            service: 'llm-service',
+            method: 'isConfigured',
+            errorType: error.code || 'unknown',
+            timestamp: new Date().toISOString()
+        });
+        
+        throw mcpError;
+    }
 }
 
 /**
@@ -43,99 +101,272 @@ async function isConfigured() {
  * @returns {Promise<object>}
  */
 async function statusDetails() {
-    console.log('[LLM] Getting status details for provider:', LLM_PROVIDER);
+    const startTime = Date.now();
     
-    if (LLM_PROVIDER === 'openai' && OPENAI_API_KEY) {
-        console.log('[LLM] Checking OpenAI API status with key:', OPENAI_API_KEY.substring(0, 5) + '...');
-        try {
-            const res = await fetch('https://api.openai.com/v1/models', {
-                headers: {
-                    'Authorization': `Bearer ${OPENAI_API_KEY}`
-                },
-                timeout: 5000
-            });
-            console.log('[LLM] OpenAI API status response code:', res.status);
-            
-            if (res.ok) {
-                const data = await res.json();
-                const models = data.data.map(model => model.id).filter(id => 
-                    id.startsWith('gpt-4') || id.startsWith('gpt-3.5')
-                ).slice(0, 5); // Limit to 5 models
-                
-                return { 
-                    provider: 'OpenAI', 
-                    apiKey: 'valid', 
-                    status: 'connected',
-                    models
-                };
-            }
-            
-            return { 
-                provider: 'OpenAI', 
-                apiKey: 'invalid', 
-                status: 'error', 
-                httpStatus: res.status 
-            };
-        } catch (error) {
-            return { 
-                provider: 'OpenAI', 
-                apiKey: 'invalid', 
-                status: 'error', 
-                error: error.message 
-            };
-        }
-    } else if (LLM_PROVIDER === 'claude' && CLAUDE_API_KEY) {
-        try {
-            // Claude doesn't have a models endpoint, so we'll just check if the API key works
-            const res = await fetch('https://api.anthropic.com/v1/messages', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'x-api-key': CLAUDE_API_KEY,
-                    'anthropic-version': '2023-06-01'
-                },
-                body: JSON.stringify({
-                    model: 'claude-3-haiku-20240307',
-                    max_tokens: 10,
-                    messages: [{
-                        role: 'user',
-                        content: 'Hello'
-                    }]
-                }),
-                timeout: 5000
-            });
-            
-            if (res.ok) {
-                return { 
-                    provider: 'Claude', 
-                    apiKey: 'valid', 
-                    status: 'connected',
-                    models: ['claude-3-opus', 'claude-3-sonnet', 'claude-3-haiku']
-                };
-            }
-            
-            return { 
-                provider: 'Claude', 
-                apiKey: 'invalid', 
-                status: 'error', 
-                httpStatus: res.status 
-            };
-        } catch (error) {
-            return { 
-                provider: 'Claude', 
-                apiKey: 'invalid', 
-                status: 'error', 
-                error: error.message 
-            };
-        }
+    if (process.env.NODE_ENV === 'development') {
+        MonitoringService.debug('LLM status details check started', {
+            method: 'statusDetails',
+            provider: LLM_PROVIDER,
+            timestamp: new Date().toISOString()
+        }, 'llm');
     }
     
-    return { 
-        provider: LLM_PROVIDER, 
-        apiKey: 'missing', 
-        status: 'error',
-        error: `No API key found for ${LLM_PROVIDER}`
-    };
+    try {
+        if (LLM_PROVIDER === 'openai' && OPENAI_API_KEY) {
+            return await _checkOpenAIStatus(startTime);
+        } else if (LLM_PROVIDER === 'claude' && CLAUDE_API_KEY) {
+            return await _checkClaudeStatus(startTime);
+        }
+        
+        // No API key configured
+        const executionTime = Date.now() - startTime;
+        MonitoringService.trackMetric('llm_status_details_no_key', executionTime, {
+            service: 'llm-service',
+            method: 'statusDetails',
+            provider: LLM_PROVIDER,
+            timestamp: new Date().toISOString()
+        });
+        
+        return { 
+            provider: LLM_PROVIDER, 
+            apiKey: 'missing', 
+            status: 'error',
+            error: `No API key found for ${LLM_PROVIDER}`
+        };
+    } catch (error) {
+        const executionTime = Date.now() - startTime;
+        
+        const mcpError = ErrorService.createError(
+            ErrorService.CATEGORIES.SYSTEM,
+            `LLM status details check failed: ${error.message}`,
+            ErrorService.SEVERITIES.ERROR,
+            {
+                service: 'llm-service',
+                method: 'statusDetails',
+                provider: LLM_PROVIDER,
+                stack: error.stack,
+                timestamp: new Date().toISOString()
+            }
+        );
+        
+        MonitoringService.logError(mcpError);
+        MonitoringService.trackMetric('llm_status_details_failure', executionTime, {
+            service: 'llm-service',
+            method: 'statusDetails',
+            errorType: error.code || 'unknown',
+            timestamp: new Date().toISOString()
+        });
+        
+        throw mcpError;
+    }
+}
+
+/**
+ * Checks OpenAI API status and available models.
+ * @private
+ */
+async function _checkOpenAIStatus(overallStartTime) {
+    const requestStartTime = Date.now();
+    
+    if (process.env.NODE_ENV === 'development') {
+        MonitoringService.debug('Checking OpenAI API status', {
+            keyPrefix: OPENAI_API_KEY.substring(0, 5) + '...',
+            timestamp: new Date().toISOString()
+        }, 'llm');
+    }
+    
+    try {
+        const res = await fetch('https://api.openai.com/v1/models', {
+            headers: {
+                'Authorization': `Bearer ${OPENAI_API_KEY}`
+            },
+            timeout: 5000
+        });
+        
+        const requestTime = Date.now() - requestStartTime;
+        const overallTime = Date.now() - overallStartTime;
+        
+        MonitoringService.trackMetric('llm_openai_api_request', requestTime, {
+            endpoint: '/v1/models',
+            statusCode: res.status,
+            success: res.ok,
+            timestamp: new Date().toISOString()
+        });
+        
+        if (res.ok) {
+            const data = await res.json();
+            const models = data.data.map(model => model.id).filter(id => 
+                id.startsWith('gpt-4') || id.startsWith('gpt-3.5')
+            ).slice(0, 5); // Limit to 5 models
+            
+            MonitoringService.trackMetric('llm_status_details_success', overallTime, {
+                service: 'llm-service',
+                method: 'statusDetails',
+                provider: 'openai',
+                modelCount: models.length,
+                timestamp: new Date().toISOString()
+            });
+            
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('OpenAI API check successful', {
+                    modelCount: models.length,
+                    requestTimeMs: requestTime,
+                    timestamp: new Date().toISOString()
+                }, 'llm');
+            }
+            
+            return { 
+                provider: 'OpenAI', 
+                apiKey: 'valid', 
+                status: 'connected',
+                models
+            };
+        }
+        
+        MonitoringService.trackMetric('llm_status_details_api_error', overallTime, {
+            service: 'llm-service',
+            method: 'statusDetails',
+            provider: 'openai',
+            httpStatus: res.status,
+            timestamp: new Date().toISOString()
+        });
+        
+        return { 
+            provider: 'OpenAI', 
+            apiKey: 'invalid', 
+            status: 'error', 
+            httpStatus: res.status 
+        };
+    } catch (error) {
+        const requestTime = Date.now() - requestStartTime;
+        const overallTime = Date.now() - overallStartTime;
+        
+        MonitoringService.trackMetric('llm_openai_api_error', requestTime, {
+            endpoint: '/v1/models',
+            errorType: 'network',
+            timestamp: new Date().toISOString()
+        });
+        
+        MonitoringService.trackMetric('llm_status_details_network_error', overallTime, {
+            service: 'llm-service',
+            method: 'statusDetails',
+            provider: 'openai',
+            timestamp: new Date().toISOString()
+        });
+        
+        return { 
+            provider: 'OpenAI', 
+            apiKey: 'invalid', 
+            status: 'error', 
+            error: error.message 
+        };
+    }
+}
+
+/**
+ * Checks Claude API status with a minimal test message.
+ * @private
+ */
+async function _checkClaudeStatus(overallStartTime) {
+    const requestStartTime = Date.now();
+    
+    if (process.env.NODE_ENV === 'development') {
+        MonitoringService.debug('Checking Claude API status', {
+            timestamp: new Date().toISOString()
+        }, 'llm');
+    }
+    
+    try {
+        // Claude doesn't have a models endpoint, so we'll just check if the API key works
+        const res = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': CLAUDE_API_KEY,
+                'anthropic-version': '2023-06-01'
+            },
+            body: JSON.stringify({
+                model: 'claude-3-haiku-20240307',
+                max_tokens: 10,
+                messages: [{
+                    role: 'user',
+                    content: 'Hello'
+                }]
+            }),
+            timeout: 5000
+        });
+        
+        const requestTime = Date.now() - requestStartTime;
+        const overallTime = Date.now() - overallStartTime;
+        
+        MonitoringService.trackMetric('llm_claude_api_request', requestTime, {
+            endpoint: '/v1/messages',
+            statusCode: res.status,
+            success: res.ok,
+            timestamp: new Date().toISOString()
+        });
+        
+        if (res.ok) {
+            MonitoringService.trackMetric('llm_status_details_success', overallTime, {
+                service: 'llm-service',
+                method: 'statusDetails',
+                provider: 'claude',
+                timestamp: new Date().toISOString()
+            });
+            
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Claude API check successful', {
+                    requestTimeMs: requestTime,
+                    timestamp: new Date().toISOString()
+                }, 'llm');
+            }
+            
+            return { 
+                provider: 'Claude', 
+                apiKey: 'valid', 
+                status: 'connected',
+                models: ['claude-3-opus', 'claude-3-sonnet', 'claude-3-haiku']
+            };
+        }
+        
+        MonitoringService.trackMetric('llm_status_details_api_error', overallTime, {
+            service: 'llm-service',
+            method: 'statusDetails',
+            provider: 'claude',
+            httpStatus: res.status,
+            timestamp: new Date().toISOString()
+        });
+        
+        return { 
+            provider: 'Claude', 
+            apiKey: 'invalid', 
+            status: 'error', 
+            httpStatus: res.status 
+        };
+    } catch (error) {
+        const requestTime = Date.now() - requestStartTime;
+        const overallTime = Date.now() - overallStartTime;
+        
+        MonitoringService.trackMetric('llm_claude_api_error', requestTime, {
+            endpoint: '/v1/messages',
+            errorType: 'network',
+            timestamp: new Date().toISOString()
+        });
+        
+        MonitoringService.trackMetric('llm_status_details_network_error', overallTime, {
+            service: 'llm-service',
+            method: 'statusDetails',
+            provider: 'claude',
+            timestamp: new Date().toISOString()
+        });
+        
+        return { 
+            provider: 'Claude', 
+            apiKey: 'invalid', 
+            status: 'error', 
+            error: error.message 
+        };
+    }
 }
 
 module.exports = { isConfigured, statusDetails };

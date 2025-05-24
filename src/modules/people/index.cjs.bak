@@ -190,7 +190,8 @@ const PeopleModule = {
                 context: {}
             };
             
-            monitoringService?.logError(error);
+            monitoringService?.logError(error) || 
+                console.error('[MCP PEOPLE] GraphService.searchPeople not implemented');
                 
             throw error;
         }
@@ -246,7 +247,8 @@ const PeopleModule = {
             };
             
             // Log the error
-            monitoringService?.logError(mcpError);
+            monitoringService?.logError(mcpError) || 
+                console.error(`[MCP PEOPLE] Failed to search people: ${error.message}`);
                 
             // Throw the structured error
             throw mcpError;
@@ -283,7 +285,8 @@ const PeopleModule = {
                 context: {}
             };
             
-            monitoringService?.logError(error);
+            monitoringService?.logError(error) || 
+                console.error('[MCP PEOPLE] Person ID is required to get person details');
                 
             throw error;
         }
@@ -301,7 +304,8 @@ const PeopleModule = {
                 context: {}
             };
             
-            monitoringService?.logError(error);
+            monitoringService?.logError(error) || 
+                console.error('[MCP PEOPLE] GraphService.getPersonById not implemented');
                 
             throw error;
         }
@@ -324,7 +328,8 @@ const PeopleModule = {
                 found: !!person,
                 elapsedTime,
                 timestamp: new Date().toISOString()
-            }, 'people');
+            }, 'people') || 
+                console.log(`[MCP PEOPLE] Successfully retrieved person by ID`);
                 
             return person;
         } catch (error) {
@@ -354,7 +359,8 @@ const PeopleModule = {
             };
             
             // Log the error
-            monitoringService?.logError(mcpError);
+            monitoringService?.logError(mcpError) || 
+                console.error(`[MCP PEOPLE] Failed to get person by ID: ${error.message}`);
                 
             // Throw the structured error
             throw mcpError;
@@ -377,7 +383,8 @@ const PeopleModule = {
         monitoringService?.debug('Attempting to find people', { 
             criteria: redactedCriteria,
             timestamp: new Date().toISOString()
-        }, 'people');
+        }, 'people') || 
+            console.log(`[MCP PEOPLE] Finding people with criteria`);
         
         if (!graphService || typeof graphService.searchPeople !== 'function') {
             const error = errorService?.createError(
@@ -392,7 +399,8 @@ const PeopleModule = {
                 context: {}
             };
             
-            monitoringService?.logError(error);
+            monitoringService?.logError(error) || 
+                console.error('[MCP PEOPLE] GraphService.searchPeople not implemented');
                 
             throw error;
         }
@@ -407,7 +415,8 @@ const PeopleModule = {
                 monitoringService?.debug('No query provided, returning relevant people', { 
                     limit: criteria.limit || 10,
                     timestamp: new Date().toISOString()
-                }, 'people');
+                }, 'people') || 
+                    console.log(`[MCP PEOPLE] No query provided, returning relevant people`);
                     
                 return await this.getRelevantPeople({ top: criteria.limit || 10 }, req);
             }
@@ -427,14 +436,16 @@ const PeopleModule = {
                             count: results.length,
                             query: 'REDACTED_QUERY',
                             timestamp: new Date().toISOString()
-                        }, 'people');
+                        }, 'people') || 
+                            console.log(`[MCP PEOPLE] Found ${results.length} people in cache`);
                     }
                 } catch (cacheError) {
                     // Log cache error but continue with API call
                     monitoringService?.warn('Cache error when finding people', { 
                         error: cacheError.message,
                         timestamp: new Date().toISOString()
-                    }, 'people');
+                    }, 'people') || 
+                        console.warn(`[MCP PEOPLE] Cache error: ${cacheError.message}`);
                 }
             }
             
@@ -443,7 +454,8 @@ const PeopleModule = {
                     query: 'REDACTED_QUERY',
                     limit: criteria.limit || 10,
                     timestamp: new Date().toISOString()
-                }, 'people');
+                }, 'people') || 
+                    console.log(`[MCP PEOPLE] Cache miss, calling graph service`);
                     
                 results = await graphService.searchPeople(query, { top: criteria.limit || 10 }, req);
                 
@@ -451,7 +463,8 @@ const PeopleModule = {
                     count: results.length,
                     query: 'REDACTED_QUERY',
                     timestamp: new Date().toISOString()
-                }, 'people');
+                }, 'people') || 
+                    console.log(`[MCP PEOPLE] Found ${results.length} people from graph service`);
                     
                 // Cache the results
                 if (cacheService) {
@@ -462,7 +475,8 @@ const PeopleModule = {
                         monitoringService?.warn('Failed to cache people search results', { 
                             error: cacheError.message,
                             timestamp: new Date().toISOString()
-                        }, 'people');
+                        }, 'people') || 
+                            console.warn(`[MCP PEOPLE] Failed to cache results: ${cacheError.message}`);
                     }
                 }
             }
@@ -513,7 +527,8 @@ const PeopleModule = {
             };
             
             // Log the error
-            monitoringService?.logError(mcpError);
+            monitoringService?.logError(mcpError) || 
+                console.error(`[MCP PEOPLE] Failed to find people: ${error.message}`);
                 
             // Throw the structured error
             throw mcpError;
@@ -568,7 +583,8 @@ const PeopleModule = {
             intent,
             entities: redactedEntities,
             timestamp: new Date().toISOString()
-        }, 'people');
+        }, 'people') || 
+            console.log(`[MCP PEOPLE] Handling intent: ${intent}`);
         
         // Track performance
         const startTime = Date.now();
@@ -658,7 +674,8 @@ const PeopleModule = {
                             context: { intent }
                         };
                         
-                        monitoringService?.logError(error);
+                        monitoringService?.logError(error) || 
+                            console.error('[MCP PEOPLE] Person ID is required for getPersonById intent');
                             
                         throw error;
                     }
@@ -776,7 +793,8 @@ const PeopleModule = {
                         context: { intent, moduleId: this.id }
                     };
                     
-                    monitoringService?.logError(unsupportedError);
+                    monitoringService?.logError(unsupportedError) || 
+                        console.warn(`[MCP PEOPLE] Unsupported people intent received: ${intent}`);
                         
                     // Track metric for unsupported intent
                     monitoringService?.trackMetric('people_unsupported_intent', 1, {
@@ -799,7 +817,8 @@ const PeopleModule = {
                 intent,
                 elapsedTime,
                 timestamp: new Date().toISOString()
-            }, 'people');
+            }, 'people') || 
+                console.log(`[MCP PEOPLE] Successfully handled intent: ${intent} in ${elapsedTime}ms`);
                 
             return result;
         } catch (error) {
@@ -838,7 +857,8 @@ const PeopleModule = {
             };
             
             // Log the error
-            monitoringService?.logError(mcpError);
+            monitoringService?.logError(mcpError) || 
+                console.error(`[MCP PEOPLE] Error handling intent '${intent}': ${error.message}`);
                 
             // Track metric for error
             monitoringService?.trackMetric('people_intent_handling_error', elapsedTime, {

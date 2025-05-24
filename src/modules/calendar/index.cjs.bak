@@ -371,7 +371,8 @@ const CalendarModule = {
                         context: {}
                     };
                     
-                    monitoringService?.logError(error);
+                    monitoringService?.logError(error) || 
+                        console.error('[MCP CALENDAR] GraphService.resolveAttendeeNames not implemented');
                         
                     throw error;
                 }
@@ -433,7 +434,8 @@ const CalendarModule = {
                 context: { eventData: redactedEventData }
             };
             
-            monitoringService?.logError(mcpError);
+            monitoringService?.logError(mcpError) || 
+                console.error(`[MCP CALENDAR] Failed to create event: ${error.message}`);
                 
             throw mcpError;
         }
@@ -479,7 +481,8 @@ const CalendarModule = {
                 context: {}
             };
             
-            monitoringService?.logError(error);
+            monitoringService?.logError(error) || 
+                console.error('[MCP CALENDAR] Graph service not available for updateEvent');
                 
             throw error;
         }
@@ -522,7 +525,8 @@ const CalendarModule = {
                 context: { details: validationError.details, eventId }
             };
             
-            monitoringService?.logError(err);
+            monitoringService?.logError(err) || 
+                console.warn(`[MCP CALENDAR] Invalid event update data: ${validationError.details[0].message}`);
                 
             throw err;
         }
@@ -546,7 +550,8 @@ const CalendarModule = {
                 context: { eventId }
             };
             
-            monitoringService?.logError(err);
+            monitoringService?.logError(err) || 
+                console.error('[MCP CALENDAR] User context not available for permission check during event update');
                 
             throw err;
         }
@@ -571,7 +576,8 @@ const CalendarModule = {
                     context: { eventId }
                 };
                 
-                monitoringService?.logError(error);
+                monitoringService?.logError(error) || 
+                    console.error('[MCP CALENDAR] GraphService.getEvent method not implemented, required for ownership check');
                     
                 throw error;
             }
@@ -598,7 +604,8 @@ const CalendarModule = {
                     context: { eventId }
                 };
                 
-                monitoringService?.logError(err);
+                monitoringService?.logError(err) || 
+                    console.warn(`[MCP CALENDAR] Event with ID ${eventId} not found for update`);
                     
                 throw err;
             }
@@ -623,7 +630,8 @@ const CalendarModule = {
                     context: { eventId }
                 };
                 
-                monitoringService?.logError(err);
+                monitoringService?.logError(err) || 
+                    console.error('[MCP CALENDAR] User is not authorized to update this event (must be organizer)');
                     
                 throw err;
             }
@@ -652,7 +660,8 @@ const CalendarModule = {
                         context: { eventId }
                     };
                     
-                    monitoringService?.logError(error);
+                    monitoringService?.logError(error) || 
+                        console.error('[MCP CALENDAR] GraphService.resolveAttendeeNames not implemented');
                         
                     throw error;
                 }
@@ -691,7 +700,8 @@ const CalendarModule = {
                     context: { eventId }
                 };
                 
-                monitoringService?.logError(error);
+                monitoringService?.logError(error) || 
+                    console.error('[MCP CALENDAR] GraphService.updateEvent not implemented');
                     
                 throw error;
             }
@@ -747,7 +757,8 @@ const CalendarModule = {
                 context: { eventId, updates: redactedUpdates }
             };
             
-            monitoringService?.logError(mcpError);
+            monitoringService?.logError(mcpError) || 
+                console.error(`[MCP CALENDAR] Failed to update event ${eventId}: ${error.message}`);
                 
             throw mcpError;
         }
@@ -831,7 +842,8 @@ const CalendarModule = {
                 context: { options: redactedOptions }
             };
             
-            monitoringService?.logError(mcpError);
+            monitoringService?.logError(mcpError) || 
+                console.error(`[MCP CALENDAR] Failed to find meeting times: ${error.message}`);
                 
             return { suggestions: [], event: null, status: 'error_finding_times' };
         }
@@ -848,7 +860,8 @@ const CalendarModule = {
                 autoSchedule,
                 status: !bestSuggestion ? 'no_slots_found' : (autoSchedule ? 'low_confidence_slot' : 'auto_schedule_off'),
                 timestamp: new Date().toISOString()
-            }, 'calendar');
+            }, 'calendar') || 
+                console.log(`[MCP CALENDAR] No suitable slot found (or autoSchedule=false). Confidence: ${bestSuggestion?.confidence}`);
                 
             return {
                 suggestions: suggestions,
@@ -863,7 +876,8 @@ const CalendarModule = {
             startTime: bestSuggestion.meetingTimeSlot?.start?.dateTime,
             endTime: bestSuggestion.meetingTimeSlot?.end?.dateTime,
             timestamp: new Date().toISOString()
-        }, 'calendar');
+        }, 'calendar') || 
+            console.log(`[MCP CALENDAR] Best slot found with confidence ${bestSuggestion.confidence}. Scheduling meeting.`);
         
         // Format the body data correctly for Graph API
         let formattedBody;
@@ -899,7 +913,8 @@ const CalendarModule = {
             suggestion: this.redactSensitiveData(bestSuggestion),
             confidence: bestSuggestion.confidence,
             timestamp: new Date().toISOString()
-        }, 'calendar');
+        }, 'calendar') || 
+            console.log(`[MCP CALENDAR] Selected best suggestion with confidence: ${bestSuggestion.confidence}`);
         
         // Get the slot data based on the structure of the best suggestion
         const slotData = bestSuggestion.meetingTimeSlot || bestSuggestion.timeSlot || bestSuggestion.slot;
@@ -915,7 +930,8 @@ const CalendarModule = {
                 }
             );
             
-            monitoringService?.logError(mcpError);
+            monitoringService?.logError(mcpError) || 
+                console.error('[MCP CALENDAR] Invalid slot data in best suggestion');
                 
             throw new Error('Invalid meeting time slot data');
         }
@@ -944,7 +960,8 @@ const CalendarModule = {
             attendeeCount: eventDataToCreate.attendees.length,
             hasBody: !!eventDataToCreate.body,
             timestamp: new Date().toISOString()
-        }, 'calendar');
+        }, 'calendar') || 
+            console.log(`[MCP CALENDAR] Prepared event data for creation: ${eventDataToCreate.subject}`);
 
         try {
             const startTime = Date.now();
@@ -986,7 +1003,8 @@ const CalendarModule = {
                 }
             );
             
-            monitoringService?.logError(mcpError);
+            monitoringService?.logError(mcpError) || 
+                console.error(`[MCP CALENDAR] Error creating event during auto-schedule: ${createError.message}`);
             // TODO: Use ErrorService
             // Return suggestions even if creation failed
             return {
@@ -1404,6 +1422,7 @@ const CalendarModule = {
         // Ensure services are available
         if (!graphService || !errorService || !monitoringService) {
             // Fallback to console if monitoring service is not available
+            console.error('[MCP CALENDAR] getAvailability: Required services missing.');
             throw new Error('Required services (Graph, Error, Monitoring) not available for getAvailability');
         }
 
@@ -1598,7 +1617,8 @@ const CalendarModule = {
                 }
             );
             
-            monitoringService?.logError(methodError);
+            monitoringService?.logError(methodError) || 
+                console.error(`[MCP CALENDAR] _handleEventAction: GraphService or method ${graphMethodName} not available.`);
                 
             throw new Error(`Required GraphService method '${graphMethodName}' not implemented or service unavailable.`);
         }
@@ -1621,7 +1641,8 @@ const CalendarModule = {
                 eventId,
                 elapsedTime,
                 timestamp: new Date().toISOString()
-            }, 'calendar');
+            }, 'calendar') || 
+                console.log(`[MCP CALENDAR] Event action '${action}' for event ${eventId} successful.`);
                 
             return result; // Typically returns void or confirmation
         } catch (error) {
@@ -1646,7 +1667,8 @@ const CalendarModule = {
                 }
             );
             
-            monitoringService?.logError(actionError);
+            monitoringService?.logError(actionError) || 
+                console.error(`[MCP CALENDAR] Error performing '${action}' on event ${eventId}: ${error.message}`);
                 
             throw actionError || error;
         }
@@ -1718,7 +1740,8 @@ const CalendarModule = {
                 { timestamp: new Date().toISOString() }
             );
             
-            monitoringService?.logError(methodError);
+            monitoringService?.logError(methodError) || 
+                console.error('[MCP CALENDAR] findMeetingTimes: GraphService or method graphService.findMeetingTimes not available.');
                 
             throw new Error('Required GraphService method \'findMeetingTimes\' not implemented or service unavailable.');
         }
@@ -1740,7 +1763,8 @@ const CalendarModule = {
                 suggestionCount: result?.meetingTimeSuggestions?.length || 0,
                 elapsedTime,
                 timestamp: new Date().toISOString()
-            }, 'calendar');
+            }, 'calendar') || 
+                console.log('[MCP CALENDAR] graphService.findMeetingTimes successful.');
                 
             return result;
         } catch (error) {
@@ -1763,7 +1787,8 @@ const CalendarModule = {
                 }
             );
             
-            monitoringService?.logError(findTimesError);
+            monitoringService?.logError(findTimesError) || 
+                console.error(`[MCP CALENDAR] Error finding meeting times: ${error.message}`);
                 
             throw findTimesError || new Error(`Failed to find meeting times: ${error.message}`);
         }
@@ -1793,7 +1818,8 @@ const CalendarModule = {
                 { timestamp: new Date().toISOString() }
             );
             
-            monitoringService?.logError(methodError);
+            monitoringService?.logError(methodError) || 
+                console.error('[MCP CALENDAR] getRooms: GraphService or method graphService.getRooms not available.');
                 
             throw new Error('Required GraphService method \'getRooms\' not implemented or service unavailable.');
         }
@@ -1810,7 +1836,8 @@ const CalendarModule = {
             monitoringService?.debug('Calling getRooms Graph API', {
                 graphOptions,
                 timestamp: new Date().toISOString()
-            }, 'calendar');
+            }, 'calendar') || 
+                console.log('[MCP CALENDAR] Calling graphService.getRooms');
                 
             const result = await graphService.getRooms(graphOptions);
             
@@ -1833,7 +1860,8 @@ const CalendarModule = {
                 hasNextLink: !!result['@odata.nextLink'],
                 elapsedTime,
                 timestamp: new Date().toISOString()
-            }, 'calendar');
+            }, 'calendar') || 
+                console.log(`[MCP CALENDAR] getRooms successful, found ${normalizedRooms.length} rooms.`);
                 
             return {
                 rooms: normalizedRooms,
@@ -1859,7 +1887,8 @@ const CalendarModule = {
                 }
             );
             
-            monitoringService?.logError(roomsError);
+            monitoringService?.logError(roomsError) || 
+                console.error(`[MCP CALENDAR] Error getting rooms: ${error.message}`);
                 
             throw roomsError || new Error(`Failed to get rooms: ${error.message}`);
         }
@@ -1886,7 +1915,8 @@ const CalendarModule = {
                 { timestamp: new Date().toISOString() }
             );
             
-            monitoringService?.logError(methodError);
+            monitoringService?.logError(methodError) || 
+                console.error('[MCP CALENDAR] getCalendars: GraphService or method graphService.getCalendars not available.');
                 
             throw new Error('Required GraphService method \'getCalendars\' not implemented or service unavailable.');
         }
@@ -1897,7 +1927,8 @@ const CalendarModule = {
             
             monitoringService?.debug('Calling getCalendars Graph API', {
                 timestamp: new Date().toISOString()
-            }, 'calendar');
+            }, 'calendar') || 
+                console.log('[MCP CALENDAR] Calling graphService.getCalendars...');
                 
             const result = await graphService.getCalendars(); // Assuming graphService handles $select if needed
             
@@ -1921,7 +1952,8 @@ const CalendarModule = {
                 calendarCount: normalizedCalendars.length,
                 elapsedTime,
                 timestamp: new Date().toISOString()
-            }, 'calendar');
+            }, 'calendar') || 
+                console.log(`[MCP CALENDAR] getCalendars successful, found ${normalizedCalendars.length} calendars.`);
                 
             return normalizedCalendars; // Return the array directly
 
@@ -1944,7 +1976,8 @@ const CalendarModule = {
                 }
             );
             
-            monitoringService?.logError(calendarsError);
+            monitoringService?.logError(calendarsError) || 
+                console.error(`[MCP CALENDAR] Error getting calendars: ${error.message}`);
                 
             throw calendarsError || new Error(`Failed to get calendars: ${error.message}`);
         }
@@ -1979,7 +2012,8 @@ const CalendarModule = {
                 }
             );
             
-            monitoringService?.logError(methodError);
+            monitoringService?.logError(methodError) || 
+                console.error('[MCP CALENDAR] addAttachment: GraphService or method graphService.addEventAttachment not available.');
                 
             throw new Error('Required GraphService method \'addEventAttachment\' not implemented or service unavailable.');
         }
@@ -2018,7 +2052,8 @@ const CalendarModule = {
         };
 
         // Log the attachment attempt
-        monitoringService?.info('Attempting to add attachment to calendar event', auditLogContext, 'calendar');
+        monitoringService?.info('Attempting to add attachment to calendar event', auditLogContext, 'calendar') || 
+            console.log(`[MCP CALENDAR] Attempting to add attachment '${validatedAttachment.name}' to event ${eventId}...`);
 
         try {
             // Track performance
@@ -2039,7 +2074,8 @@ const CalendarModule = {
                 attachmentId: result.id,
                 elapsedTime,
                 timestamp: new Date().toISOString()
-            }, 'calendar');
+            }, 'calendar') || 
+                console.log(`[MCP CALENDAR] Successfully added attachment ${result.id} to event ${eventId}.`);
 
             return result; // Return the created attachment object from Graph
 
@@ -2064,7 +2100,8 @@ const CalendarModule = {
             );
             
             // Log the error
-            monitoringService?.logError(attachmentError);
+            monitoringService?.logError(attachmentError) || 
+                console.error(`[MCP CALENDAR] Error adding attachment to event ${eventId}: ${error.message}`);
                 
             throw attachmentError || new Error(`Failed to add attachment: ${error.message}`);
         }
@@ -2099,7 +2136,8 @@ const CalendarModule = {
                 }
             );
             
-            monitoringService?.logError(methodError);
+            monitoringService?.logError(methodError) || 
+                console.error('[MCP CALENDAR] removeAttachment: GraphService or method graphService.removeEventAttachment not available.');
                 
             throw new Error('Required GraphService method \'removeEventAttachment\' not implemented or service unavailable.');
         }
@@ -2112,7 +2150,8 @@ const CalendarModule = {
         };
 
         // Log the attachment removal attempt
-        monitoringService?.info('Attempting to remove attachment from calendar event', auditLogContext, 'calendar');
+        monitoringService?.info('Attempting to remove attachment from calendar event', auditLogContext, 'calendar') || 
+            console.log(`[MCP CALENDAR] Attempting to remove attachment ${attachmentId} from event ${eventId}...`);
 
         try {
             // Track performance
@@ -2132,7 +2171,8 @@ const CalendarModule = {
                 ...auditLogContext, 
                 elapsedTime,
                 timestamp: new Date().toISOString()
-            }, 'calendar');
+            }, 'calendar') || 
+                console.log(`[MCP CALENDAR] Successfully removed attachment ${attachmentId} from event ${eventId}.`);
 
             return true; // Indicate success
 
@@ -2157,7 +2197,8 @@ const CalendarModule = {
             );
             
             // Log the error
-            monitoringService?.logError(removeError);
+            monitoringService?.logError(removeError) || 
+                console.error(`[MCP CALENDAR] Error removing attachment ${attachmentId} from event ${eventId}: ${error.message}`);
                 
             throw removeError || new Error(`Failed to remove attachment: ${error.message}`);
         }
@@ -2299,7 +2340,8 @@ const CalendarModule = {
                 // Error should already be structured if thrown from within handlers using errorService
                 if (error && error.category) {
                     // Log structured error with additional context
-                    monitoringService?.logError(error);
+                    monitoringService?.logError(error) || 
+                        console.error(`[MCP CALENDAR] Error handling intent '${intent}': ${error.message}`);
                         
                     // Track failure metric
                     monitoringService?.trackMetric('calendar_intent_handling_time', 0, {
@@ -2329,7 +2371,8 @@ const CalendarModule = {
                         context: { intent, entities: redactedEntities }
                     };
                     
-                    monitoringService?.logError(mcpError);
+                    monitoringService?.logError(mcpError) || 
+                        console.error(`[MCP CALENDAR] Unexpected error handling intent '${intent}': ${error.message}`);
                     
                     // Track failure metric
                     monitoringService?.trackMetric('calendar_intent_handling_time', 0, {
@@ -2360,7 +2403,8 @@ const CalendarModule = {
                 context: { intent, moduleId: this.id }
             };
             
-            monitoringService?.logError(unsupportedError);
+            monitoringService?.logError(unsupportedError) || 
+                console.warn(`[MCP CALENDAR] Unsupported calendar intent received: ${intent}`);
                 
             // Track metric for unsupported intent
             monitoringService?.trackMetric('calendar_unsupported_intent', 1, {
@@ -2406,7 +2450,8 @@ const CalendarModule = {
                 context: {}
             };
             
-            monitoringService?.logError(error);
+            monitoringService?.logError(error) || 
+                console.error('[MCP CALENDAR] CalendarModule init requires a services object');
                 
             throw error;
         }
@@ -2429,7 +2474,8 @@ const CalendarModule = {
                     context: { missingService: serviceName }
                 };
                 
-                monitoringService?.logError(error);
+                monitoringService?.logError(error) || 
+                    console.error(`[MCP CALENDAR] CalendarModule init failed: Required service '${serviceName}' is missing`);
                     
                 throw error;
             }
@@ -2440,7 +2486,8 @@ const CalendarModule = {
         // Log successful initialization
         monitoringService?.info('CalendarModule initialized successfully', { 
             timestamp: new Date().toISOString() 
-        }, 'calendar');
+        }, 'calendar') || 
+            console.info('[MCP CALENDAR] CalendarModule initialized successfully with required services');
             
         return this; // Return the module instance, now containing validated services
     }

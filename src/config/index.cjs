@@ -10,8 +10,9 @@ const Joi = require('joi');
 const keytar = require('keytar');
 const fs = require('fs-extra');
 const path = require('path');
-
 const dotenv = require('dotenv');
+const MonitoringService = require('../core/monitoring-service.cjs');
+const ErrorService = require('../core/error-service.cjs');
 
 // Default config values
 const DEFAULTS = {
@@ -56,21 +57,58 @@ async function loadSecrets() {
  * @returns {Promise<Object>} Validated config object
  */
 async function getConfig() {
-  await loadDotenv();
-  const secrets = await loadSecrets();
-  // Merge: defaults < env < secrets
-  const merged = {
-    ...DEFAULTS,
-    ...process.env,
-    ...secrets,
-  };
+  try {
+    await loadDotenv();
+    const secrets = await loadSecrets();
+    // Merge: defaults < env < secrets
+    const merged = {
+      ...DEFAULTS,
+      ...process.env,
+      ...secrets,
+    };
+    
+    if (process.env.NODE_ENV === 'development') {
+      MonitoringService.debug('Configuration loaded successfully', {
+        port: merged.PORT,
+        nodeEnv: merged.NODE_ENV,
+        clientIdSet: !!merged.MICROSOFT_CLIENT_ID,
+        timestamp: new Date().toISOString()
+      }, 'config');
+    }
   const { value, error } = configSchema.validate(merged, { abortEarly: false });
   if (error) {
-    // Use ErrorService if available, else throw
-    // ErrorService.createError('config', 'Config validation failed', 'error', { details: error.details });
+    const mcpError = ErrorService.createError(
+      ErrorService.CATEGORIES.SYSTEM,
+      'Configuration validation failed',
+      ErrorService.SEVERITIES.CRITICAL,
+      {
+        details: error.details.map(e => e.message),
+        timestamp: new Date().toISOString()
+      }
+    );
+    MonitoringService.logError(mcpError);
     throw new Error('Config validation failed: ' + error.details.map(e => e.message).join('; '));
   }
-  return value;
+    MonitoringService.info('Configuration validation successful', {
+      nodeEnv: value.NODE_ENV,
+      port: value.PORT,
+      timestamp: new Date().toISOString()
+    }, 'config');
+    
+    return value;
+  } catch (error) {
+    const mcpError = ErrorService.createError(
+      ErrorService.CATEGORIES.SYSTEM,
+      `Configuration loading failed: ${error.message}`,
+      ErrorService.SEVERITIES.CRITICAL,
+      {
+        stack: error.stack,
+        timestamp: new Date().toISOString()
+      }
+    );
+    MonitoringService.logError(mcpError);
+    throw error;
+  }
 }
 
 module.exports = {

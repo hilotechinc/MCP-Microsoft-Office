@@ -4,6 +4,15 @@
  * Handles tool definition, mapping, and parameter transformation.
  */
 
+const ErrorService = require('./error-service.cjs');
+const MonitoringService = require('./monitoring-service.cjs');
+
+// Log service initialization
+MonitoringService.info('Tools service factory initialized', {
+    serviceName: 'tools-service',
+    timestamp: new Date().toISOString()
+}, 'tools');
+
 /**
  * Creates a tools service with the module registry.
  * @param {object} deps - Service dependencies
@@ -13,9 +22,36 @@
  * @returns {object} Tools service methods
  */
 function createToolsService({ moduleRegistry, logger = console, schemaValidator = null }) {
-    if (!moduleRegistry) {
-        logger.error('ToolsService: Module registry is required.');
-        throw new Error('Module registry is required for ToolsService');
+    const startTime = Date.now();
+    
+    try {
+        if (!moduleRegistry) {
+            const mcpError = ErrorService.createError(
+                ErrorService.CATEGORIES.SYSTEM,
+                'Module registry is required for ToolsService',
+                ErrorService.SEVERITIES.CRITICAL,
+                {
+                    timestamp: new Date().toISOString()
+                }
+            );
+            MonitoringService.logError(mcpError);
+            throw mcpError;
+        }
+        
+        MonitoringService.info('Tools service instance created', {
+            hasModuleRegistry: !!moduleRegistry,
+            hasLogger: !!logger,
+            hasSchemaValidator: !!schemaValidator,
+            timestamp: new Date().toISOString()
+        }, 'tools');
+        
+    } catch (error) {
+        const executionTime = Date.now() - startTime;
+        MonitoringService.trackMetric('tools_service_creation_failure', executionTime, {
+            errorType: error.code || 'unknown',
+            timestamp: new Date().toISOString()
+        });
+        throw error;
     }
 
     // Internal state for caching (will be used later)
@@ -902,7 +938,11 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
 
             // Default for unknown capabilities
             default:
-                logger.warn(`generateToolDefinition: No specific definition found for capability '${capability}' in module '${moduleName}'. Using defaults.`);
+                MonitoringService.warn(`No specific definition found for capability '${capability}' in module '${moduleName}'. Using defaults.`, {
+                    capability,
+                    moduleName,
+                    timestamp: new Date().toISOString()
+                }, 'tools');
                 // Use defaults with generic parameters
                 break;
         }
@@ -914,9 +954,45 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
      * Invalidates any internal caches, forcing regeneration on next access.
      */
     function refresh() {
-        logger.info('ToolsService: Refresh triggered, clearing internal cache.');
-        cachedTools = null; // Clear cache
-        // Future: Potentially re-trigger other initialization if needed
+        const startTime = Date.now();
+        
+        try {
+            const previousCacheSize = cachedTools ? cachedTools.length : 0;
+            
+            MonitoringService.info('Tools service refresh triggered, clearing internal cache', {
+                previousCacheSize,
+                timestamp: new Date().toISOString()
+            }, 'tools');
+            
+            cachedTools = null; // Clear cache
+            
+            const executionTime = Date.now() - startTime;
+            MonitoringService.trackMetric('tools_refresh_success', executionTime, {
+                previousCacheSize,
+                timestamp: new Date().toISOString()
+            });
+            
+        } catch (error) {
+            const executionTime = Date.now() - startTime;
+            
+            const mcpError = ErrorService.createError(
+                ErrorService.CATEGORIES.SYSTEM,
+                `Tools service refresh failed: ${error.message}`,
+                ErrorService.SEVERITIES.ERROR,
+                {
+                    stack: error.stack,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            
+            MonitoringService.logError(mcpError);
+            MonitoringService.trackMetric('tools_refresh_failure', executionTime, {
+                errorType: error.code || 'unknown',
+                timestamp: new Date().toISOString()
+            });
+            
+            throw mcpError;
+        }
     }
 
     /**
@@ -969,7 +1045,18 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
      * @returns {object} - Transformed parameters
      */
     function transformParameters(moduleName, methodName, params = {}) {
-        logger.debug(`transformParameters: Transforming for ${moduleName}.${methodName}`);
+        const startTime = Date.now();
+        
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Transforming parameters', {
+                moduleName,
+                methodName,
+                paramKeys: Object.keys(params),
+                timestamp: new Date().toISOString()
+            }, 'tools');
+        }
+        
+        try {
         
         // Create a copy of the parameters to avoid modifying the original
         const transformedParams = { ...params };
@@ -1236,7 +1323,41 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 
             // Default case - return original parameters
             default:
+                const executionTime = Date.now() - startTime;
+                MonitoringService.trackMetric('tools_transform_params_success', executionTime, {
+                    moduleName,
+                    methodName,
+                    hasTransform: false,
+                    timestamp: new Date().toISOString()
+                });
                 return transformedParams;
+        }
+        
+        } catch (error) {
+            const executionTime = Date.now() - startTime;
+            
+            const mcpError = ErrorService.createError(
+                ErrorService.CATEGORIES.SYSTEM,
+                `Parameter transformation failed: ${error.message}`,
+                ErrorService.SEVERITIES.ERROR,
+                {
+                    moduleName,
+                    methodName,
+                    paramKeys: Object.keys(params),
+                    stack: error.stack,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            
+            MonitoringService.logError(mcpError);
+            MonitoringService.trackMetric('tools_transform_params_failure', executionTime, {
+                moduleName,
+                methodName,
+                errorType: error.code || 'unknown',
+                timestamp: new Date().toISOString()
+            });
+            
+            throw mcpError;
         }
     }
 
@@ -1246,14 +1367,32 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
          * @returns {Array<object>} Tool definitions
          */
         getAllTools() {
-            // Check cache first
-            if (cachedTools) {
-                logger.debug('getAllTools: Returning cached tool definitions.');
-                return cachedTools;
-            }
+            const startTime = Date.now();
+            
+            try {
+                // Check cache first
+                if (cachedTools) {
+                    const executionTime = Date.now() - startTime;
+                    MonitoringService.trackMetric('tools_get_all_cache_hit', executionTime, {
+                        toolCount: cachedTools.length,
+                        timestamp: new Date().toISOString()
+                    });
+                    
+                    if (process.env.NODE_ENV === 'development') {
+                        MonitoringService.debug('Returning cached tool definitions', {
+                            toolCount: cachedTools.length,
+                            timestamp: new Date().toISOString()
+                        }, 'tools');
+                    }
+                    return cachedTools;
+                }
 
-            logger.debug('getAllTools: Cache miss, generating tool definitions...');
-            const tools = [];
+                if (process.env.NODE_ENV === 'development') {
+                    MonitoringService.debug('Cache miss, generating tool definitions', {
+                        timestamp: new Date().toISOString()
+                    }, 'tools');
+                }
+                const tools = [];
             const modules = moduleRegistry.getAllModules();
             
             // First, add the findPeople tool at the beginning of the list
@@ -1300,9 +1439,42 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
 
             // Store in cache before returning
             cachedTools = tools;
-            logger.debug(`getAllTools: Generated and cached ${tools.length} tool definitions.`);
+            const executionTime = Date.now() - startTime;
+            
+            MonitoringService.trackMetric('tools_get_all_cache_miss', executionTime, {
+                toolCount: tools.length,
+                timestamp: new Date().toISOString()
+            });
+            
+            MonitoringService.info('Generated and cached tool definitions', {
+                toolCount: tools.length,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'tools');
 
             return tools;
+            
+            } catch (error) {
+                const executionTime = Date.now() - startTime;
+                
+                const mcpError = ErrorService.createError(
+                    ErrorService.CATEGORIES.SYSTEM,
+                    `Failed to get all tools: ${error.message}`,
+                    ErrorService.SEVERITIES.ERROR,
+                    {
+                        stack: error.stack,
+                        timestamp: new Date().toISOString()
+                    }
+                );
+                
+                MonitoringService.logError(mcpError);
+                MonitoringService.trackMetric('tools_get_all_failure', executionTime, {
+                    errorType: error.code || 'unknown',
+                    timestamp: new Date().toISOString()
+                });
+                
+                throw mcpError;
+            }
         },
 
         /**
@@ -1311,10 +1483,46 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
          * @returns {object|null} Tool definition or null if not found
          */
         getToolByName(toolName) {
-            const allTools = this.getAllTools(); // Uses cache if available
-            const lowerCaseToolName = toolName.toLowerCase();
-            const foundTool = allTools.find(tool => tool.name.toLowerCase() === lowerCaseToolName);
-            return foundTool || null;
+            const startTime = Date.now();
+            
+            try {
+                const allTools = this.getAllTools(); // Uses cache if available
+                const lowerCaseToolName = toolName.toLowerCase();
+                const foundTool = allTools.find(tool => tool.name.toLowerCase() === lowerCaseToolName);
+                
+                const executionTime = Date.now() - startTime;
+                MonitoringService.trackMetric('tools_get_by_name_success', executionTime, {
+                    toolName,
+                    found: !!foundTool,
+                    totalTools: allTools.length,
+                    timestamp: new Date().toISOString()
+                });
+                
+                return foundTool || null;
+                
+            } catch (error) {
+                const executionTime = Date.now() - startTime;
+                
+                const mcpError = ErrorService.createError(
+                    ErrorService.CATEGORIES.SYSTEM,
+                    `Failed to get tool by name: ${error.message}`,
+                    ErrorService.SEVERITIES.ERROR,
+                    {
+                        toolName,
+                        stack: error.stack,
+                        timestamp: new Date().toISOString()
+                    }
+                );
+                
+                MonitoringService.logError(mcpError);
+                MonitoringService.trackMetric('tools_get_by_name_failure', executionTime, {
+                    toolName,
+                    errorType: error.code || 'unknown',
+                    timestamp: new Date().toISOString()
+                });
+                
+                throw mcpError;
+            }
         },
 
         /**
@@ -1323,10 +1531,26 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
          * @returns {object|null} Module and method mapping or null if not found
          */
         mapToolToModule(toolName) {
-            // Special case for query
-            if (toolName === 'query') {
-                return { moduleName: 'query', methodName: 'processQuery' };
+            const startTime = Date.now();
+            
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Mapping tool to module', {
+                    toolName,
+                    timestamp: new Date().toISOString()
+                }, 'tools');
             }
+            
+            try {
+                // Special case for query
+                if (toolName === 'query') {
+                    const executionTime = Date.now() - startTime;
+                    MonitoringService.trackMetric('tools_map_to_module_success', executionTime, {
+                        toolName,
+                        mappingType: 'special_case_query',
+                        timestamp: new Date().toISOString()
+                    });
+                    return { moduleName: 'query', methodName: 'processQuery' };
+                }
             
             // Special case for calendar.getAvailability
             if (toolName === 'calendar.getAvailability') {
@@ -1342,6 +1566,13 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                     const lowerCaseCapabilities = module.capabilities.map(c => c.toLowerCase());
                     const capabilityIndex = lowerCaseCapabilities.indexOf(lowerCaseToolName);
                     if (capabilityIndex > -1) {
+                        const executionTime = Date.now() - startTime;
+                        MonitoringService.trackMetric('tools_map_to_module_success', executionTime, {
+                            toolName,
+                            mappingType: 'direct_capability',
+                            moduleName: module.id,
+                            timestamp: new Date().toISOString()
+                        });
                         // Return the original capability name casing from the module definition
                         return { moduleName: module.id, methodName: module.capabilities[capabilityIndex] };
                     }
@@ -1355,19 +1586,78 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 // Validate the alias target
                 const targetModule = moduleRegistry.getModule(aliasTarget.moduleName);
                 if (!targetModule) {
-                    logger.error(`mapToolToModule: Alias '${toolName}' points to non-existent module '${aliasTarget.moduleName}'.`);
+                    MonitoringService.error(`Alias points to non-existent module`, {
+                        toolName,
+                        targetModule: aliasTarget.moduleName,
+                        timestamp: new Date().toISOString()
+                    }, 'tools');
                     return null;
                 }
                 if (!Array.isArray(targetModule.capabilities) || !targetModule.capabilities.includes(aliasTarget.methodName)) {
-                    logger.error(`mapToolToModule: Alias '${toolName}' points to module '${aliasTarget.moduleName}' which does not have capability '${aliasTarget.methodName}'.`);
+                    MonitoringService.error(`Alias points to module without required capability`, {
+                        toolName,
+                        targetModule: aliasTarget.moduleName,
+                        targetMethod: aliasTarget.methodName,
+                        availableCapabilities: targetModule.capabilities || [],
+                        timestamp: new Date().toISOString()
+                    }, 'tools');
                     return null;
                 }
-                logger.debug(`mapToolToModule: Mapping tool '${toolName}' to alias target: ${aliasTarget.moduleName}.${aliasTarget.methodName}`);
+                const executionTime = Date.now() - startTime;
+                MonitoringService.trackMetric('tools_map_to_module_success', executionTime, {
+                    toolName,
+                    mappingType: 'alias',
+                    moduleName: aliasTarget.moduleName,
+                    timestamp: new Date().toISOString()
+                });
+                
+                if (process.env.NODE_ENV === 'development') {
+                    MonitoringService.debug('Mapping tool to alias target', {
+                        toolName,
+                        targetModule: aliasTarget.moduleName,
+                        targetMethod: aliasTarget.methodName,
+                        timestamp: new Date().toISOString()
+                    }, 'tools');
+                }
                 return aliasTarget;
             }
 
-            logger.warn(`mapToolToModule: No module or valid alias found for tool '${toolName}'.`);
+            MonitoringService.warn(`No module or valid alias found for tool`, {
+                toolName,
+                timestamp: new Date().toISOString()
+            }, 'tools');
+            
+            const executionTime = Date.now() - startTime;
+            MonitoringService.trackMetric('tools_map_to_module_not_found', executionTime, {
+                toolName,
+                timestamp: new Date().toISOString()
+            });
+            
             return null; // Not found
+            
+            } catch (error) {
+                const executionTime = Date.now() - startTime;
+                
+                const mcpError = ErrorService.createError(
+                    ErrorService.CATEGORIES.SYSTEM,
+                    `Failed to map tool to module: ${error.message}`,
+                    ErrorService.SEVERITIES.ERROR,
+                    {
+                        toolName,
+                        stack: error.stack,
+                        timestamp: new Date().toISOString()
+                    }
+                );
+                
+                MonitoringService.logError(mcpError);
+                MonitoringService.trackMetric('tools_map_to_module_failure', executionTime, {
+                    toolName,
+                    errorType: error.code || 'unknown',
+                    timestamp: new Date().toISOString()
+                });
+                
+                throw mcpError;
+            }
         },
 
         /**
@@ -1377,24 +1667,79 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
          * @returns {object} - Transformed parameters and module/method mapping
          */
         transformToolParameters(toolName, params = {}) {
-            // First, map the tool to a module and method
-            const mapping = this.mapToolToModule(toolName);
+            const startTime = Date.now();
             
-            if (!mapping) {
-                logger.error(`transformToolParameters: No mapping found for tool '${toolName}'.`);
-                return { 
-                    mapping: null, 
-                    params: params
-                };
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Transforming tool parameters', {
+                    toolName,
+                    paramKeys: Object.keys(params),
+                    timestamp: new Date().toISOString()
+                }, 'tools');
             }
             
-            // Then transform the parameters based on the module and method
-            const transformedParams = transformParameters(mapping.moduleName, mapping.methodName, params);
-            
-            return {
-                mapping,
-                params: transformedParams
-            };
+            try {
+                // First, map the tool to a module and method
+                const mapping = this.mapToolToModule(toolName);
+                
+                if (!mapping) {
+                    const executionTime = Date.now() - startTime;
+                    MonitoringService.trackMetric('tools_transform_tool_params_no_mapping', executionTime, {
+                        toolName,
+                        timestamp: new Date().toISOString()
+                    });
+                    
+                    MonitoringService.error(`No mapping found for tool`, {
+                        toolName,
+                        timestamp: new Date().toISOString()
+                    }, 'tools');
+                    
+                    return { 
+                        mapping: null, 
+                        params: params
+                    };
+                }
+                
+                // Then transform the parameters based on the module and method
+                const transformedParams = transformParameters(mapping.moduleName, mapping.methodName, params);
+                
+                const executionTime = Date.now() - startTime;
+                MonitoringService.trackMetric('tools_transform_tool_params_success', executionTime, {
+                    toolName,
+                    moduleName: mapping.moduleName,
+                    methodName: mapping.methodName,
+                    paramCount: Object.keys(params).length,
+                    timestamp: new Date().toISOString()
+                });
+                
+                return {
+                    mapping,
+                    params: transformedParams
+                };
+                
+            } catch (error) {
+                const executionTime = Date.now() - startTime;
+                
+                const mcpError = ErrorService.createError(
+                    ErrorService.CATEGORIES.SYSTEM,
+                    `Failed to transform tool parameters: ${error.message}`,
+                    ErrorService.SEVERITIES.ERROR,
+                    {
+                        toolName,
+                        paramKeys: Object.keys(params),
+                        stack: error.stack,
+                        timestamp: new Date().toISOString()
+                    }
+                );
+                
+                MonitoringService.logError(mcpError);
+                MonitoringService.trackMetric('tools_transform_tool_params_failure', executionTime, {
+                    toolName,
+                    errorType: error.code || 'unknown',
+                    timestamp: new Date().toISOString()
+                });
+                
+                throw mcpError;
+            }
         },
         
         refresh // Expose the refresh method

@@ -21,16 +21,16 @@ let server = null;
 
 // If this file is being run directly (not imported), start the server
 if (require.main === module) {
-  console.log('Starting combined server...');
+  monitoringService?.info('Starting combined server...', { directExecution: true }, 'server');
   startCombinedServer().then(() => {
-    console.log('Server started successfully!');
+    monitoringService?.info('Server started successfully!', { directExecution: true }, 'server');
     // Server startup is already logged in startCombinedServer function
     // Just log the log file path for user convenience when running directly
     if (monitoringService?.LOG_FILE_PATH) {
-      console.log(`📊 Logs written to ${monitoringService?.LOG_FILE_PATH}`);
+      monitoringService?.info(`📊 Logs written to ${monitoringService?.LOG_FILE_PATH}`, { logFilePath: monitoringService?.LOG_FILE_PATH }, 'server');
     }
   }).catch(err => {
-    console.error('Failed to start combined server:', err.message, err.stack);
+    monitoringService?.error('Failed to start combined server:', { error: err.message, stack: err.stack }, 'server');
     const error = errorService?.createError(
       errorService?.CATEGORIES.SYSTEM,
       `Failed to start combined server: ${err.message}`,
@@ -54,12 +54,13 @@ process.on('uncaughtException', (err) => {
   if (monitoringService) {
     monitoringService.logError(mcpError);
   } else {
-    console.error('[monitoringService missing] Failed to log error:', {
+    // Fallback logging when MonitoringService is not available
+    process.stderr.write(`[monitoringService missing] Failed to log error: ${JSON.stringify({
       category: 'system',
       message: `Uncaught Exception: ${err.message}`,
       severity: 'critical',
       stack: err.stack
-    });
+    })}\n`);
   }
   
   // Emit event for UI subscribers if available
@@ -75,7 +76,7 @@ process.on('uncaughtException', (err) => {
     monitoringService.logEmitter.emit('log', logData);
   } else {
     // Fallback if logEmitter not available
-    console.error('[LogEmitter not available] Emitting log fallback:', logData, err.stack);
+    process.stderr.write(`[LogEmitter not available] Emitting log fallback: ${JSON.stringify(logData)}\n`);
   }
   // Log the error but still allow normal termination
 });
@@ -95,13 +96,14 @@ process.on('unhandledRejection', (reason, promise) => {
   if (monitoringService) {
     monitoringService.logError(mcpError);
   } else {
-    console.error('[monitoringService missing] Failed to log error:', {
+    // Fallback logging when MonitoringService is not available
+    process.stderr.write(`[monitoringService missing] Failed to log error: ${JSON.stringify({
       category: 'system',
       message: `Unhandled Promise Rejection: ${reasonStr}`,
       severity: 'error',
       stack,
       reason: reasonStr
-    });
+    })}\n`);
   }
   
   // Emit event for UI subscribers if available
@@ -117,7 +119,7 @@ process.on('unhandledRejection', (reason, promise) => {
     monitoringService.logEmitter.emit('log', logData);
   } else {
     // Fallback if logEmitter not available
-    console.error('[LogEmitter not available] Emitting log fallback:', logData, stack);
+    process.stderr.write(`[LogEmitter not available] Emitting log fallback: ${JSON.stringify(logData)}\n`);
   }
   // Log the error but still allow normal termination
 });
@@ -139,13 +141,13 @@ process.on('SIGINT', async () => {
  * @returns {Promise<http.Server>} The HTTP server instance
  */
 async function startCombinedServer(port = 3000) {
-  console.log('Setting up combined server...');
+  monitoringService?.info('Setting up combined server...', { port }, 'server');
   // Set up middleware from the server module
   try {
     setupMiddleware(app);
-    console.log('Common middleware set up successfully.');
+    monitoringService?.info('Common middleware set up successfully.', {}, 'server');
   } catch (err) {
-    console.error('Error setting up middleware:', err.message, err.stack);
+    monitoringService?.error('Error setting up middleware:', { error: err.message, stack: err.stack }, 'server');
     throw err;
   }
   
@@ -214,7 +216,7 @@ async function startCombinedServer(port = 3000) {
   });
   
   // Set up session middleware for authentication
-  console.log('Setting up session middleware...');
+  monitoringService?.info('Setting up session middleware...', {}, 'server');
   const isProduction = process.env.NODE_ENV === 'production';
   app.use(session({
     secret: process.env.SESSION_SECRET || 'mcp-desktop-secret',
@@ -225,7 +227,7 @@ async function startCombinedServer(port = 3000) {
       sameSite: isProduction ? 'strict' : 'lax' // Stricter same-site policy in production
     }
   }));
-  console.log('Session middleware set up successfully.');
+  monitoringService?.info('Session middleware set up successfully.', {}, 'server');
   
   // Log session configuration but redact sensitive data
   monitoringService?.debug('Session middleware configured', {
@@ -433,7 +435,7 @@ async function startCombinedServer(port = 3000) {
     res.sendFile(path.join(__dirname, '../renderer/index.html'));
   });
   
-  console.log('About to start the server...');
+  monitoringService?.info('About to start the server...', { port }, 'server');
   // Start the server
   const startTime = Date.now();
   return new Promise((resolve) => {
@@ -443,11 +445,12 @@ async function startCombinedServer(port = 3000) {
         monitoringService.info(`Combined server running at http://localhost:${port}`, { startupTime, port, startup: true }, 'server');
         monitoringService.trackMetric('server.startup.time', startupTime, { port });
       } else {
-        console.log(`[monitoringService missing] Server running at http://localhost:${port}`, {
+        // Fallback logging when MonitoringService is not available
+        process.stdout.write(`[monitoringService missing] Server running at http://localhost:${port} ${JSON.stringify({
           startupTime,
           port,
           startup: true
-        });
+        })}\n`);
       }
       
       // Emit event for UI subscribers if available
@@ -463,7 +466,7 @@ async function startCombinedServer(port = 3000) {
         monitoringService.logEmitter.emit('log', logData);
       } else {
         // Fallback if logEmitter not available
-        console.log('[LogEmitter not available] Emitting log fallback:', logData);
+        process.stdout.write(`[LogEmitter not available] Emitting log fallback: ${JSON.stringify(logData)}\n`);
       }
       
       resolve(server);
@@ -496,10 +499,11 @@ function stopCombinedServer() {
             monitoringService.info('Server stopped successfully', { shutdownTime, shutdown: true }, 'server');
             monitoringService.trackMetric('server.shutdown.time', shutdownTime, {});
           } else {
-            console.log('[monitoringService missing] Server stopped successfully', {
+            // Fallback logging when MonitoringService is not available
+            process.stdout.write(`[monitoringService missing] Server stopped successfully ${JSON.stringify({
               shutdownTime,
               shutdown: true
-            });
+            })}\n`);
           }
           
           // Emit event for UI subscribers if available
@@ -515,7 +519,7 @@ function stopCombinedServer() {
             monitoringService.logEmitter.emit('log', logData);
           } else {
             // Fallback if logEmitter not available
-            console.log('[LogEmitter not available] Emitting log fallback:', logData);
+            process.stdout.write(`[LogEmitter not available] Emitting log fallback: ${JSON.stringify(logData)}\n`);
           }
           
           resolve();

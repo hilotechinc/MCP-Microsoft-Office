@@ -7,6 +7,13 @@ const { normalizeFile } = require('../../graph/normalizers.cjs');
 const ErrorService = require('../../core/error-service.cjs');
 const MonitoringService = require('../../core/monitoring-service.cjs');
 
+// Log module initialization
+MonitoringService.info('Files Module initialized', {
+    serviceName: 'files-module',
+    capabilities: 13, // FILES_CAPABILITIES.length will be 13
+    timestamp: new Date().toISOString()
+}, 'files');
+
 // Define the capabilities supported by this module
 // This array is used by the module registry to find appropriate modules for different intents
 const FILES_CAPABILITIES = [
@@ -364,11 +371,95 @@ const FilesModule = {
      * @returns {Promise<Buffer>} File content
      */
     async downloadFile(id, req) {
-        const { graphService } = this.services || {};
-        if (!graphService || typeof graphService.downloadFile !== 'function') {
-            throw new Error('GraphService.downloadFile not implemented');
+        // Get services with fallbacks
+        const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
+        
+        // Start tracking execution time
+        const startTime = Date.now();
+        
+        // Log the request with detailed parameters
+        monitoringService?.debug('File download requested', { 
+            fileId: id,
+            timestamp: new Date().toISOString(),
+            source: 'files.downloadFile'
+        }, 'files');
+        
+        try {
+            // Validate input
+            if (!id) {
+                const err = errorService.createError(
+                    ErrorService.CATEGORIES.VALIDATION,
+                    'File ID is required for downloadFile',
+                    ErrorService.SEVERITIES.ERROR,
+                    { 
+                        timestamp: new Date().toISOString(),
+                        validationError: 'missing_file_id'
+                    }
+                );
+                monitoringService?.logError(err);
+                throw err;
+            }
+            
+            // Validate that GraphService is available
+            if (!graphService || typeof graphService.downloadFile !== 'function') {
+                const err = errorService.createError(
+                    ErrorService.CATEGORIES.SYSTEM,
+                    'GraphService.downloadFile not implemented',
+                    ErrorService.SEVERITIES.ERROR,
+                    { 
+                        fileId: id,
+                        timestamp: new Date().toISOString(),
+                        serviceError: 'missing_graph_service'
+                    }
+                );
+                monitoringService?.logError(err);
+                throw err;
+            }
+            
+            // Call the Graph service
+            const result = await graphService.downloadFile(id, req);
+            
+            // Calculate execution time
+            const executionTime = Date.now() - startTime;
+            
+            // Log success metrics
+            monitoringService?.trackMetric('files_download_success', executionTime, {
+                fileId: id,
+                contentSize: result?.length || 0,
+                timestamp: new Date().toISOString()
+            });
+            
+            return result;
+        } catch (error) {
+            // Calculate execution time even for failures
+            const executionTime = Date.now() - startTime;
+            
+            // Track failure metrics
+            monitoringService?.trackMetric('files_download_failure', executionTime, {
+                errorType: error.code || 'unknown',
+                fileId: id,
+                timestamp: new Date().toISOString()
+            });
+            
+            // Create standardized error if not already one
+            const mcpError = error.id ? error : errorService.createError(
+                ErrorService.CATEGORIES.SYSTEM,
+                `Failed to download file: ${error.message}`,
+                ErrorService.SEVERITIES.ERROR,
+                { 
+                    fileId: id,
+                    error: error.toString(),
+                    stack: error.stack,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            
+            // Log the error
+            monitoringService?.logError(mcpError);
+            
+            // Rethrow the error for the caller to handle
+            throw mcpError;
         }
-        return await graphService.downloadFile(id, req);
     },
     
     /**
@@ -379,11 +470,113 @@ const FilesModule = {
      * @returns {Promise<object>} File metadata
      */
     async uploadFile(name, content, req) {
-        const { graphService } = this.services || {};
-        if (!graphService || typeof graphService.uploadFile !== 'function') {
-            throw new Error('GraphService.uploadFile not implemented');
+        // Get services with fallbacks
+        const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
+        
+        // Start tracking execution time
+        const startTime = Date.now();
+        
+        // Log the request with detailed parameters
+        monitoringService?.debug('File upload requested', { 
+            fileName: name,
+            contentSize: content?.length || 0,
+            timestamp: new Date().toISOString(),
+            source: 'files.uploadFile'
+        }, 'files');
+        
+        try {
+            // Validate input
+            if (!name) {
+                const err = errorService.createError(
+                    ErrorService.CATEGORIES.VALIDATION,
+                    'File name is required for uploadFile',
+                    ErrorService.SEVERITIES.ERROR,
+                    { 
+                        timestamp: new Date().toISOString(),
+                        validationError: 'missing_file_name'
+                    }
+                );
+                monitoringService?.logError(err);
+                throw err;
+            }
+            
+            if (!content) {
+                const err = errorService.createError(
+                    ErrorService.CATEGORIES.VALIDATION,
+                    'File content is required for uploadFile',
+                    ErrorService.SEVERITIES.ERROR,
+                    { 
+                        fileName: name,
+                        timestamp: new Date().toISOString(),
+                        validationError: 'missing_file_content'
+                    }
+                );
+                monitoringService?.logError(err);
+                throw err;
+            }
+            
+            // Validate that GraphService is available
+            if (!graphService || typeof graphService.uploadFile !== 'function') {
+                const err = errorService.createError(
+                    ErrorService.CATEGORIES.SYSTEM,
+                    'GraphService.uploadFile not implemented',
+                    ErrorService.SEVERITIES.ERROR,
+                    { 
+                        fileName: name,
+                        timestamp: new Date().toISOString(),
+                        serviceError: 'missing_graph_service'
+                    }
+                );
+                monitoringService?.logError(err);
+                throw err;
+            }
+            
+            // Call the Graph service
+            const result = await graphService.uploadFile(name, content, req);
+            
+            // Calculate execution time
+            const executionTime = Date.now() - startTime;
+            
+            // Log success metrics
+            monitoringService?.trackMetric('files_upload_success', executionTime, {
+                fileName: name,
+                contentSize: content?.length || 0,
+                timestamp: new Date().toISOString()
+            });
+            
+            return result;
+        } catch (error) {
+            // Calculate execution time even for failures
+            const executionTime = Date.now() - startTime;
+            
+            // Track failure metrics
+            monitoringService?.trackMetric('files_upload_failure', executionTime, {
+                errorType: error.code || 'unknown',
+                fileName: name,
+                contentSize: content?.length || 0,
+                timestamp: new Date().toISOString()
+            });
+            
+            // Create standardized error if not already one
+            const mcpError = error.id ? error : errorService.createError(
+                ErrorService.CATEGORIES.SYSTEM,
+                `Failed to upload file: ${error.message}`,
+                ErrorService.SEVERITIES.ERROR,
+                { 
+                    fileName: name,
+                    contentSize: content?.length || 0,
+                    error: error.toString(),
+                    stack: error.stack,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            
+            // Log the error
+            monitoringService?.logError(mcpError);
+            
+            // Rethrow the error for the caller to handle
+            throw mcpError;
         }
-        return await graphService.uploadFile(name, content, req);
     },
     
     /**
@@ -393,11 +586,94 @@ const FilesModule = {
      * @returns {Promise<object>} File metadata
      */
     async getFileMetadata(id, req) {
-        const { graphService } = this.services || {};
-        if (!graphService || typeof graphService.getFileMetadata !== 'function') {
-            throw new Error('GraphService.getFileMetadata not implemented');
+        // Get services with fallbacks
+        const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
+        
+        // Start tracking execution time
+        const startTime = Date.now();
+        
+        // Log the request
+        monitoringService?.debug('File metadata requested', { 
+            fileId: id,
+            timestamp: new Date().toISOString(),
+            source: 'files.getFileMetadata'
+        }, 'files');
+        
+        try {
+            // Validate input
+            if (!id) {
+                const err = errorService.createError(
+                    ErrorService.CATEGORIES.VALIDATION,
+                    'File ID is required for getFileMetadata',
+                    ErrorService.SEVERITIES.ERROR,
+                    { 
+                        timestamp: new Date().toISOString(),
+                        validationError: 'missing_file_id'
+                    }
+                );
+                monitoringService?.logError(err);
+                throw err;
+            }
+            
+            // Validate that GraphService is available
+            if (!graphService || typeof graphService.getFileMetadata !== 'function') {
+                const err = errorService.createError(
+                    ErrorService.CATEGORIES.SYSTEM,
+                    'GraphService.getFileMetadata not implemented',
+                    ErrorService.SEVERITIES.ERROR,
+                    { 
+                        fileId: id,
+                        timestamp: new Date().toISOString(),
+                        serviceError: 'missing_graph_service'
+                    }
+                );
+                monitoringService?.logError(err);
+                throw err;
+            }
+            
+            // Call the Graph service
+            const result = await graphService.getFileMetadata(id, req);
+            
+            // Calculate execution time
+            const executionTime = Date.now() - startTime;
+            
+            // Log success metrics
+            monitoringService?.trackMetric('files_metadata_success', executionTime, {
+                fileId: id,
+                timestamp: new Date().toISOString()
+            });
+            
+            return result;
+        } catch (error) {
+            // Calculate execution time even for failures
+            const executionTime = Date.now() - startTime;
+            
+            // Track failure metrics
+            monitoringService?.trackMetric('files_metadata_failure', executionTime, {
+                errorType: error.code || 'unknown',
+                fileId: id,
+                timestamp: new Date().toISOString()
+            });
+            
+            // Create standardized error if not already one
+            const mcpError = error.id ? error : errorService.createError(
+                ErrorService.CATEGORIES.SYSTEM,
+                `Failed to get file metadata: ${error.message}`,
+                ErrorService.SEVERITIES.ERROR,
+                { 
+                    fileId: id,
+                    error: error.toString(),
+                    stack: error.stack,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            
+            // Log the error
+            monitoringService?.logError(mcpError);
+            
+            // Rethrow the error for the caller to handle
+            throw mcpError;
         }
-        return await graphService.getFileMetadata(id, req);
     },
     
     /**
@@ -408,11 +684,99 @@ const FilesModule = {
      * @returns {Promise<object>} Sharing link
      */
     async createSharingLink(id, type = 'view', req) {
-        const { graphService } = this.services || {};
-        if (!graphService || typeof graphService.createSharingLink !== 'function') {
-            throw new Error('GraphService.createSharingLink not implemented');
+        // Get services with fallbacks
+        const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
+        
+        // Start tracking execution time
+        const startTime = Date.now();
+        
+        // Log the request
+        monitoringService?.debug('Create sharing link requested', { 
+            fileId: id,
+            linkType: type,
+            timestamp: new Date().toISOString(),
+            source: 'files.createSharingLink'
+        }, 'files');
+        
+        try {
+            // Validate input
+            if (!id) {
+                const err = errorService.createError(
+                    ErrorService.CATEGORIES.VALIDATION,
+                    'File ID is required for createSharingLink',
+                    ErrorService.SEVERITIES.ERROR,
+                    { 
+                        timestamp: new Date().toISOString(),
+                        validationError: 'missing_file_id'
+                    }
+                );
+                monitoringService?.logError(err);
+                throw err;
+            }
+            
+            // Validate that GraphService is available
+            if (!graphService || typeof graphService.createSharingLink !== 'function') {
+                const err = errorService.createError(
+                    ErrorService.CATEGORIES.SYSTEM,
+                    'GraphService.createSharingLink not implemented',
+                    ErrorService.SEVERITIES.ERROR,
+                    { 
+                        fileId: id,
+                        linkType: type,
+                        timestamp: new Date().toISOString(),
+                        serviceError: 'missing_graph_service'
+                    }
+                );
+                monitoringService?.logError(err);
+                throw err;
+            }
+            
+            // Call the Graph service
+            const result = await graphService.createSharingLink(id, type, req);
+            
+            // Calculate execution time
+            const executionTime = Date.now() - startTime;
+            
+            // Log success metrics
+            monitoringService?.trackMetric('files_create_sharing_link_success', executionTime, {
+                fileId: id,
+                linkType: type,
+                timestamp: new Date().toISOString()
+            });
+            
+            return result;
+        } catch (error) {
+            // Calculate execution time even for failures
+            const executionTime = Date.now() - startTime;
+            
+            // Track failure metrics
+            monitoringService?.trackMetric('files_create_sharing_link_failure', executionTime, {
+                errorType: error.code || 'unknown',
+                fileId: id,
+                linkType: type,
+                timestamp: new Date().toISOString()
+            });
+            
+            // Create standardized error if not already one
+            const mcpError = error.id ? error : errorService.createError(
+                ErrorService.CATEGORIES.SYSTEM,
+                `Failed to create sharing link: ${error.message}`,
+                ErrorService.SEVERITIES.ERROR,
+                { 
+                    fileId: id,
+                    linkType: type,
+                    error: error.toString(),
+                    stack: error.stack,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            
+            // Log the error
+            monitoringService?.logError(mcpError);
+            
+            // Rethrow the error for the caller to handle
+            throw mcpError;
         }
-        return await graphService.createSharingLink(id, type, req);
     },
     
     /**
@@ -422,11 +786,65 @@ const FilesModule = {
      * @returns {Promise<Array<object>>} List of sharing links
      */
     async getSharingLinks(id, req) {
-        const { graphService } = this.services || {};
-        if (!graphService || typeof graphService.getSharingLinks !== 'function') {
-            throw new Error('GraphService.getSharingLinks not implemented');
+        // Get services with fallbacks
+        const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
+        
+        // Start tracking execution time
+        const startTime = Date.now();
+        
+        // Validate input and log request
+        if (!id) {
+            const err = errorService.createError(
+                ErrorService.CATEGORIES.VALIDATION,
+                'File ID is required for getSharingLinks',
+                ErrorService.SEVERITIES.ERROR,
+                { timestamp: new Date().toISOString() }
+            );
+            monitoringService?.logError(err);
+            throw err;
         }
-        return await graphService.getSharingLinks(id, req);
+        
+        try {
+            if (!graphService || typeof graphService.getSharingLinks !== 'function') {
+                const err = errorService.createError(
+                    ErrorService.CATEGORIES.SYSTEM,
+                    'GraphService.getSharingLinks not implemented',
+                    ErrorService.SEVERITIES.ERROR,
+                    { fileId: id, timestamp: new Date().toISOString() }
+                );
+                monitoringService?.logError(err);
+                throw err;
+            }
+            
+            const result = await graphService.getSharingLinks(id, req);
+            const executionTime = Date.now() - startTime;
+            
+            monitoringService?.trackMetric('files_get_sharing_links_success', executionTime, {
+                fileId: id,
+                linkCount: Array.isArray(result) ? result.length : 0,
+                timestamp: new Date().toISOString()
+            });
+            
+            return result;
+        } catch (error) {
+            const executionTime = Date.now() - startTime;
+            
+            monitoringService?.trackMetric('files_get_sharing_links_failure', executionTime, {
+                errorType: error.code || 'unknown',
+                fileId: id,
+                timestamp: new Date().toISOString()
+            });
+            
+            const mcpError = error.id ? error : errorService.createError(
+                ErrorService.CATEGORIES.SYSTEM,
+                `Failed to get sharing links: ${error.message}`,
+                ErrorService.SEVERITIES.ERROR,
+                { fileId: id, error: error.toString(), stack: error.stack, timestamp: new Date().toISOString() }
+            );
+            
+            monitoringService?.logError(mcpError);
+            throw mcpError;
+        }
     },
     
     /**
@@ -437,11 +855,62 @@ const FilesModule = {
      * @returns {Promise<object>} Result
      */
     async removeSharingPermission(fileId, permissionId, req) {
-        const { graphService } = this.services || {};
-        if (!graphService || typeof graphService.removeSharingPermission !== 'function') {
-            throw new Error('GraphService.removeSharingPermission not implemented');
+        // Get services with fallbacks
+        const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
+        
+        // Start tracking execution time
+        const startTime = Date.now();
+        
+        // Validate input
+        if (!fileId || !permissionId) {
+            const err = errorService.createError(
+                ErrorService.CATEGORIES.VALIDATION,
+                'File ID and permission ID are required for removeSharingPermission',
+                ErrorService.SEVERITIES.ERROR,
+                { fileId, permissionId, timestamp: new Date().toISOString() }
+            );
+            monitoringService?.logError(err);
+            throw err;
         }
-        return await graphService.removeSharingPermission(fileId, permissionId, req);
+        
+        try {
+            if (!graphService || typeof graphService.removeSharingPermission !== 'function') {
+                const err = errorService.createError(
+                    ErrorService.CATEGORIES.SYSTEM,
+                    'GraphService.removeSharingPermission not implemented',
+                    ErrorService.SEVERITIES.ERROR,
+                    { fileId, permissionId, timestamp: new Date().toISOString() }
+                );
+                monitoringService?.logError(err);
+                throw err;
+            }
+            
+            const result = await graphService.removeSharingPermission(fileId, permissionId, req);
+            const executionTime = Date.now() - startTime;
+            
+            monitoringService?.trackMetric('files_remove_sharing_permission_success', executionTime, {
+                fileId, permissionId, timestamp: new Date().toISOString()
+            });
+            
+            return result;
+        } catch (error) {
+            const executionTime = Date.now() - startTime;
+            
+            monitoringService?.trackMetric('files_remove_sharing_permission_failure', executionTime, {
+                errorType: error.code || 'unknown',
+                fileId, permissionId, timestamp: new Date().toISOString()
+            });
+            
+            const mcpError = error.id ? error : errorService.createError(
+                ErrorService.CATEGORIES.SYSTEM,
+                `Failed to remove sharing permission: ${error.message}`,
+                ErrorService.SEVERITIES.ERROR,
+                { fileId, permissionId, error: error.toString(), stack: error.stack, timestamp: new Date().toISOString() }
+            );
+            
+            monitoringService?.logError(mcpError);
+            throw mcpError;
+        }
     },
     
     /**
@@ -451,11 +920,60 @@ const FilesModule = {
      * @returns {Promise<Buffer>} File content
      */
     async getFileContent(id, req) {
-        const { graphService } = this.services || {};
-        if (!graphService || typeof graphService.getFileContent !== 'function') {
-            throw new Error('GraphService.getFileContent not implemented');
+        // Get services with fallbacks
+        const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
+        
+        const startTime = Date.now();
+        
+        // Validate input
+        if (!id) {
+            const err = errorService.createError(
+                ErrorService.CATEGORIES.VALIDATION,
+                'File ID is required for getFileContent',
+                ErrorService.SEVERITIES.ERROR,
+                { timestamp: new Date().toISOString() }
+            );
+            monitoringService?.logError(err);
+            throw err;
         }
-        return await graphService.getFileContent(id, req);
+        
+        try {
+            if (!graphService || typeof graphService.getFileContent !== 'function') {
+                const err = errorService.createError(
+                    ErrorService.CATEGORIES.SYSTEM,
+                    'GraphService.getFileContent not implemented',
+                    ErrorService.SEVERITIES.ERROR,
+                    { fileId: id, timestamp: new Date().toISOString() }
+                );
+                monitoringService?.logError(err);
+                throw err;
+            }
+            
+            const result = await graphService.getFileContent(id, req);
+            const executionTime = Date.now() - startTime;
+            
+            monitoringService?.trackMetric('files_get_content_success', executionTime, {
+                fileId: id, contentSize: result?.length || 0, timestamp: new Date().toISOString()
+            });
+            
+            return result;
+        } catch (error) {
+            const executionTime = Date.now() - startTime;
+            
+            monitoringService?.trackMetric('files_get_content_failure', executionTime, {
+                errorType: error.code || 'unknown', fileId: id, timestamp: new Date().toISOString()
+            });
+            
+            const mcpError = error.id ? error : errorService.createError(
+                ErrorService.CATEGORIES.SYSTEM,
+                `Failed to get file content: ${error.message}`,
+                ErrorService.SEVERITIES.ERROR,
+                { fileId: id, error: error.toString(), stack: error.stack, timestamp: new Date().toISOString() }
+            );
+            
+            monitoringService?.logError(mcpError);
+            throw mcpError;
+        }
     },
     
     /**
@@ -466,11 +984,71 @@ const FilesModule = {
      * @returns {Promise<object>} Updated file metadata
      */
     async setFileContent(id, content, req) {
-        const { graphService } = this.services || {};
-        if (!graphService || typeof graphService.setFileContent !== 'function') {
-            throw new Error('GraphService.setFileContent not implemented');
+        // Get services with fallbacks
+        const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
+        
+        const startTime = Date.now();
+        
+        // Validate input
+        if (!id) {
+            const err = errorService.createError(
+                ErrorService.CATEGORIES.VALIDATION,
+                'File ID is required for setFileContent',
+                ErrorService.SEVERITIES.ERROR,
+                { timestamp: new Date().toISOString() }
+            );
+            monitoringService?.logError(err);
+            throw err;
         }
-        return await graphService.setFileContent(id, content, req);
+        
+        if (!content) {
+            const err = errorService.createError(
+                ErrorService.CATEGORIES.VALIDATION,
+                'File content is required for setFileContent',
+                ErrorService.SEVERITIES.ERROR,
+                { fileId: id, timestamp: new Date().toISOString() }
+            );
+            monitoringService?.logError(err);
+            throw err;
+        }
+        
+        try {
+            if (!graphService || typeof graphService.setFileContent !== 'function') {
+                const err = errorService.createError(
+                    ErrorService.CATEGORIES.SYSTEM,
+                    'GraphService.setFileContent not implemented',
+                    ErrorService.SEVERITIES.ERROR,
+                    { fileId: id, timestamp: new Date().toISOString() }
+                );
+                monitoringService?.logError(err);
+                throw err;
+            }
+            
+            const result = await graphService.setFileContent(id, content, req);
+            const executionTime = Date.now() - startTime;
+            
+            monitoringService?.trackMetric('files_set_content_success', executionTime, {
+                fileId: id, contentSize: content?.length || 0, timestamp: new Date().toISOString()
+            });
+            
+            return result;
+        } catch (error) {
+            const executionTime = Date.now() - startTime;
+            
+            monitoringService?.trackMetric('files_set_content_failure', executionTime, {
+                errorType: error.code || 'unknown', fileId: id, contentSize: content?.length || 0, timestamp: new Date().toISOString()
+            });
+            
+            const mcpError = error.id ? error : errorService.createError(
+                ErrorService.CATEGORIES.SYSTEM,
+                `Failed to set file content: ${error.message}`,
+                ErrorService.SEVERITIES.ERROR,
+                { fileId: id, contentSize: content?.length || 0, error: error.toString(), stack: error.stack, timestamp: new Date().toISOString() }
+            );
+            
+            monitoringService?.logError(mcpError);
+            throw mcpError;
+        }
     },
     
     /**
@@ -481,102 +1059,73 @@ const FilesModule = {
      * @returns {Promise<object>} Updated file metadata
      */
     async updateFileContent(id, content, req) {
-        const { graphService } = this.services || {};
-        if (!graphService || typeof graphService.updateFileContent !== 'function') {
-            throw new Error('GraphService.updateFileContent not implemented');
+        // Get services with fallbacks
+        const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
+        
+        const startTime = Date.now();
+        
+        // Validate input
+        if (!id) {
+            const err = errorService.createError(
+                ErrorService.CATEGORIES.VALIDATION,
+                'File ID is required for updateFileContent',
+                ErrorService.SEVERITIES.ERROR,
+                { timestamp: new Date().toISOString() }
+            );
+            monitoringService?.logError(err);
+            throw err;
         }
-        return await graphService.updateFileContent(id, content, req);
+        
+        if (!content) {
+            const err = errorService.createError(
+                ErrorService.CATEGORIES.VALIDATION,
+                'File content is required for updateFileContent',
+                ErrorService.SEVERITIES.ERROR,
+                { fileId: id, timestamp: new Date().toISOString() }
+            );
+            monitoringService?.logError(err);
+            throw err;
+        }
+        
+        try {
+            if (!graphService || typeof graphService.updateFileContent !== 'function') {
+                const err = errorService.createError(
+                    ErrorService.CATEGORIES.SYSTEM,
+                    'GraphService.updateFileContent not implemented',
+                    ErrorService.SEVERITIES.ERROR,
+                    { fileId: id, timestamp: new Date().toISOString() }
+                );
+                monitoringService?.logError(err);
+                throw err;
+            }
+            
+            const result = await graphService.updateFileContent(id, content, req);
+            const executionTime = Date.now() - startTime;
+            
+            monitoringService?.trackMetric('files_update_content_success', executionTime, {
+                fileId: id, contentSize: content?.length || 0, timestamp: new Date().toISOString()
+            });
+            
+            return result;
+        } catch (error) {
+            const executionTime = Date.now() - startTime;
+            
+            monitoringService?.trackMetric('files_update_content_failure', executionTime, {
+                errorType: error.code || 'unknown', fileId: id, contentSize: content?.length || 0, timestamp: new Date().toISOString()
+            });
+            
+            const mcpError = error.id ? error : errorService.createError(
+                ErrorService.CATEGORIES.SYSTEM,
+                `Failed to update file content: ${error.message}`,
+                ErrorService.SEVERITIES.ERROR,
+                { fileId: id, contentSize: content?.length || 0, error: error.toString(), stack: error.stack, timestamp: new Date().toISOString() }
+            );
+            
+            monitoringService?.logError(mcpError);
+            throw mcpError;
+        }
     },
     
-    /**
-
-    // Validate that required services are provided
-    const requiredServices = ['graphService']; // Only graphService is truly required, we have fallbacks for the others
-
-        if (!services) {
-            const error = errorService?.createError(
-                'files',
-                'FilesModule init requires a services object',
-                'error',
-                { timestamp: new Date().toISOString() }
-            ) || {
-                category: 'files',
-                message: 'FilesModule init requires a services object',
-                severity: 'error',
-                context: {}
-            };
-            
-            monitoringService?.logError(error) || 
-                console.error('[MCP FILES] FilesModule init requires a services object');
-                
-            throw error;
-        }
-
-        // Validate required services
-        for (const serviceName of requiredServices) {
-            if (!services[serviceName]) {
-                const error = errorService?.createError(
-                    'files',
-                    `FilesModule init failed: Required service '${serviceName}' is missing`,
-                    'error',
-                    { 
-                        missingService: serviceName,
-                        timestamp: new Date().toISOString() 
-                    }
-                ) || {
-                    category: 'files',
-                    message: `FilesModule init failed: Required service '${serviceName}' is missing`,
-                    severity: 'error',
-                    context: { missingService: serviceName }
-                };
-                
-                monitoringService?.logError(error) || 
-                    console.error(`[MCP FILES] FilesModule init failed: Required service '${serviceName}' is missing`);
-                    
-                throw error;
-            }
-        }
-
-        this.services = services;
-        
-        monitoringService?.logError(error) || 
-            console.error('[MCP FILES] FilesModule init requires a services object');
-            
-        throw error;
-    }
-
-    // Only graphService is truly required, we have fallbacks for the others
-    if (!services.graphService) {
-        const error = errorService.createError(
-            'files',
-            'FilesModule init failed: Required service \'graphService\' is missing',
-            'error',
-            { 
-                missingService: 'graphService',
-                timestamp: new Date().toISOString() 
-            }
-        );
-        
-        monitoringService?.logError(error) || 
-            console.error('[MCP FILES] FilesModule init failed: Required service \'graphService\' is missing');
-            
-        throw error;
-    }
-
-    this.services = {
-        ...services,
-        errorService: services.errorService || ErrorService,
-        monitoringService: services.monitoringService || MonitoringService
-    };
-    
-    // Log successful initialization
-    monitoringService?.info('FilesModule initialized successfully', { 
-        timestamp: new Date().toISOString() 
-    }, 'files') || 
-        console.info('[MCP FILES] FilesModule initialized successfully with required services');
-        
-    return this; // Return the module instance, now containing validated services
-},
 
 /**
  * Handles file-related intents routed to this module.

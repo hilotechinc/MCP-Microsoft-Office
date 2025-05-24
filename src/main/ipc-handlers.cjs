@@ -19,7 +19,9 @@ function initIpcHandlers() {
         MonitoringService = require('../core/monitoring-service.cjs');
         ErrorService = require('../core/error-service.cjs');
         
-        console.log('[IPC] Monitoring and Error services loaded successfully');
+        if (MonitoringService) {
+            MonitoringService.info('Monitoring and Error services loaded successfully', {}, 'ipc');
+        }
         
         // Set up IPC handlers for monitoring service
         setupMonitoringHandlers();
@@ -27,10 +29,19 @@ function initIpcHandlers() {
         // Set up IPC handlers for error service
         setupErrorHandlers();
         
-        console.log('[IPC] IPC handlers initialized successfully');
+        // Set up API handlers
+        setupAPIHandlers();
+        
+        if (MonitoringService) {
+            MonitoringService.info('IPC handlers initialized successfully', {}, 'ipc');
+        }
         return true;
     } catch (error) {
-        console.error('[IPC] Failed to initialize IPC handlers:', error);
+        if (MonitoringService) {
+            MonitoringService.error('Failed to initialize IPC handlers', { error: error.message, stack: error.stack }, 'ipc');
+        } else {
+            process.stderr.write(`[IPC] Failed to initialize IPC handlers: ${error.message}\n`);
+        }
         return false;
     }
 }
@@ -45,7 +56,8 @@ function setupMonitoringHandlers() {
         if (MonitoringService) {
             MonitoringService.info(message, metadata || {}, category || 'renderer');
         } else {
-            console.info(`[${category || 'renderer'}] ${message}`, metadata || {});
+            // Fallback when MonitoringService is not available
+            process.stdout.write(`[${category || 'renderer'}] ${message} ${JSON.stringify(metadata || {})}\n`);
         }
     });
     
@@ -55,7 +67,8 @@ function setupMonitoringHandlers() {
         if (MonitoringService) {
             MonitoringService.warn(message, metadata || {}, category || 'renderer');
         } else {
-            console.warn(`[${category || 'renderer'}] ${message}`, metadata || {});
+            // Fallback when MonitoringService is not available
+            process.stderr.write(`[${category || 'renderer'}] ${message} ${JSON.stringify(metadata || {})}\n`);
         }
     });
     
@@ -65,7 +78,8 @@ function setupMonitoringHandlers() {
         if (MonitoringService) {
             MonitoringService.error(message, metadata || {}, category || 'renderer');
         } else {
-            console.error(`[${category || 'renderer'}] ${message}`, metadata || {});
+            // Fallback when MonitoringService is not available
+            process.stderr.write(`[${category || 'renderer'}] ${message} ${JSON.stringify(metadata || {})}\n`);
         }
     });
     
@@ -75,7 +89,8 @@ function setupMonitoringHandlers() {
         if (MonitoringService) {
             MonitoringService.logError(error);
         } else {
-            console.error('[renderer:error]', error);
+            // Fallback when MonitoringService is not available
+            process.stderr.write(`[renderer:error] ${JSON.stringify(error)}\n`);
         }
     });
     
@@ -85,7 +100,8 @@ function setupMonitoringHandlers() {
         if (MonitoringService) {
             MonitoringService.trackMetric(name, value, metadata || {});
         } else {
-            console.log(`[metric] ${name}: ${value}`, metadata || {});
+            // Fallback when MonitoringService is not available
+            process.stdout.write(`[metric] ${name}: ${value} ${JSON.stringify(metadata || {})}\n`);
         }
     });
 }
@@ -109,19 +125,122 @@ function setupErrorHandlers() {
             if (MonitoringService) {
                 MonitoringService.logError(mcpError);
             } else {
-                console.error('[error:create]', mcpError);
+                // Fallback when MonitoringService is not available
+                process.stderr.write(`[error:create] ${JSON.stringify(mcpError)}\n`);
             }
         } else {
-            console.error('[error:create] ErrorService not available:', error);
+            // Fallback when ErrorService is not available
+            process.stderr.write(`[error:create] ErrorService not available: ${JSON.stringify(error)}\n`);
         }
     });
     
     // Service loading request
     ipcMain.on('services:load', (event, serviceName) => {
-        console.log(`[IPC] Renderer requested to load service: ${serviceName}`);
+        if (MonitoringService) {
+            MonitoringService.debug('Renderer requested to load service', { serviceName }, 'ipc');
+        }
         // We don't actually load anything here as services are already loaded in the main process
         // Just acknowledge the request
         event.reply('services:loaded', { success: true, service: serviceName });
+    });
+}
+
+/**
+ * Set up API handlers for the renderer to access backend API
+ */
+function setupAPIHandlers() {
+    const axios = require('axios');
+    const BASE_URL = 'http://localhost:3000';
+    
+    // Status endpoint
+    ipcMain.handle('api:status', async () => {
+        try {
+            const response = await axios.get(`${BASE_URL}/api/status`);
+            return response.data;
+        } catch (error) {
+            if (MonitoringService) {
+                MonitoringService.error('Failed to fetch status', { error: error.message }, 'api');
+            }
+            return { error: error.message };
+        }
+    });
+    
+    // Logs endpoint
+    ipcMain.handle('api:logs', async () => {
+        try {
+            const response = await axios.get(`${BASE_URL}/api/v1/logs`);
+            return response.data;
+        } catch (error) {
+            if (MonitoringService) {
+                MonitoringService.error('Failed to fetch logs', { error: error.message }, 'api');
+            }
+            return { error: error.message };
+        }
+    });
+    
+    // Mail endpoint
+    ipcMain.handle('api:mail', async (event, data) => {
+        try {
+            const response = await axios.get(`${BASE_URL}/api/v1/mail`, { params: data });
+            return response.data;
+        } catch (error) {
+            if (MonitoringService) {
+                MonitoringService.error('Failed to fetch mail', { error: error.message }, 'api');
+            }
+            return { error: error.message };
+        }
+    });
+    
+    // Calendar endpoint
+    ipcMain.handle('api:calendar', async (event, data) => {
+        try {
+            const response = await axios.get(`${BASE_URL}/api/v1/calendar`, { params: data });
+            return response.data;
+        } catch (error) {
+            if (MonitoringService) {
+                MonitoringService.error('Failed to fetch calendar', { error: error.message }, 'api');
+            }
+            return { error: error.message };
+        }
+    });
+    
+    // Files endpoint
+    ipcMain.handle('api:files', async (event, data) => {
+        try {
+            const response = await axios.get(`${BASE_URL}/api/v1/files`, { params: data });
+            return response.data;
+        } catch (error) {
+            if (MonitoringService) {
+                MonitoringService.error('Failed to fetch files', { error: error.message }, 'api');
+            }
+            return { error: error.message };
+        }
+    });
+    
+    // People endpoint
+    ipcMain.handle('api:people', async (event, data) => {
+        try {
+            const response = await axios.get(`${BASE_URL}/api/v1/people`, { params: data });
+            return response.data;
+        } catch (error) {
+            if (MonitoringService) {
+                MonitoringService.error('Failed to fetch people', { error: error.message }, 'api');
+            }
+            return { error: error.message };
+        }
+    });
+    
+    // Query endpoint
+    ipcMain.handle('api:query', async (event, data) => {
+        try {
+            const response = await axios.post(`${BASE_URL}/api/v1/query`, data);
+            return response.data;
+        } catch (error) {
+            if (MonitoringService) {
+                MonitoringService.error('Failed to process query', { error: error.message }, 'api');
+            }
+            return { error: error.message };
+        }
     });
 }
 

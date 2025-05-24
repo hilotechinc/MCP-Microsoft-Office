@@ -23,7 +23,11 @@ if (errorService && monitoringService) {
         monitoringService.init();
     }
     
-    console.log('[Main Process] Core services initialized');
+    monitoringService.info('Core services initialized', { 
+        errorServiceReady: !!errorService,
+        monitoringServiceReady: !!monitoringService,
+        dependencyInjectionComplete: true
+    }, 'electron');
 }
 
 // Import IPC handlers

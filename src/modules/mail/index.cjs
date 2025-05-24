@@ -4,6 +4,8 @@
  */
 
 const { normalizeEmail } = require('../../graph/normalizers.cjs');
+const ErrorService = require('../../core/error-service.cjs');
+const MonitoringService = require('../../core/monitoring-service.cjs');
 
 const MAIL_CAPABILITIES = [
     'readMail',
@@ -15,7 +17,58 @@ const MAIL_CAPABILITIES = [
     'markEmailRead'
 ];
 
+// Log module initialization
+MonitoringService.info('Mail Module initialized', {
+    serviceName: 'mail-module',
+    capabilities: MAIL_CAPABILITIES.length,
+    timestamp: new Date().toISOString()
+}, 'mail');
+
 const MailModule = {
+    /**
+     * Helper method to redact sensitive email data from objects before logging
+     * @param {object} data - The data object to redact
+     * @returns {object} Redacted copy of the data
+     * @private
+     */
+    redactSensitiveEmailData(data) {
+        if (!data || typeof data !== 'object') {
+            return data;
+        }
+        
+        // Create a deep copy to avoid modifying the original
+        const result = Array.isArray(data) ? [...data] : {...data};
+        
+        // Fields that should be redacted for email data
+        const sensitiveFields = [
+            'body', 'content', 'subject', 'to', 'from', 'cc', 'bcc', 
+            'emailAddress', 'address', 'email', 'recipients', 'sender',
+            'attachment', 'attachments', 'contentBytes'
+        ];
+        
+        // Recursively process the object
+        for (const key in result) {
+            if (Object.prototype.hasOwnProperty.call(result, key)) {
+                // Check if this is a sensitive field
+                if (sensitiveFields.includes(key.toLowerCase())) {
+                    if (typeof result[key] === 'string') {
+                        result[key] = 'REDACTED';
+                    } else if (Array.isArray(result[key])) {
+                        result[key] = `[${result[key].length} items]`;
+                    } else if (typeof result[key] === 'object' && result[key] !== null) {
+                        result[key] = '{REDACTED}';
+                    }
+                } 
+                // Recursively process nested objects
+                else if (typeof result[key] === 'object' && result[key] !== null) {
+                    result[key] = this.redactSensitiveEmailData(result[key]);
+                }
+            }
+        }
+        
+        return result;
+    },
+
     /**
      * Fetch raw inbox data from Graph for debugging (no normalization)
      * @param {object} options
@@ -65,32 +118,128 @@ const MailModule = {
      * @returns {Promise<boolean>} Success indicator
      */
     async sendEmail(emailData, req) {
-        const { graphService } = this.services || {};
-        if (!graphService || typeof graphService.sendEmail !== 'function') {
-            throw new Error('GraphService.sendEmail not implemented');
+        const startTime = Date.now();
+        const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
+        
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Send email operation started', {
+                method: 'sendEmail',
+                emailData: this.redactSensitiveEmailData(emailData),
+                timestamp: new Date().toISOString()
+            }, 'mail');
         }
         
-        console.log('[MailModule] Sending email with data:', JSON.stringify(emailData));
-        
-        // Validate required fields
-        if (!emailData.to) {
-            throw new Error('Recipient (to) is required');
-        }
-        if (!emailData.subject) {
-            throw new Error('Subject is required');
-        }
-        if (!emailData.body) {
-            throw new Error('Body is required');
-        }
-        
-        // Send email via graph service
         try {
+            if (!graphService || typeof graphService.sendEmail !== 'function') {
+                const mcpError = ErrorService.createError(
+                    ErrorService.CATEGORIES.VALIDATION,
+                    'GraphService.sendEmail not implemented',
+                    ErrorService.SEVERITIES.ERROR,
+                    {
+                        method: 'sendEmail',
+                        moduleId: 'mail',
+                        timestamp: new Date().toISOString()
+                    }
+                );
+                MonitoringService.logError(mcpError);
+                throw mcpError;
+            }
+            
+            // Validate required fields
+            if (!emailData.to) {
+                const mcpError = ErrorService.createError(
+                    ErrorService.CATEGORIES.VALIDATION,
+                    'Recipient (to) is required',
+                    ErrorService.SEVERITIES.WARNING,
+                    {
+                        method: 'sendEmail',
+                        moduleId: 'mail',
+                        timestamp: new Date().toISOString()
+                    }
+                );
+                MonitoringService.logError(mcpError);
+                throw mcpError;
+            }
+            if (!emailData.subject) {
+                const mcpError = ErrorService.createError(
+                    ErrorService.CATEGORIES.VALIDATION,
+                    'Subject is required',
+                    ErrorService.SEVERITIES.WARNING,
+                    {
+                        method: 'sendEmail',
+                        moduleId: 'mail',
+                        timestamp: new Date().toISOString()
+                    }
+                );
+                MonitoringService.logError(mcpError);
+                throw mcpError;
+            }
+            if (!emailData.body) {
+                const mcpError = ErrorService.createError(
+                    ErrorService.CATEGORIES.VALIDATION,
+                    'Body is required',
+                    ErrorService.SEVERITIES.WARNING,
+                    {
+                        method: 'sendEmail',
+                        moduleId: 'mail',
+                        timestamp: new Date().toISOString()
+                    }
+                );
+                MonitoringService.logError(mcpError);
+                throw mcpError;
+            }
+            
+            // Send email via graph service
             const result = await graphService.sendEmail(emailData, req);
-            console.log('[MailModule] Email sent successfully');
+            
+            const executionTime = Date.now() - startTime;
+            MonitoringService.trackMetric('mail_send_success', executionTime, {
+                method: 'sendEmail',
+                moduleId: 'mail',
+                timestamp: new Date().toISOString()
+            });
+            
+            MonitoringService.info('Email sent successfully', {
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'mail');
+            
             return result;
         } catch (error) {
-            console.error(`[MailModule] Error sending email: ${error.message}`);
-            throw error;
+            const executionTime = Date.now() - startTime;
+            
+            // If it's already an MCP error, just track metrics and rethrow
+            if (error.category) {
+                MonitoringService.trackMetric('mail_send_failure', executionTime, {
+                    method: 'sendEmail',
+                    moduleId: 'mail',
+                    errorType: error.code || 'validation_error',
+                    timestamp: new Date().toISOString()
+                });
+                throw error;
+            }
+            
+            const mcpError = ErrorService.createError(
+                ErrorService.CATEGORIES.SYSTEM,
+                `Error sending email: ${error.message}`,
+                ErrorService.SEVERITIES.ERROR,
+                {
+                    method: 'sendEmail',
+                    moduleId: 'mail',
+                    stack: error.stack,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            
+            MonitoringService.logError(mcpError);
+            MonitoringService.trackMetric('mail_send_failure', executionTime, {
+                method: 'sendEmail',
+                moduleId: 'mail',
+                errorType: error.code || 'unknown',
+                timestamp: new Date().toISOString()
+            });
+            
+            throw mcpError;
         }
     },
     
@@ -199,7 +348,10 @@ const MailModule = {
             }
             case 'sendMail': {
                 const { to, subject, body, cc, bcc } = entities;
-                console.log('[MailModule:handleIntent] Sending email with entities:', JSON.stringify(entities));
+                MonitoringService.debug('Handling sendMail intent', {
+                    entities: this.redactSensitiveEmailData(entities),
+                    timestamp: new Date().toISOString()
+                }, 'mail');
                 const sent = await graphService.sendEmail({ to, subject, body, cc, bcc }, context.req);
                 return { type: 'mailSendResult', success: !!sent, sent };
             }

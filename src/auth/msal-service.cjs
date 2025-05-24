@@ -7,6 +7,8 @@ const msal = require('@azure/msal-node');
 const url = require('url');
 const crypto = require('crypto');
 const storageService = require('../core/storage-service.cjs');
+const MonitoringService = require('../core/monitoring-service.cjs');
+const ErrorService = require('../core/error-service.cjs');
 
 // Load environment variables
 const CLIENT_ID = process.env.MICROSOFT_CLIENT_ID;
@@ -24,14 +26,26 @@ const SCOPES = [
     'Files.ReadWrite'      // Full access to user files
 ];
 
-// Debug environment variables
-console.log('[MSAL] Environment variables:');
-console.log('[MSAL] CLIENT_ID:', CLIENT_ID ? 'Set' : 'Not set');
-console.log('[MSAL] TENANT_ID:', TENANT_ID);
-console.log('[MSAL] REDIRECT_URI:', REDIRECT_URI);
+// Debug environment variables (only in development)
+if (process.env.NODE_ENV === 'development') {
+    MonitoringService.debug('MSAL environment variables', {
+        clientIdSet: CLIENT_ID ? 'Set' : 'Not set',
+        tenantId: TENANT_ID,
+        redirectUri: REDIRECT_URI,
+        timestamp: new Date().toISOString()
+    }, 'auth');
+}
 
 // Initialize storage service
-storageService.init().catch(err => console.error('[MSAL] Error initializing storage service:', err));
+storageService.init().catch(err => {
+    const mcpError = ErrorService.createError(
+        ErrorService.CATEGORIES.SYSTEM,
+        `MSAL storage service initialization failed: ${err.message}`,
+        ErrorService.SEVERITIES.ERROR,
+        { stack: err.stack, timestamp: new Date().toISOString() }
+    );
+    MonitoringService.logError(mcpError);
+});
 
 // Session storage for tokens and accounts
 let currentSession = null;
@@ -42,11 +56,29 @@ const msalConfig = {
         authority: `https://login.microsoftonline.com/${TENANT_ID}`,
         // NO clientSecret for public client
     },
-    system: { loggerOptions: { loggerCallback(level, message) { console.error(`MSAL (${level}): ${message}`); } } }
+    system: { 
+        loggerOptions: { 
+            loggerCallback(level, message) { 
+                const mcpError = ErrorService.createError(
+                    ErrorService.CATEGORIES.AUTH,
+                    `MSAL library message: ${message}`,
+                    level === 'Error' ? ErrorService.SEVERITIES.ERROR : ErrorService.SEVERITIES.WARNING,
+                    { level, timestamp: new Date().toISOString() }
+                );
+                MonitoringService.logError(mcpError);
+            } 
+        } 
+    }
 };
 
-// Verify MSAL config
-console.log('[MSAL] Config:', JSON.stringify(msalConfig, null, 2));
+// Verify MSAL config (only in development)
+if (process.env.NODE_ENV === 'development') {
+    MonitoringService.debug('MSAL configuration', {
+        authority: msalConfig.auth.authority,
+        clientIdSet: !!msalConfig.auth.clientId,
+        timestamp: new Date().toISOString()
+    }, 'auth');
+}
 
 const pca = new msal.PublicClientApplication(msalConfig);
 
@@ -100,9 +132,18 @@ async function getLoginUrl(req) {
  */
 async function login(req, res) {
     try {
-        console.log('[MSAL] Login attempt received');
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Login attempt received', {
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
         const authUrl = await getLoginUrl(req);
-        console.log('[MSAL] Generated auth URL:', authUrl);
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Generated auth URL', {
+                authUrlLength: authUrl.length,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
         
         // Set CORS headers for the redirect
         res.header('Access-Control-Allow-Origin', '*');
@@ -111,7 +152,13 @@ async function login(req, res) {
         
         res.redirect(authUrl);
     } catch (err) {
-        console.error('[MSAL] Login error:', err);
+        const mcpError = ErrorService.createError(
+            ErrorService.CATEGORIES.AUTH,
+            `MSAL login error: ${err.message}`,
+            ErrorService.SEVERITIES.ERROR,
+            { stack: err.stack, timestamp: new Date().toISOString() }
+        );
+        MonitoringService.logError(mcpError);
         res.status(500).send('Failed to get login URL: ' + (err.message || err));
     }
 }
@@ -122,21 +169,40 @@ async function login(req, res) {
  * @param {Object} res - Express response object
  */
 async function handleAuthCallback(req, res) {
-    // Debug: log env vars and PKCE verifier
-    console.log('[MSAL] CLIENT_ID:', CLIENT_ID);
-    console.log('[MSAL] TENANT_ID:', TENANT_ID);
-    console.log('[MSAL] REDIRECT_URI:', REDIRECT_URI);
+    // Debug: log env vars and PKCE verifier (only in development)
+    if (process.env.NODE_ENV === 'development') {
+        MonitoringService.debug('Auth callback processing', {
+            clientIdSet: !!CLIENT_ID,
+            tenantId: TENANT_ID,
+            redirectUri: REDIRECT_URI,
+            timestamp: new Date().toISOString()
+        }, 'auth');
+    }
     
     // Get code verifier from session or memory
     let codeVerifier;
     if (req.session && req.session.pkceCodeVerifier) {
-        console.log('[MSAL] Using PKCE codeVerifier from session');
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Using PKCE codeVerifier from session', {
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
         codeVerifier = req.session.pkceCodeVerifier;
     } else if (currentSession && currentSession.pkceCodeVerifier) {
-        console.log('[MSAL] Using PKCE codeVerifier from memory');
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Using PKCE codeVerifier from memory', {
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
         codeVerifier = currentSession.pkceCodeVerifier;
     } else {
-        console.error('[MSAL] No PKCE codeVerifier found');
+        const mcpError = ErrorService.createError(
+            ErrorService.CATEGORIES.AUTH,
+            'No PKCE codeVerifier found',
+            ErrorService.SEVERITIES.ERROR,
+            { timestamp: new Date().toISOString() }
+        );
+        MonitoringService.logError(mcpError);
         return res.status(400).send('Authentication failed: No code verifier found. Please try logging in again.');
     }
     
@@ -173,7 +239,10 @@ async function handleAuthCallback(req, res) {
         
         // Also store in SQLite database for persistence across restarts
         try {
-            console.log('[MSAL] Storing token in SQLite database');
+            MonitoringService.info('Storing authentication token in database', {
+                username: userInfo.username,
+                timestamp: new Date().toISOString()
+            }, 'auth');
             await storageService.setSecure('ms-access-token', userInfo.accessToken);
             await storageService.setSetting('ms-user-info', {
                 username: userInfo.username,
@@ -181,15 +250,30 @@ async function handleAuthCallback(req, res) {
                 homeAccountId: userInfo.homeAccountId,
                 expiresOn: userInfo.expiresOn
             });
-            console.log('[MSAL] Token stored in SQLite database');
+            MonitoringService.info('Authentication token stored successfully', {
+                username: userInfo.username,
+                timestamp: new Date().toISOString()
+            }, 'auth');
         } catch (dbError) {
-            console.error('[MSAL] Error storing token in database:', dbError);
+            const mcpError = ErrorService.createError(
+                ErrorService.CATEGORIES.DATABASE,
+                `Error storing token in database: ${dbError.message}`,
+                ErrorService.SEVERITIES.WARNING,
+                { stack: dbError.stack, timestamp: new Date().toISOString() }
+            );
+            MonitoringService.logError(mcpError);
             // Continue even if database storage fails
         }
         
         res.redirect('/');
     } catch (err) {
-        console.error('[MSAL] Auth error:', err);
+        const mcpError = ErrorService.createError(
+            ErrorService.CATEGORIES.AUTH,
+            `Authentication callback error: ${err.message}`,
+            ErrorService.SEVERITIES.ERROR,
+            { stack: err.stack, timestamp: new Date().toISOString() }
+        );
+        MonitoringService.logError(mcpError);
         res.status(500).send('Authentication failed: ' + (err.message || err));
     }
 }
@@ -250,7 +334,13 @@ async function getAccessToken(req) {
                 return storedToken;
             }
         } catch (dbError) {
-            console.error('[MSAL] Error getting token from database:', dbError);
+            const mcpError = ErrorService.createError(
+                ErrorService.CATEGORIES.DATABASE,
+                `Error getting token from database: ${dbError.message}`,
+                ErrorService.SEVERITIES.WARNING,
+                { stack: dbError.stack, timestamp: new Date().toISOString() }
+            );
+            MonitoringService.logError(mcpError);
         }
         
         // If we have an account, try to get a token silently
@@ -314,7 +404,9 @@ async function logout(req, res) {
         // Clear session if available
         if (req.session) {
             req.session.destroy(() => {
-                console.log('[MSAL] Session destroyed');
+                MonitoringService.info('User session destroyed', {
+                    timestamp: new Date().toISOString()
+                }, 'auth');
             });
         }
         
@@ -323,18 +415,34 @@ async function logout(req, res) {
         
         // Clear SQLite database storage
         try {
-            console.log('[MSAL] Clearing token from SQLite database');
+            MonitoringService.info('Clearing authentication token from database', {
+                timestamp: new Date().toISOString()
+            }, 'auth');
             await storageService.setSecure('ms-access-token', '');
             await storageService.setSetting('ms-user-info', null);
-            console.log('[MSAL] Token cleared from SQLite database');
+            MonitoringService.info('Authentication token cleared from database', {
+                timestamp: new Date().toISOString()
+            }, 'auth');
         } catch (dbError) {
-            console.error('[MSAL] Error clearing token from database:', dbError);
+            const mcpError = ErrorService.createError(
+                ErrorService.CATEGORIES.DATABASE,
+                `Error clearing token from database: ${dbError.message}`,
+                ErrorService.SEVERITIES.WARNING,
+                { stack: dbError.stack, timestamp: new Date().toISOString() }
+            );
+            MonitoringService.logError(mcpError);
         }
         
         // Redirect to home page
         res.redirect('/');
     } catch (error) {
-        console.error('[MSAL] Logout error:', error);
+        const mcpError = ErrorService.createError(
+            ErrorService.CATEGORIES.AUTH,
+            `Logout error: ${error.message}`,
+            ErrorService.SEVERITIES.ERROR,
+            { stack: error.stack, timestamp: new Date().toISOString() }
+        );
+        MonitoringService.logError(mcpError);
         res.status(500).send('Logout failed: ' + (error.message || error));
     }
 }
@@ -346,20 +454,36 @@ async function logout(req, res) {
  */
 async function getMostRecentToken() {
     try {
-        console.log('[MSAL] Attempting to get most recent token for internal MCP call');
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Attempting to get most recent token for internal MCP call', {
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
         
         // First try to get token from in-memory session
         if (currentSession && currentSession.msUser && currentSession.msUser.accessToken) {
-            console.log('[MSAL] Found valid token in in-memory session');
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Found valid token in in-memory session', {
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
             return currentSession.msUser.accessToken;
         }
         
         // If not in memory, try to get from SQLite database
-        console.log('[MSAL] Trying to get token from SQLite database');
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Trying to get token from SQLite database', {
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
         try {
             const storedToken = await storageService.getSecure('ms-access-token');
             if (storedToken) {
-                console.log('[MSAL] Found valid token in SQLite database');
+                if (process.env.NODE_ENV === 'development') {
+                    MonitoringService.debug('Found valid token in SQLite database', {
+                        timestamp: new Date().toISOString()
+                    }, 'auth');
+                }
                 
                 // Also load it into memory for future use
                 const userInfo = await storageService.getSetting('ms-user-info') || {};
@@ -373,14 +497,28 @@ async function getMostRecentToken() {
                 return storedToken;
             }
         } catch (dbError) {
-            console.error('[MSAL] Error getting token from database:', dbError);
+            const mcpError = ErrorService.createError(
+                ErrorService.CATEGORIES.DATABASE,
+                `Error getting token from database: ${dbError.message}`,
+                ErrorService.SEVERITIES.WARNING,
+                { stack: dbError.stack, timestamp: new Date().toISOString() }
+            );
+            MonitoringService.logError(mcpError);
         }
         
         // If no token found, we have no authenticated user
-        console.warn('[MSAL] No authenticated user found for internal MCP call');
+        MonitoringService.warn('No authenticated user found for internal MCP call', {
+            timestamp: new Date().toISOString()
+        }, 'auth');
         return null;
     } catch (error) {
-        console.error('[MSAL] Error getting most recent token:', error);
+        const mcpError = ErrorService.createError(
+            ErrorService.CATEGORIES.AUTH,
+            `Error getting most recent token: ${error.message}`,
+            ErrorService.SEVERITIES.ERROR,
+            { stack: error.stack, timestamp: new Date().toISOString() }
+        );
+        MonitoringService.logError(mcpError);
         return null;
     }
 }
