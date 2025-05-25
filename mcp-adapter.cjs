@@ -84,15 +84,15 @@ let adapterState = {
 // Initialize tools service with a stub module registry containing the module definitions
 const stubModuleRegistry = {
     getAllModules: () => [
-        { id: 'mail', name: 'mail', capabilities: ['getInbox', 'sendEmail', 'searchEmails', 'flagEmail', 'getEmailDetails', 'markAsRead', 'readMailDetails', 'getMailAttachments', 'markEmailRead'] },
-        { id: 'calendar', name: 'calendar', capabilities: ['getEvents', 'create', 'update', 'getAvailability', 'findMeetingTimes', 'cancelEvent'] },
+        { id: 'mail', name: 'mail', capabilities: ['getInbox', 'sendEmail', 'searchEmails', 'flagEmail', 'getEmailDetails', 'markAsRead', 'readMailDetails', 'getMailAttachments', 'markEmailRead', 'addMailAttachment', 'removeMailAttachment'] },
+        { id: 'calendar', name: 'calendar', capabilities: ['getEvents', 'create', 'update', 'getAvailability', 'findMeetingTimes', 'cancelEvent', 'addAttachment', 'removeAttachment'] },
         { id: 'files', name: 'files', capabilities: ['listFiles', 'uploadFile', 'downloadFile', 'getFileMetadata'] },
         { id: 'people', name: 'people', capabilities: ['find', 'search', 'getRelevantPeople', 'getPersonById'] }
     ],
     getModule: (moduleName) => {
         const modules = {
-            'mail': { id: 'mail', capabilities: ['getInbox', 'sendEmail', 'searchEmails', 'flagEmail', 'getEmailDetails', 'markAsRead', 'readMailDetails', 'getMailAttachments', 'markEmailRead'] },
-            'calendar': { id: 'calendar', capabilities: ['getEvents', 'create', 'update', 'getAvailability', 'findMeetingTimes', 'cancelEvent'] },
+            'mail': { id: 'mail', capabilities: ['getInbox', 'sendEmail', 'searchEmails', 'flagEmail', 'getEmailDetails', 'markAsRead', 'readMailDetails', 'getMailAttachments', 'markEmailRead', 'addMailAttachment', 'removeMailAttachment'] },
+            'calendar': { id: 'calendar', capabilities: ['getEvents', 'create', 'update', 'getAvailability', 'findMeetingTimes', 'cancelEvent', 'addAttachment', 'removeAttachment'] },
             'files': { id: 'files', capabilities: ['listFiles', 'uploadFile', 'downloadFile', 'getFileMetadata'] },
             'people': { id: 'people', capabilities: ['find', 'search', 'getRelevantPeople', 'getPersonById'] }
         };
@@ -704,6 +704,41 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 
                 break;
 
+            case 'mail.addMailAttachment':
+            case 'outlook mail.addMailAttachment':
+                if (!transformedParams.id) {
+                    const errorMessage = 'Email ID is required for adding attachment. Please provide an ID parameter with the email ID.';
+                    throw new Error(errorMessage);
+                }
+                
+                apiPath = `/v1/mail/${transformedParams.id}/attachments`;
+                apiMethod = 'POST';
+                
+                // The API expects attachment fields directly in the request body, not nested in an attachment object
+                // Keep the individual fields as they are - the controller expects them directly
+                apiData = {
+                    name: transformedParams.name,
+                    contentBytes: transformedParams.contentBytes,
+                    contentType: transformedParams.contentType || 'application/octet-stream',
+                    isInline: transformedParams.isInline || false
+                };
+                break;
+
+            case 'mail.removeMailAttachment':
+            case 'outlook mail.removeMailAttachment':
+                if (!transformedParams.id) {
+                    const errorMessage = 'Email ID is required for removing attachment. Please provide an ID parameter with the email ID.';
+                    throw new Error(errorMessage);
+                }
+                if (!transformedParams.attachmentId) {
+                    const errorMessage = 'Attachment ID is required for removing attachment. Please provide an attachmentId parameter.';
+                    throw new Error(errorMessage);
+                }
+                
+                apiPath = `/v1/mail/${transformedParams.id}/attachments/${transformedParams.attachmentId}`;
+                apiMethod = 'DELETE';
+                break;
+
             // Calendar module endpoints
             case 'calendar.getEvents':
             case 'calendar.getCalendar':
@@ -769,20 +804,14 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                             // Case 2: It's an object with email property
                             else if (attendee && attendee.email) {
                                 formattedAttendees.push({
-                                    emailAddress: {
-                                        address: attendee.email,
-                                        name: attendee.name || attendee.email.split('@')[0]
-                                    },
+                                    emailAddress: { address: attendee.email },
                                     type: attendee.type || 'required'
                                 });
                             }
                             // Case 3: It's a simple string (email)
                             else if (typeof attendee === 'string') {
                                 formattedAttendees.push({
-                                    emailAddress: {
-                                        address: attendee,
-                                        name: attendee.split('@')[0]
-                                    },
+                                    emailAddress: { address: attendee },
                                     type: 'required'
                                 });
                             }
@@ -1286,12 +1315,26 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 break;
                 
             case 'calendar.addAttachment':
-                apiPath = `/v1/calendar/events/${params.eventId}/attachments`;
+                if (!transformedParams.id) {
+                    throw new Error('Event ID is required for adding attachment');
+                }
+                apiPath = `/v1/calendar/events/${transformedParams.id}/attachments`;
                 apiMethod = 'POST';
-                apiData = params.attachment;
+                apiData = {
+                    name: transformedParams.name,
+                    contentBytes: transformedParams.contentBytes,
+                    contentType: transformedParams.contentType || 'application/octet-stream',
+                    isInline: transformedParams.isInline || false
+                };
                 break;
             case 'calendar.removeAttachment':
-                apiPath = `/v1/calendar/events/${params.eventId}/attachments/${params.attachmentId}`;
+                if (!transformedParams.eventId) {
+                    throw new Error('Event ID is required for removing attachment');
+                }
+                if (!transformedParams.attachmentId) {
+                    throw new Error('Attachment ID is required for removing attachment');
+                }
+                apiPath = `/v1/calendar/events/${transformedParams.eventId}/attachments/${transformedParams.attachmentId}`;
                 apiMethod = 'DELETE';
                 break;
 

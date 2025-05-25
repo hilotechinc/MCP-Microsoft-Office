@@ -757,7 +757,7 @@ async function createEvent(eventData, userId = 'me') {
   while (retryCount < maxRetries) {
     try {
       // Make the API call to create the event
-      const endpointPath = getEndpointPath(userId, '/events');
+      const endpointPath = userId === 'me' ? `/me/events` : `/users/${userId}/events`;
       MonitoringService?.debug(`Creating event with endpoint`, {
         endpoint: endpointPath,
         userId: redactSensitiveData({ userId }),
@@ -1245,7 +1245,7 @@ function normalizeAvailabilityResults(results) {
  * @param {number} [options.top=50] - Maximum number of events to return
  * @param {string} [options.select] - Comma-separated list of properties to include
  * @param {string} [options.orderby='start/dateTime'] - Property to sort by
- * @param {string} [options.userId='me'] - User ID to get events for
+ * @param {string} [userId='me'] - User ID to get events for
  * @returns {Promise<Array<Object>>} Raw event data from Graph API
  */
 async function getEventsRaw(options = {}, userId = 'me') {
@@ -1294,7 +1294,7 @@ async function getEventsRaw(options = {}, userId = 'me') {
       userId: redactSensitiveData({ userId }),
       timestamp: new Date().toISOString()
     }, 'calendar');
-    const endpoint = getEndpointPath(userId, `/events${queryString}`);
+    const endpoint = userId === 'me' ? `/me/events${queryString}` : `/users/${userId}/events${queryString}`;
     MonitoringService?.debug(`Fetching raw calendar events from endpoint`, {
       endpoint,
       timestamp: new Date().toISOString()
@@ -1341,13 +1341,14 @@ async function respondToEvent(eventId, responseType, options = {}) {
   while (retryCount < maxRetries) {
     try {
       // Make the API call to respond to the event
-      await client.api(`/users/${userId}/events/${eventId}/${responseType}`).post({
+      const endpoint = userId === 'me' ? `/me/events/${eventId}/${responseType}` : `/users/${userId}/events/${eventId}/${responseType}`;
+      await client.api(endpoint).post({
         comment: comment
       });
       
       // After successful response, get the updated event to return
       // This ensures we have the most current version with response status
-      const updatedEvent = await client.api(`/users/${userId}/events/${eventId}`).get();
+      const updatedEvent = await client.api(userId === 'me' ? `/me/events/${eventId}` : `/users/${userId}/events/${eventId}`).get();
       
       if (process.env.NODE_ENV !== 'production') {
         MonitoringService?.info(`Successfully responded to event`, {
@@ -1389,7 +1390,6 @@ async function respondToEvent(eventId, responseType, options = {}) {
             delayMs: Math.round(delay),
             attempt: retryCount,
             maxRetries,
-            statusCode: error.statusCode,
             timestamp: new Date().toISOString()
           }, 'calendar');
           
@@ -1552,12 +1552,12 @@ async function cancelEvent(eventId, options = {}) {
       
       if (sendCancellation) {
         // Use the cancel endpoint to send cancellation notices to attendees
-        response = await client.api(`/users/${userId}/events/${eventId}/cancel`).post({
+        response = await client.api(userId === 'me' ? `/me/events/${eventId}/cancel` : `/users/${userId}/events/${eventId}/cancel`).post({
           comment: comment
         });
       } else {
         // If not sending cancellation, just delete the event
-        response = await client.api(`/users/${userId}/events/${eventId}`).delete();
+        response = await client.api(userId === 'me' ? `/me/events/${eventId}` : `/users/${userId}/events/${eventId}`).delete();
       }
       
       // Verify success by checking for @odata.context in the response
@@ -1955,7 +1955,8 @@ async function getRooms(options = {}) {
     
     // Determine which API endpoint to use based on requested data
     // Microsoft Graph offers different endpoints for room lists vs. detailed room info
-    let endpoint = '/me/findRooms';
+    // NOTE: findRooms is only available in the Beta API, not in v1.0
+    let endpoint = 'https://graph.microsoft.com/beta/me/findRooms';
     
     // Add query parameters for pagination if provided
     const queryParams = [];
@@ -2026,7 +2027,7 @@ async function getRooms(options = {}) {
       `Error fetching rooms: ${error.message || 'Unknown error'}`,
       'error',
       {
-        endpoint: '/me/findRooms',
+        endpoint: 'https://graph.microsoft.com/beta/me/findRooms',
         statusCode: error.statusCode || 'unknown',
         errorMessage: error.message || 'No message',
         timestamp: new Date().toISOString()
@@ -2060,7 +2061,7 @@ async function getRooms(options = {}) {
     
     // Add detailed diagnostic information
     graphError.diagnostics = {
-      endpoint: '/me/findRooms', 
+      endpoint: 'https://graph.microsoft.com/beta/me/findRooms', 
       options: { ...options }, // Clone to avoid reference issues
       timestamp: new Date().toISOString()
     };
@@ -2337,8 +2338,9 @@ async function getCalendars(options = {}) {
   const userId = options.userId || 'me';
   
   try {
-    // Get the user's own calendars
-    const response = await client.api(`/users/${userId}/calendars`).get();
+    // Get the user's own calendars - use correct endpoint
+    const endpoint = userId === 'me' ? '/me/calendars' : `/users/${userId}/calendars`;
+    const response = await client.api(endpoint).get();
     let calendars = response.value || [];
     
     // If we need to include delegated/shared calendars and we're using the 'me' endpoint
@@ -2380,9 +2382,11 @@ async function getCalendars(options = {}) {
     
     return calendars;
   } catch (error) {
+    let mcpError;
+    
     if (process.env.NODE_ENV !== 'production') {
       // Create standardized error object
-      const mcpError = ErrorService?.createError(
+      mcpError = ErrorService?.createError(
         'calendar',
         `Error fetching calendars: ${error.message || 'Unknown error'}`,
         'error',
@@ -2473,8 +2477,7 @@ async function addEventAttachment(eventId, attachment, options = {}) {
     name: attachment.name,
     contentType: attachment.contentType,
     contentBytes: contentBytes,
-    isInline: attachment.isInline || false,
-    size: contentSize
+    isInline: attachment.isInline || false
   };
   
   try {
@@ -2502,7 +2505,8 @@ async function addEventAttachment(eventId, attachment, options = {}) {
     }
     
     // Standard approach for smaller attachments
-    response = await client.api(`/users/${userId}/events/${eventId}/attachments`).post(requestBody);
+    const endpoint = userId === 'me' ? `/me/events/${eventId}/attachments` : `/users/${userId}/events/${eventId}/attachments`;
+    response = await client.api(endpoint).post(requestBody);
     
     if (process.env.NODE_ENV !== 'production') {
       MonitoringService?.info(`Successfully added attachment to event`, {
@@ -2517,25 +2521,24 @@ async function addEventAttachment(eventId, attachment, options = {}) {
       id: response.id,
       name: response.name,
       contentType: response.contentType,
-      size: response.size,
+      size: response.size || contentSize, // Use response size if available, otherwise calculated size
       isInline: response.isInline,
       lastModifiedDateTime: response.lastModifiedDateTime
     };
   } catch (error) {
+    const mcpError = ErrorService?.createError(
+      'calendar',
+      `Error adding attachment: ${error.message || 'Unknown error'}`,
+      'error',
+      {
+        eventId: redactSensitiveData({ eventId }),
+        statusCode: error.statusCode || 'unknown',
+        errorMessage: error.message || 'No message',
+        timestamp: new Date().toISOString()
+      }
+    );
+    
     if (process.env.NODE_ENV !== 'production') {
-      // Create standardized error object
-      const mcpError = ErrorService?.createError(
-        'calendar',
-        `Error adding attachment: ${error.message || 'Unknown error'}`,
-        'error',
-        {
-          eventId: redactSensitiveData({ eventId }),
-          statusCode: error.statusCode || 'unknown',
-          errorMessage: error.message || 'No message',
-          timestamp: new Date().toISOString()
-        }
-      );
-      
       // Log the error
       MonitoringService?.logError(mcpError);
       
@@ -2583,7 +2586,7 @@ async function removeEventAttachment(eventId, attachmentId, options = {}) {
     // Get attachment details before deletion for confirmation
     let attachmentDetails = null;
     try {
-      attachmentDetails = await client.api(`/users/${userId}/events/${eventId}/attachments/${attachmentId}`).get();
+      attachmentDetails = await client.api(userId === 'me' ? `/me/events/${eventId}/attachments/${attachmentId}` : `/users/${userId}/events/${eventId}/attachments/${attachmentId}`).get();
     } catch (error) {
       // If we can't get the details, we'll still try to delete
       if (process.env.NODE_ENV !== 'production') {
@@ -2598,7 +2601,7 @@ async function removeEventAttachment(eventId, attachmentId, options = {}) {
     }
     
     // Delete the attachment
-    await client.api(`/users/${userId}/events/${eventId}/attachments/${attachmentId}`).delete();
+    await client.api(userId === 'me' ? `/me/events/${eventId}/attachments/${attachmentId}` : `/users/${userId}/events/${eventId}/attachments/${attachmentId}`).delete();
     
     if (process.env.NODE_ENV !== 'production') {
       MonitoringService?.info(`Successfully removed attachment from event`, {
@@ -2615,21 +2618,20 @@ async function removeEventAttachment(eventId, attachmentId, options = {}) {
       attachmentName: attachmentDetails?.name || 'Unknown'
     };
   } catch (error) {
+    const mcpError = ErrorService?.createError(
+      'calendar',
+      `Error removing attachment: ${error.message || 'Unknown error'}`,
+      'error',
+      {
+        eventId: redactSensitiveData({ eventId }),
+        attachmentId: redactSensitiveData({ attachmentId }),
+        statusCode: error.statusCode || 'unknown',
+        errorMessage: error.message || 'No message',
+        timestamp: new Date().toISOString()
+      }
+    );
+    
     if (process.env.NODE_ENV !== 'production') {
-      // Create standardized error object
-      const mcpError = ErrorService?.createError(
-        'calendar',
-        `Error removing attachment: ${error.message || 'Unknown error'}`,
-        'error',
-        {
-          eventId: redactSensitiveData({ eventId }),
-          attachmentId: redactSensitiveData({ attachmentId }),
-          statusCode: error.statusCode || 'unknown',
-          errorMessage: error.message || 'No message',
-          timestamp: new Date().toISOString()
-        }
-      );
-      
       // Log the error
       MonitoringService?.logError(mcpError);
       
@@ -2920,7 +2922,7 @@ async function updateEvent(id, eventData, userId = 'me') {
   // First, get the current event to obtain the ETag for concurrency control
   let currentEvent;
   try {
-    currentEvent = await client.api(`/users/${userId}/events/${id}`).get();
+    currentEvent = await client.api(userId === 'me' ? `/me/events/${id}` : `/users/${userId}/events/${id}`).get();
   } catch (error) {
     if (process.env.NODE_ENV !== 'production') {
       // Create standardized error object
@@ -2959,14 +2961,29 @@ async function updateEvent(id, eventData, userId = 'me') {
     userTimeZone = await getUserPreferredTimeZone(client, userId);
   } catch (error) {
     if (process.env.NODE_ENV !== 'production') {
-      MonitoringService?.warn('Could not get user\'s preferred time zone, using provided time zone or default', {
-        userId: redactSensitiveData({ userId: id }),
-        errorMessage: error.message || 'No message',
-        statusCode: error.statusCode || 'unknown',
-        fallbackTimeZone: userTimeZone,
+      // Create standardized error object
+      const mcpError = ErrorService?.createError(
+        'calendar',
+        `Could not get user's preferred time zone: ${error.message || 'Unknown error'}`,
+        'warn',
+        {
+          userId: redactSensitiveData({ userId }),
+          errorMessage: error.message || 'No message',
+          timestamp: new Date().toISOString()
+        }
+      );
+      
+      // Log the error
+      MonitoringService?.logError(mcpError);
+      
+      MonitoringService?.warn(`Could not get user's preferred time zone`, {
+        userId: redactSensitiveData({ userId }),
+        errorMessage: error.message,
         timestamp: new Date().toISOString()
       }, 'calendar');
     }
+    
+    // Fall back to the timezone provided in the request, or the default
     userTimeZone = eventData.start?.timeZone || CONFIG.DEFAULT_TIMEZONE;
   }
   
@@ -3118,7 +3135,7 @@ async function updateEvent(id, eventData, userId = 'me') {
       // Update the event with PATCH to only send changed fields
       // Use sendUpdates=all to ensure attendees are notified of changes
       const updatedEvent = await client
-        .api(`/users/${userId}/events/${id}?sendUpdates=all`)
+        .api(userId === 'me' ? `/me/events/${id}?sendUpdates=all` : `/users/${userId}/events/${id}?sendUpdates=all`)
         .patch(patch, options);
       
       // Calculate execution time and track performance
@@ -3166,7 +3183,7 @@ async function updateEvent(id, eventData, userId = 'me') {
         
         // Fetch the latest version of the event and its new ETag
         try {
-          currentEvent = await client.api(`/users/${userId}/events/${id}`).get();
+          currentEvent = await client.api(userId === 'me' ? `/me/events/${id}` : `/users/${userId}/events/${id}`).get();
           if (process.env.NODE_ENV !== 'production') {
             MonitoringService?.debug('Retrieved updated event with new ETag, retrying update', {
               eventId: redactSensitiveData({ id }),

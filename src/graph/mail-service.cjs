@@ -607,7 +607,7 @@ async function getAttachments(id, req) {
     
     // First check if the email exists and has attachments
     try {
-      const emailDetails = await client.api(`/me/messages/${id}`).select('id,hasAttachments').get();
+      const emailDetails = await client.api(`/me/messages/${id}`).get();
       
       if (process.env.NODE_ENV === 'development') {
         MonitoringService.debug('Email metadata retrieved for attachments check', {
@@ -637,9 +637,7 @@ async function getAttachments(id, req) {
     }
     
     // Use $select to ensure we get all attachment properties
-    const res = await client.api(`/me/messages/${id}/attachments`)
-      .select('id,name,contentType,size,isInline,lastModifiedDateTime')
-      .get();
+    const res = await client.api(`/me/messages/${id}/attachments`).get();
     
     const attachments = res.value || [];
     
@@ -976,6 +974,259 @@ async function markAsRead(id, isRead = true, req) {
   }
 }
 
+/**
+ * Add an attachment to an existing email message.
+ * @param {string} messageId - ID of the email message
+ * @param {object} attachment - Attachment data
+ * @param {string} attachment.name - Name of the attachment
+ * @param {string} attachment.contentType - MIME type of the attachment
+ * @param {string} attachment.contentBytes - Base64 encoded content
+ * @param {boolean} [attachment.isInline=false] - Whether the attachment is inline
+ * @param {object} req - Express request object
+ * @returns {Promise<object>} Created attachment object
+ */
+async function addMailAttachment(messageId, attachment, req) {
+  const startTime = Date.now();
+  
+  try {
+    if (!messageId || typeof messageId !== 'string') {
+      const mcpError = ErrorService.createError(
+        ErrorService.CATEGORIES.VALIDATION,
+        'Message ID must be a non-empty string',
+        ErrorService.SEVERITIES.WARNING,
+        {
+          service: 'graph-mail-service',
+          method: 'addMailAttachment',
+          messageIdType: typeof messageId,
+          timestamp: new Date().toISOString()
+        }
+      );
+      MonitoringService.logError(mcpError);
+      throw mcpError;
+    }
+    
+    if (!attachment || !attachment.name || !attachment.contentBytes) {
+      const mcpError = ErrorService.createError(
+        ErrorService.CATEGORIES.VALIDATION,
+        'Attachment must have name and contentBytes',
+        ErrorService.SEVERITIES.WARNING,
+        {
+          service: 'graph-mail-service',
+          method: 'addMailAttachment',
+          hasName: !!attachment?.name,
+          hasContentBytes: !!attachment?.contentBytes,
+          timestamp: new Date().toISOString()
+        }
+      );
+      MonitoringService.logError(mcpError);
+      throw mcpError;
+    }
+    
+    const client = await graphClientFactory.createClient(req);
+    
+    // Prepare the attachment object for Microsoft Graph API
+    const attachmentData = {
+      '@odata.type': '#microsoft.graph.fileAttachment',
+      name: attachment.name,
+      contentBytes: attachment.contentBytes,
+      contentType: attachment.contentType || 'application/octet-stream',
+      isInline: attachment.isInline || false
+    };
+    
+    MonitoringService.debug('Adding attachment to email', {
+      messageId: messageId,
+      attachmentName: attachment.name,
+      contentType: attachmentData.contentType,
+      isInline: attachmentData.isInline,
+      timestamp: new Date().toISOString()
+    }, 'graph-mail-service');
+    
+    // Add the attachment to the message
+    const result = await client.api(`/me/messages/${messageId}/attachments`).post(attachmentData);
+    
+    const executionTime = Date.now() - startTime;
+    MonitoringService.trackMetric('graph_mail_add_attachment_success', executionTime, {
+      service: 'graph-mail-service',
+      method: 'addMailAttachment',
+      attachmentName: attachment.name,
+      timestamp: new Date().toISOString()
+    });
+    
+    MonitoringService.info('Successfully added attachment to email', {
+      messageId: messageId,
+      attachmentId: result.id,
+      attachmentName: result.name,
+      executionTime: executionTime,
+      timestamp: new Date().toISOString()
+    }, 'graph-mail-service');
+    
+    return result;
+    
+  } catch (error) {
+    const executionTime = Date.now() - startTime;
+    
+    const mcpError = ErrorService.createError(
+      ErrorService.CATEGORIES.GRAPH,
+      `Failed to add attachment to email: ${error.message}`,
+      ErrorService.SEVERITIES.ERROR,
+      {
+        service: 'graph-mail-service',
+        method: 'addMailAttachment',
+        messageId: messageId,
+        attachmentName: attachment?.name,
+        stack: error.stack,
+        timestamp: new Date().toISOString()
+      }
+    );
+    
+    MonitoringService.logError(mcpError);
+    MonitoringService.trackMetric('graph_mail_add_attachment_failure', executionTime, {
+      service: 'graph-mail-service',
+      method: 'addMailAttachment',
+      errorType: error.code || 'unknown',
+      timestamp: new Date().toISOString()
+    });
+    
+    throw mcpError;
+  }
+}
+
+/**
+ * Remove an attachment from an existing email message.
+ * @param {string} messageId - ID of the email message
+ * @param {string} attachmentId - ID of the attachment to remove
+ * @param {object} req - Express request object
+ * @returns {Promise<object>} Success status
+ */
+async function removeMailAttachment(messageId, attachmentId, req) {
+  const startTime = Date.now();
+  
+  try {
+    if (!messageId || typeof messageId !== 'string') {
+      const mcpError = ErrorService.createError(
+        ErrorService.CATEGORIES.VALIDATION,
+        'Message ID must be a non-empty string',
+        ErrorService.SEVERITIES.WARNING,
+        {
+          service: 'graph-mail-service',
+          method: 'removeMailAttachment',
+          messageIdType: typeof messageId,
+          timestamp: new Date().toISOString()
+        }
+      );
+      MonitoringService.logError(mcpError);
+      throw mcpError;
+    }
+    
+    if (!attachmentId || typeof attachmentId !== 'string') {
+      const mcpError = ErrorService.createError(
+        ErrorService.CATEGORIES.VALIDATION,
+        'Attachment ID must be a non-empty string',
+        ErrorService.SEVERITIES.WARNING,
+        {
+          service: 'graph-mail-service',
+          method: 'removeMailAttachment',
+          attachmentIdType: typeof attachmentId,
+          timestamp: new Date().toISOString()
+        }
+      );
+      MonitoringService.logError(mcpError);
+      throw mcpError;
+    }
+    
+    const client = await graphClientFactory.createClient(req);
+    
+    MonitoringService.info('Attempting to remove attachment from email', {
+      messageId: messageId,
+      attachmentId: attachmentId,
+      encodedAttachmentId: encodeURIComponent(attachmentId),
+      apiPath: `/me/messages/${messageId}/attachments/${encodeURIComponent(attachmentId)}`,
+      timestamp: new Date().toISOString()
+    }, 'graph-mail-service');
+    
+    // URL encode the attachment ID to handle special characters
+    const encodedAttachmentId = encodeURIComponent(attachmentId);
+    
+    MonitoringService.debug('Attempting to remove attachment', {
+      messageId: messageId,
+      attachmentId: attachmentId,
+      encodedAttachmentId: encodedAttachmentId,
+      apiPath: `/me/messages/${messageId}/attachments/${encodedAttachmentId}`,
+      timestamp: new Date().toISOString()
+    }, 'graph-mail-service');
+    
+    // Remove the attachment from the message
+    try {
+      const deleteResponse = await client.api(`/me/messages/${messageId}/attachments/${encodedAttachmentId}`).delete();
+      MonitoringService.info('Graph API delete response received', {
+        messageId: messageId,
+        attachmentId: attachmentId,
+        response: deleteResponse,
+        timestamp: new Date().toISOString()
+      }, 'graph-mail-service');
+    } catch (graphError) {
+      MonitoringService.error('Graph API delete request failed', {
+        messageId: messageId,
+        attachmentId: attachmentId,
+        encodedAttachmentId: encodedAttachmentId,
+        apiPath: `/me/messages/${messageId}/attachments/${encodedAttachmentId}`,
+        error: graphError.message,
+        statusCode: graphError.statusCode || graphError.code,
+        errorDetails: graphError.body || graphError.response || graphError,
+        timestamp: new Date().toISOString()
+      }, 'graph-mail-service');
+      throw graphError;
+    }
+    
+    const executionTime = Date.now() - startTime;
+    MonitoringService.trackMetric('graph_mail_remove_attachment_success', executionTime, {
+      service: 'graph-mail-service',
+      method: 'removeMailAttachment',
+      timestamp: new Date().toISOString()
+    });
+    
+    MonitoringService.info('Successfully removed attachment from email', {
+      messageId: messageId,
+      attachmentId: attachmentId,
+      executionTime: executionTime,
+      timestamp: new Date().toISOString()
+    }, 'graph-mail-service');
+    
+    return { success: true, messageId, attachmentId };
+    
+  } catch (error) {
+    const executionTime = Date.now() - startTime;
+    
+    const mcpError = ErrorService.createError(
+      ErrorService.CATEGORIES.GRAPH,
+      `Failed to remove attachment from email: ${error.message}`,
+      ErrorService.SEVERITIES.ERROR,
+      {
+        service: 'graph-mail-service',
+        method: 'removeMailAttachment',
+        messageId: messageId,
+        attachmentId: attachmentId,
+        encodedAttachmentId: encodeURIComponent(attachmentId),
+        apiPath: `/me/messages/${messageId}/attachments/${encodeURIComponent(attachmentId)}`,
+        graphError: error.code || 'unknown',
+        graphMessage: error.message,
+        stack: error.stack,
+        timestamp: new Date().toISOString()
+      }
+    );
+    
+    MonitoringService.logError(mcpError);
+    MonitoringService.trackMetric('graph_mail_remove_attachment_failure', executionTime, {
+      service: 'graph-mail-service',
+      method: 'removeMailAttachment',
+      errorType: error.code || 'unknown',
+      timestamp: new Date().toISOString()
+    });
+    
+    throw mcpError;
+  }
+}
+
 module.exports = {
   getInbox,
   searchEmails,
@@ -984,5 +1235,7 @@ module.exports = {
   getAttachments,
   getInboxRaw,
   getEmailDetails,
-  markAsRead
+  markAsRead,
+  addMailAttachment,
+  removeMailAttachment
 };

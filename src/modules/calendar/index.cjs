@@ -1096,279 +1096,20 @@ const CalendarModule = {
                 { 
                     action,
                     eventId,
-                    timestamp: new Date().toISOString(),
-                    serviceError: 'method_not_implemented'
+                    timestamp: new Date().toISOString()
                 }
             );
+            
             monitoringService?.logError(methodError);
-            monitoringService?.error(`Calendar event ${action} failed: Method not implemented`, {
-                serviceError: 'method_not_implemented',
-                timestamp: new Date().toISOString()
-            }, 'calendar');
+                
             throw methodError;
-        }
-
-        try {
-            // Call the Graph service
-            const result = await graphService[graphMethodName](eventId, comment);
-            
-            // Log success
-            monitoringService?.info(`Calendar event ${action} successful`, {
-                eventId,
-                timestamp: new Date().toISOString()
-            }, 'calendar');
-            
-            return result;
-        } catch (error) {
-            // Create standardized error
-            const mcpError = errorService.createError(
-                'calendar',
-                `Failed to ${action} event: ${error.message}`,
-                'error',
-                { 
-                    action,
-                    eventId,
-                    errorCode: error.code || 'unknown',
-                    statusCode: error.statusCode || 'unknown',
-                    originalError: error.stack || error.message,
-                    timestamp: new Date().toISOString()
-                }
-            );
-            
-            // Log the error with detailed context
-            monitoringService?.logError(mcpError);
-            monitoringService?.error(`Calendar event ${action} failed`, {
-                errorMessage: error.message,
-                errorCode: error.code || 'unknown',
-                statusCode: error.statusCode || 'unknown',
-                timestamp: new Date().toISOString()
-            }, 'calendar');
-            
-            throw mcpError;
-        }
-    },
-    
-    /**
-     * Get availability for users within a specified time range
-     * @param {object} options - Options object.
-     * @param {Array<string|object>} options.users - Array of user emails or user objects.
-     * @param {Array<object>} [options.timeSlots] - Array of time slots (e.g., [{ start: { dateTime, timeZone }, end: { dateTime, timeZone } }]). Required if duration is not provided.
-     * @param {string} [options.duration] - ISO 8601 duration string (e.g., 'PT1H'). Required if timeSlots is not provided.
-     * @param {string|Date} [options.windowStart=Date.now()] - Start time for the duration-based window.
-     * @returns {Promise<object>} Availability data object.
-     * @throws {Error} If input validation fails or Graph API call errors occur.
-     */
-    async getAvailability(options = {}) {
-        // TODO: [getAvailability] Accept flexible window (slots/duration); bubble Graph errors (MEDIUM)
-        const { graphService, errorService, monitoringService } = this.services || {};
-
-        // Ensure services are available
-        if (!graphService || !errorService || !monitoringService) {
-            // Fallback to console if monitoring service is not available
-            throw new Error('Required services (Graph, Error, Monitoring) not available for getAvailability');
-        }
-
-        // Define validation schema
-        const dateTimeTimeZoneSchema = Joi.object({
-            dateTime: Joi.alternatives().try(
-                Joi.string().isoDate(),
-                Joi.date()
-            ).required(),
-            timeZone: Joi.string().required()
-        });
-        const timeSlotSchema = Joi.object({
-            start: dateTimeTimeZoneSchema.required(),
-            end: dateTimeTimeZoneSchema.required()
-        });
-        const availabilityOptionsSchema = Joi.object({
-            users: Joi.array().items(Joi.string().email(), Joi.object()).min(1).required(),
-            timeSlots: Joi.array().items(timeSlotSchema).min(1),
-            duration: Joi.string().pattern(/^P(T\d+[HMS]|\d+[WD])$/), // Basic ISO 8601 Duration check
-            windowStart: Joi.alternatives().try(Joi.string().isoDate(), Joi.date()).default(() => new Date().toISOString())
-        })
-        .xor('timeSlots', 'duration') // Must have one or the other
-        .required();
-
-        // Validate input
-        const { error: validationError, value: validatedOptions } = availabilityOptionsSchema.validate(options);
-        if (validationError) {
-            const err = errorService.createError('validation', `Invalid availability options: ${validationError.details[0].message}`, 'warn', { details: validationError.details });
-            monitoringService?.logError(err);
-            throw err;
-        }
-        
-        // Extract validated options
-        const { users, timeSlots, duration, windowStart } = validatedOptions;
-        
-        // Convert users to email addresses if they are objects
-        const emails = users.map(user => typeof user === 'string' ? user : user.email || user.emailAddress?.address);
-        
-        // Start timing for performance tracking
-        const startTime = Date.now();
-        
-        // Determine time range based on provided options
-        let startDateTime, endDateTime;
-        
-        if (timeSlots && timeSlots.length > 0) {
-            // Use the first time slot for the API call
-            startDateTime = timeSlots[0].start.dateTime;
-            endDateTime = timeSlots[0].end.dateTime;
-        } else if (duration) {
-            // Calculate end time based on duration
-            const start = new Date(windowStart);
-            startDateTime = start.toISOString();
-            
-            // Parse ISO 8601 duration and add to start time
-            // This is a simplified parser for basic durations
-            const durationMatch = duration.match(/^P(?:(?:(?<days>\d+)D)|(?:T(?:(?<hours>\d+)H)?(?:(?<minutes>\d+)M)?(?:(?<seconds>\d+)S)?))$/);
-            if (durationMatch && durationMatch.groups) {
-                const { days, hours, minutes, seconds } = durationMatch.groups;
-                const end = new Date(start);
-                if (days) end.setDate(end.getDate() + parseInt(days, 10));
-                if (hours) end.setHours(end.getHours() + parseInt(hours, 10));
-                if (minutes) end.setMinutes(end.getMinutes() + parseInt(minutes, 10));
-                if (seconds) end.setSeconds(end.getSeconds() + parseInt(seconds, 10));
-                endDateTime = end.toISOString();
-            } else {
-                // Default to 1 hour if duration parsing fails
-                const end = new Date(start);
-                end.setHours(end.getHours() + 1);
-                endDateTime = end.toISOString();
-                monitoringService?.warn('Failed to parse duration, using 1 hour default', { duration }, 'calendar');
-            }
-        }
-        
-        try {
-            // Log that we're about to call the Graph service
-            monitoringService?.debug('Calling Graph service for availability', {
-                emailCount: emails.length,
-                startDateTime,
-                endDateTime,
-                timeZone: options.timeZone,
-                intervalMinutes: options.intervalMinutes,
-                timestamp: new Date().toISOString()
-            }, 'calendar');
-            
-            // Call the Graph service
-            const result = await graphService.getAvailability(emails, startDateTime, endDateTime, {
-                timeZone: options.timeZone,
-                intervalMinutes: options.intervalMinutes
-            });
-            
-            // Calculate execution time
-            const executionTime = Date.now() - startTime;
-            
-            // Log success metrics
-            monitoringService?.trackMetric('calendar_availability_success', executionTime, {
-                emailCount: emails.length,
-                resultCount: Array.isArray(result) ? result.length : 0,
-                timestamp: new Date().toISOString()
-            });
-            
-            // Log success with result summary
-            monitoringService?.info('Calendar availability check completed successfully', {
-                emailCount: emails.length,
-                resultCount: Array.isArray(result) ? result.length : 0,
-                executionTimeMs: executionTime,
-                timestamp: new Date().toISOString()
-            }, 'calendar');
-            
-            // Check if mock data is being returned
-            if (result && Array.isArray(result) && result.length > 0) {
-                const isMockData = result.some(item => 
-                    item.scheduleItems && item.scheduleItems.some(scheduleItem => 
-                        scheduleItem.id && scheduleItem.id.includes('mock')
-                    )
-                );
-                
-                if (isMockData) {
-                    monitoringService?.warn('Calendar availability returned mock data', {
-                        emailCount: emails.length,
-                        resultCount: result.length,
-                        executionTimeMs: executionTime,
-                        timestamp: new Date().toISOString()
-                    }, 'calendar');
-                }
-            }
-            
-            return result;
-        } catch (error) {
-        // Calculate execution time even for failures
-        const executionTime = Date.now() - startTime;
-        
-        // Track failure metrics
-        monitoringService?.trackMetric('calendar_availability_failure', executionTime, {
-            errorType: error.code || 'unknown',
-            timestamp: new Date().toISOString()
-        });
-        
-        // Create standardized error
-        const mcpError = errorService.createError(
-            'calendar',
-            `Failed to get availability: ${error.message}`,
-            'error',
-            { 
-                emails: this.redactSensitiveData(emails),
-                startDateTime,
-                endDateTime,
-                error: error.toString(),
-                stack: error.stack,
-                timestamp: new Date().toISOString()
-            }
-        );
-        
-        // Log the error
-        monitoringService?.logError(mcpError);
-        
-        // Rethrow the error for the caller to handle
-        throw mcpError;
-        }
-
-    },
-    
-    /**
-     * Private helper to handle common event actions (accept, decline, etc.).
-     * @param {string} action - The action to perform ('accept', 'tentativelyAccept', 'decline', 'cancel').
-     * @param {string} eventId - ID of the event to update.
-     * @param {string} comment - Optional comment.
-     * @returns {Promise<object>} Response from Graph Service.
-     * @private
-     */
-    async _handleEventAction(action, eventId, comment = '') {
-        // Get services with fallbacks
-        const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
-        const graphMethodName = `${action}Event`; // e.g., 'acceptEvent'
-
-        // Log the action attempt
-        monitoringService?.debug(`Attempting ${action} action on calendar event`, {
-            action,
-            eventId,
-            hasComment: !!comment,
-            timestamp: new Date().toISOString()
-        }, 'calendar');
-
-        if (!graphService || typeof graphService[graphMethodName] !== 'function') {
-            const methodError = errorService?.createError(
-                'calendar',
-                `Required GraphService method '${graphMethodName}' not implemented or service unavailable`,
-                'error',
-                { 
-                    action,
-                    eventId,
-                    timestamp: new Date().toISOString()
-                }
-            );
-            
-            monitoringService?.logError(methodError);
-                
-            throw new Error(`Required GraphService method '${graphMethodName}' not implemented or service unavailable.`);
         }
 
         try {
             // Track performance
             const startTime = Date.now();
             
-            // Call the dynamic graph service method
+            // Call the Graph service
             const result = await graphService[graphMethodName](eventId, comment);
             
             // Calculate elapsed time and track metric
@@ -1496,7 +1237,7 @@ const CalendarModule = {
             monitoringService?.trackMetric('calendar_find_meeting_times', elapsedTime, {
                 timestamp: new Date().toISOString()
             });
-            
+
             monitoringService?.info('Successfully found meeting times', {
                 suggestionCount: result?.meetingTimeSuggestions?.length || 0,
                 elapsedTime,
@@ -1582,7 +1323,7 @@ const CalendarModule = {
             });
 
             // Basic normalization - ensure essential fields are present
-            const normalizedRooms = (result?.value || []).map(room => ({
+            const normalizedRooms = (result?.rooms || []).map(room => ({
                 id: room.id, // Assuming graph returns id
                 displayName: room.displayName || room.name, // Graph uses displayName for rooms
                 emailAddress: room.emailAddress, // Key field
@@ -1591,14 +1332,14 @@ const CalendarModule = {
 
             monitoringService?.info('Successfully retrieved room list', {
                 roomCount: normalizedRooms.length,
-                hasNextLink: !!result['@odata.nextLink'],
+                hasNextLink: !!result.nextLink,
                 elapsedTime,
                 timestamp: new Date().toISOString()
             }, 'calendar');
                 
             return {
                 rooms: normalizedRooms,
-                nextLink: result['@odata.nextLink'] // Pass along the nextLink for pagination
+                nextLink: result.nextLink // Pass along the nextLink for pagination
             };
         } catch (error) {
             const graphDetails = {
@@ -1669,13 +1410,16 @@ const CalendarModule = {
             });
 
             // Normalize the result to ensure essential fields, including canEdit
-            const normalizedCalendars = (result?.value || []).map(cal => ({
+            const normalizedCalendars = (Array.isArray(result) ? result : result?.value || []).map(cal => ({
                 id: cal.id,
                 name: cal.name,
                 canEdit: cal.canEdit, // Ensure this field is passed through
-                // Add other relevant fields if necessary, e.g., owner, color
-                // owner: cal.owner?.emailAddress,
-                // color: cal.color 
+                owner: cal.owner, // Include owner information
+                color: cal.color, // Include color
+                canShare: cal.canShare, // Include sharing capability
+                canViewPrivateItems: cal.canViewPrivateItems, // Include privacy settings
+                defaultOnlineMeetingProvider: cal.defaultOnlineMeetingProvider, // Include meeting provider
+                // Add other relevant fields if necessary
             }));
 
             monitoringService?.info('Successfully retrieved user calendars', {
@@ -2009,6 +1753,17 @@ const CalendarModule = {
             'getCalendars': async (entities, context) => {
                 const calendars = await this.getCalendars(); // Expect array
                 return { type: 'calendarList', calendars: calendars };
+            },
+            'addAttachment': async (entities, context) => {
+                const { id, name, contentBytes, contentType } = entities;
+                const attachment = { name, contentBytes, contentType };
+                const result = await this.addAttachment(id, attachment);
+                return { type: 'attachmentAdded', attachment: result };
+            },
+            'removeAttachment': async (entities, context) => {
+                const { eventId, attachmentId } = entities;
+                const success = await this.removeAttachment(eventId, attachmentId);
+                return { type: 'attachmentRemoved', success, eventId, attachmentId };
             }
             // Add handlers for addAttachment/removeAttachment if they become intents
         };

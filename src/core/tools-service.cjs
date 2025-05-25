@@ -67,6 +67,9 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
         flagMail: { moduleName: 'mail', methodName: 'flagEmail' },
         getMailDetails: { moduleName: 'mail', methodName: 'getEmailDetails' },
         markMailRead: { moduleName: 'mail', methodName: 'markAsRead' },
+        markEmailRead: { moduleName: 'mail', methodName: 'markAsRead' },
+        addMailAttachment: { moduleName: 'mail', methodName: 'addMailAttachment' },
+        removeMailAttachment: { moduleName: 'mail', methodName: 'removeMailAttachment' },
         
         // Calendar module tools
         getCalendar: { moduleName: 'calendar', methodName: 'getEvents' },
@@ -76,6 +79,8 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
         cancelEvent: { moduleName: 'calendar', methodName: 'cancelEvent' },
         getAvailability: { moduleName: 'calendar', methodName: 'getAvailability' },
         findMeetingTimes: { moduleName: 'calendar', methodName: 'findMeetingTimes' },
+        addAttachment: { moduleName: 'calendar', methodName: 'addAttachment' },
+        removeAttachment: { moduleName: 'calendar', methodName: 'removeAttachment' },
         
         // Files module tools
         listFiles: { moduleName: 'files', methodName: 'listFiles' },
@@ -231,6 +236,7 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 };
                 break;
             case 'getAttachments':
+            case 'getMailAttachments':
                 toolDef.description = 'Get email attachments';
                 toolDef.endpoint = '/api/v1/mail/attachments';
                 toolDef.method = 'GET';
@@ -247,11 +253,12 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 break;
             case 'getEmailDetails':
             case 'getMailDetails':
+            case 'readMailDetails':
                 toolDef.description = 'Get detailed information for a specific email';
                 toolDef.endpoint = '/api/v1/mail/:id';
                 toolDef.method = 'GET';
                 toolDef.parameters = {
-                    id: { type: 'string', description: 'Email ID to retrieve details for' }
+                    id: { type: 'string', description: 'Email ID to retrieve details for', required: true }
                 };
                 // Ensure this tool is properly registered with the /v1/mail/:id endpoint
                 // Note: The :id in the path is a placeholder for the actual ID value
@@ -261,6 +268,7 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 break;
             case 'markAsRead':
             case 'markMailRead':
+            case 'markEmailRead':
                 toolDef.description = 'Mark an email as read or unread';
                 toolDef.endpoint = '/api/v1/mail/:id/read';
                 toolDef.method = 'PATCH';
@@ -268,11 +276,44 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                     id: { type: 'string', description: 'Email ID to mark as read/unread' },
                     isRead: { type: 'boolean', description: 'Whether to mark as read (true) or unread (false)', optional: true, default: true }
                 };
-                // Ensure this tool is properly registered with the /v1/mail/:id/read endpoint
+                // Ensure this tool is properly registered with the /api/v1/mail/:id/read endpoint
                 // Note: The :id in the path is a placeholder for the actual ID value
                 toolDef.parameterMapping = {
                     id: { inPath: true },
                     isRead: { inBody: true }
+                };
+                break;
+
+            case 'addMailAttachment':
+                toolDef.description = 'Add an attachment to an existing email';
+                toolDef.endpoint = '/api/v1/mail/:id/attachments';
+                toolDef.method = 'POST';
+                toolDef.parameters = {
+                    id: { type: 'string', description: 'Email ID to add attachment to' },
+                    name: { type: 'string', description: 'Name of the attachment file' },
+                    contentBytes: { type: 'string', description: 'Base64 encoded content of the attachment' },
+                    contentType: { type: 'string', description: 'MIME type of the attachment', optional: true },
+                    isInline: { type: 'boolean', description: 'Whether the attachment is inline', optional: true, default: false }
+                };
+                toolDef.parameterMapping = {
+                    id: { inPath: true },
+                    name: { inBody: true },
+                    contentBytes: { inBody: true },
+                    contentType: { inBody: true },
+                    isInline: { inBody: true }
+                };
+                break;
+            case 'removeMailAttachment':
+                toolDef.description = 'Remove an attachment from an existing email';
+                toolDef.endpoint = '/api/v1/mail/:id/attachments/:attachmentId';
+                toolDef.method = 'DELETE';
+                toolDef.parameters = {
+                    id: { type: 'string', description: 'Email ID to remove attachment from' },
+                    attachmentId: { type: 'string', description: 'ID of the attachment to remove' }
+                };
+                toolDef.parameterMapping = {
+                    id: { inPath: true },
+                    attachmentId: { inPath: true }
                 };
                 break;
 
@@ -308,7 +349,11 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                             timeZone: { type: 'string', description: 'Time zone', optional: true }
                         }
                     },
-                    location: { type: 'string', description: 'Event location', optional: true },
+                    location: { 
+                        type: 'any', 
+                        description: 'Event location (string or object with displayName)',
+                        optional: true
+                    },
                     body: { type: 'string', description: 'Event description/body', optional: true },
                     attendees: { 
                         type: 'array', 
@@ -326,7 +371,7 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 toolDef.endpoint = '/api/v1/calendar/events/:id';
                 toolDef.method = 'PUT';
                 toolDef.parameters = {
-                    id: { type: 'string', description: 'Event ID to update' },
+                    id: { type: 'string', description: 'Event ID to update', required: true },
                     subject: { type: 'string', description: 'Event subject/title', optional: true },
                     start: { 
                         type: 'object', 
@@ -352,16 +397,20 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                         optional: true
                     },
                     body: { 
-                        type: 'any', 
-                        description: 'Event description/body (string or object with contentType and content)',
-                        optional: true
+                        type: 'object', 
+                        description: 'Event description/body content',
+                        optional: true,
+                        properties: {
+                            content: { type: 'string', description: 'Body content text', required: true },
+                            contentType: { type: 'string', description: 'Content type (text or html)', optional: true, default: 'text' }
+                        }
                     },
                     attendees: { 
                         type: 'array', 
                         description: 'Array of attendee email addresses or objects',
                         optional: true,
                         items: {
-                            type: 'any'
+                            type: 'string'
                         }
                     },
                     isAllDay: { type: 'boolean', description: 'Whether this is an all-day event', optional: true },
@@ -387,9 +436,64 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                     }
                 };
                 // Ensure this tool is properly registered with the /api/v1/calendar/events/:id/cancel endpoint
+                // Note: The :id in the path is a placeholder for the actual ID value
                 toolDef.parameterMapping = {
                     id: { inPath: true },
                     comment: { inBody: true }
+                };
+                break;
+            case 'acceptEvent':
+                toolDef.description = 'Accept a calendar event invitation';
+                toolDef.endpoint = '/v1/calendar/events/:id/accept';
+                toolDef.method = 'POST';
+                toolDef.parameters = {
+                    id: { 
+                        type: 'string', 
+                        description: 'Event ID to accept', 
+                        required: true,
+                        inPath: true 
+                    },
+                    comment: { 
+                        type: 'string', 
+                        description: 'Optional comment to include with the acceptance', 
+                        optional: true 
+                    }
+                };
+                break;
+            case 'declineEvent':
+                toolDef.description = 'Decline a calendar event invitation';
+                toolDef.endpoint = '/v1/calendar/events/:id/decline';
+                toolDef.method = 'POST';
+                toolDef.parameters = {
+                    id: { 
+                        type: 'string', 
+                        description: 'Event ID to decline', 
+                        required: true,
+                        inPath: true 
+                    },
+                    comment: { 
+                        type: 'string', 
+                        description: 'Optional comment to include with the decline', 
+                        optional: true 
+                    }
+                };
+                break;
+            case 'tentativelyAcceptEvent':
+                toolDef.description = 'Tentatively accept a calendar event invitation';
+                toolDef.endpoint = '/v1/calendar/events/:id/tentativelyAccept';
+                toolDef.method = 'POST';
+                toolDef.parameters = {
+                    id: { 
+                        type: 'string', 
+                        description: 'Event ID to tentatively accept', 
+                        required: true,
+                        inPath: true 
+                    },
+                    comment: { 
+                        type: 'string', 
+                        description: 'Optional comment to include with the tentative acceptance', 
+                        optional: true 
+                    }
                 };
                 break;
             case 'getAvailability':
@@ -565,16 +669,58 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 toolDef.parameters = { /* ... specific params ... */ };
                 break;
             case 'addAttachment':
-                toolDef.description = 'Add attachment to an event';
+                toolDef.description = 'Add attachment to a calendar event';
                 toolDef.endpoint = '/api/v1/calendar/events/:id/attachments';
                 toolDef.method = 'POST';
-                toolDef.parameters = { /* ... specific params ... */ };
+                toolDef.parameters = {
+                    id: { 
+                        type: 'string', 
+                        description: 'Event ID to add attachment to',
+                        required: true
+                    },
+                    name: { 
+                        type: 'string', 
+                        description: 'Name of the attachment file',
+                        required: true
+                    },
+                    contentBytes: { 
+                        type: 'string', 
+                        description: 'Base64-encoded file content',
+                        required: true
+                    },
+                    contentType: { 
+                        type: 'string', 
+                        description: 'MIME type of the attachment',
+                        optional: true
+                    }
+                };
+                toolDef.parameterMapping = {
+                    id: { inPath: true },
+                    name: { inBody: true },
+                    contentBytes: { inBody: true },
+                    contentType: { inBody: true }
+                };
                 break;
             case 'removeAttachment':
-                toolDef.description = 'Remove attachment from an event';
+                toolDef.description = 'Remove attachment from a calendar event';
                 toolDef.endpoint = '/api/v1/calendar/events/:eventId/attachments/:attachmentId';
                 toolDef.method = 'DELETE';
-                toolDef.parameters = { /* ... specific params ... */ };
+                toolDef.parameters = {
+                    eventId: { 
+                        type: 'string', 
+                        description: 'Event ID to remove attachment from',
+                        required: true
+                    },
+                    attachmentId: { 
+                        type: 'string', 
+                        description: 'Attachment ID to remove',
+                        required: true
+                    }
+                };
+                toolDef.parameterMapping = {
+                    eventId: { inPath: true },
+                    attachmentId: { inPath: true }
+                };
                 break;
 
             // File tools (OneDrive/SharePoint)
@@ -975,7 +1121,7 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
      * @param {object} params - Original parameters
      * @returns {object} - Transformed parameters
      */
-    function transformParameters(moduleName, methodName, params = {}) {
+    function transformParameters(moduleName, methodName, params) {
         const startTime = Date.now();
         
         if (process.env.NODE_ENV === 'development') {
@@ -1560,7 +1706,7 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
          * @param {object} params - Original parameters
          * @returns {object} - Transformed parameters and module/method mapping
          */
-        transformToolParameters(toolName, params = {}) {
+        transformToolParameters(toolName, params) {
             const startTime = Date.now();
             
             if (process.env.NODE_ENV === 'development') {

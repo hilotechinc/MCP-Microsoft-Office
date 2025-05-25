@@ -65,6 +65,7 @@ package-lock.json.bak
 .tmp/
 temp/
 tmp/
+test-*.js
 
 # IDE and editor files
 .vscode/

@@ -14,7 +14,9 @@ const MAIL_CAPABILITIES = [
     'flagMail',
     'getMailAttachments',
     'readMailDetails',
-    'markEmailRead'
+    'markEmailRead',
+    'addMailAttachment',
+    'removeMailAttachment'
 ];
 
 // Log module initialization
@@ -300,6 +302,37 @@ const MailModule = {
         }
         return await graphService.markAsRead(id, isRead, req);
     },
+    
+    /**
+     * Add an attachment to an email
+     * @param {string} id - Email ID
+     * @param {object} attachment - Attachment data
+     * @param {object} req - Express request object (optional)
+     * @returns {Promise<boolean>} Success indicator
+     */
+    async addMailAttachment(id, attachment, req) {
+        const { graphService } = this.services || {};
+        if (!graphService || typeof graphService.addMailAttachment !== 'function') {
+            throw new Error('GraphService.addMailAttachment not implemented');
+        }
+        return await graphService.addMailAttachment(id, attachment, req);
+    },
+    
+    /**
+     * Remove an attachment from an email
+     * @param {string} id - Email ID
+     * @param {string} attachmentId - Attachment ID
+     * @param {object} req - Express request object (optional)
+     * @returns {Promise<boolean>} Success indicator
+     */
+    async removeMailAttachment(id, attachmentId, req) {
+        const { graphService } = this.services || {};
+        if (!graphService || typeof graphService.removeMailAttachment !== 'function') {
+            throw new Error('GraphService.removeMailAttachment not implemented');
+        }
+        return await graphService.removeMailAttachment(id, attachmentId, req);
+    },
+    
     id: 'mail',
     name: 'Outlook Mail',
     capabilities: MAIL_CAPABILITIES,
@@ -379,6 +412,16 @@ const MailModule = {
                 const { id, isRead = true } = entities;
                 const success = await graphService.markAsRead(id, isRead, context.req);
                 return { type: 'mailMarkReadResult', success, isRead };
+            }
+            case 'addMailAttachment': {
+                const { id, attachment } = entities;
+                const added = await graphService.addMailAttachment(id, attachment, context.req);
+                return { type: 'mailAttachmentAddResult', added };
+            }
+            case 'removeMailAttachment': {
+                const { id, attachmentId } = entities;
+                const removed = await graphService.removeMailAttachment(id, attachmentId, context.req);
+                return { type: 'mailAttachmentRemoveResult', removed };
             }
             default:
                 throw new Error(`MailModule cannot handle intent: ${intent}`);

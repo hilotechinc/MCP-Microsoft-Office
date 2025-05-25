@@ -93,6 +93,9 @@ function registerRoutes(router) {
     mailRouter.patch('/:id/read', placeholderRateLimit, mailController.markAsRead); // Corresponds to /v1/mail/:id/read
     // Flag/unflag email route
     mailRouter.post('/flag', placeholderRateLimit, mailController.flagMail); // Corresponds to /v1/mail/flag
+    // Mail attachment routes
+    mailRouter.post('/:id/attachments', placeholderRateLimit, mailController.addMailAttachment); // Corresponds to /v1/mail/:id/attachments
+    mailRouter.delete('/:id/attachments/:attachmentId', mailController.removeMailAttachment); // Corresponds to /v1/mail/:id/attachments/:attachmentId
     mailRouter.get('/:id', mailController.getEmailDetails); // Corresponds to /v1/mail/:id
     v1.use('/mail', mailRouter);
 
@@ -172,6 +175,37 @@ function registerRoutes(router) {
     // TODO: Apply rate limiting
     logRouter.post('/clear', placeholderRateLimit, logController.clearLogEntries); // /v1/logs/clear
     v1.use('/logs', logRouter); // Mounted at /v1/logs
+
+    // Debug routes (development only)
+    if (process.env.NODE_ENV === 'development') {
+        router.get('/api/v1/debug/graph-token', requireAuth, async (req, res) => {
+            try {
+                const graphClientFactory = require('../graph/graph-client-factory.cjs');
+                const client = await graphClientFactory.createClient(req);
+                
+                // Get the access token from the client
+                const authProvider = client.authProvider || client._authProvider;
+                if (authProvider && authProvider.getAccessToken) {
+                    const accessToken = await authProvider.getAccessToken();
+                    res.json({ 
+                        accessToken: accessToken,
+                        hasToken: !!accessToken,
+                        tokenLength: accessToken ? accessToken.length : 0
+                    });
+                } else {
+                    res.json({ 
+                        error: 'Could not access auth provider',
+                        hasToken: false
+                    });
+                }
+            } catch (error) {
+                res.status(500).json({ 
+                    error: 'Failed to get access token',
+                    message: error.message
+                });
+            }
+        });
+    }
 
     // Mount v1 under /v1 path
     router.use('/v1', v1);

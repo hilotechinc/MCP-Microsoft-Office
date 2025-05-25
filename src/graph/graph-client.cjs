@@ -232,20 +232,6 @@ async function _fetchWithRetry(path, token, method, body, options, retries = 2) 
                 timestamp: new Date().toISOString()
             });
             
-            if (res.status === 202) { 
-                if (process.env.NODE_ENV === 'development') {
-                    MonitoringService?.debug('Graph API request accepted', {
-                        method,
-                        path,
-                        status: 202,
-                        responseTimeMs: responseTime,
-                        totalTimeMs: totalTime,
-                        timestamp: new Date().toISOString()
-                    }, 'graph');
-                }
-                return { success: true, status: res.status }; 
-            }
-            
             if (res.ok) {
                 if (process.env.NODE_ENV === 'development') {
                     MonitoringService?.debug('Graph API request successful', {
@@ -257,7 +243,25 @@ async function _fetchWithRetry(path, token, method, body, options, retries = 2) 
                         timestamp: new Date().toISOString()
                     }, 'graph');
                 }
-                return await res.json();
+                
+                // Handle responses with no content (like DELETE operations)
+                if (res.status === 204 || res.headers.get('content-length') === '0') {
+                    return { success: true, status: res.status };
+                }
+                
+                // For responses with content, try to parse JSON
+                try {
+                    return await res.json();
+                } catch (jsonError) {
+                    // If JSON parsing fails but response was successful, return success indicator
+                    MonitoringService?.debug('Graph API response successful but no JSON content', {
+                        method,
+                        path,
+                        status: res.status,
+                        timestamp: new Date().toISOString()
+                    }, 'graph');
+                    return { success: true, status: res.status };
+                }
             }
             
             if (res.status === 429) {

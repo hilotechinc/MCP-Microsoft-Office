@@ -1305,71 +1305,9 @@ module.exports = ({ calendarModule }) => ({
                     attendeeCount
                 });
                 MonitoringService?.logError(moduleCallError);
-                MonitoringService?.info('Falling back to mock meeting time suggestions', {}, 'calendar');
                 
-                // If module method fails, create mock meeting time suggestions
-                const { attendees, timeConstraint, meetingDuration } = normalizedValue;
-                const firstTimeSlot = timeConstraint.timeSlots[0];
-                const startTimeDate = new Date(firstTimeSlot.start.dateTime);
-                const endTimeDate = new Date(firstTimeSlot.end.dateTime);
-                
-                // Parse meeting duration from ISO8601 format (e.g., "PT1H" = 60 minutes)
-                const durationMatch = meetingDuration.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/);
-                let durationMinutes = 30; // Default to 30 minutes
-                if (durationMatch) {
-                    const hours = parseInt(durationMatch[1] || '0', 10);
-                    const minutes = parseInt(durationMatch[2] || '0', 10);
-                    const seconds = parseInt(durationMatch[3] || '0', 10);
-                    durationMinutes = (hours * 60) + minutes + Math.floor(seconds / 60);
-                }
-                
-                // Generate a few mock suggestions within the time constraints
-                const mockSuggestions = [];
-                const totalMinutes = (endTimeDate - startTimeDate) / (1000 * 60);
-                const possibleSlots = Math.floor(totalMinutes / durationMinutes);
-                const maxSuggestions = Math.min(possibleSlots, normalizedValue.maxCandidates || 5);
-                
-                for (let i = 0; i < maxSuggestions; i++) {
-                    const slotStart = new Date(startTimeDate.getTime() + (i * durationMinutes * 60 * 1000));
-                    const slotEnd = new Date(Math.min(slotStart.getTime() + (durationMinutes * 60 * 1000), endTimeDate.getTime()));
-                    
-                    mockSuggestions.push({
-                        confidence: Math.max(1.0 - (i * 0.1), 0.5), // Decreasing confidence for later slots
-                        order: i + 1,
-                        organizerAvailability: 'free',
-                        suggestionReason: normalizedValue.returnSuggestionReasons ? 
-                            'Suggested because it is one of the nearest times when all attendees are available.' : undefined,
-                        meetingTimeSlot: {
-                            start: {
-                                dateTime: slotStart.toISOString(),
-                                timeZone: firstTimeSlot.start.timeZone || 'UTC'
-                            },
-                            end: {
-                                dateTime: slotEnd.toISOString(),
-                                timeZone: firstTimeSlot.end.timeZone || 'UTC'
-                            }
-                        },
-                        attendeeAvailability: attendees.map(attendee => ({
-                            attendee: {
-                                emailAddress: {
-                                    address: attendee.emailAddress.address,
-                                    name: attendee.emailAddress.name || attendee.emailAddress.address.split('@')[0]
-                                }
-                            },
-                            availability: 'free'
-                        }))
-                    });
-                }
-                
-                suggestions = {
-                    meetingTimeSuggestions: mockSuggestions,
-                    emptySuggestionsReason: mockSuggestions.length === 0 ? 'No suitable times found' : null,
-                    isMock: true // Flag to indicate this is mock data
-                };
-                isMock = true;
-                MonitoringService?.info('Generated mock meeting time suggestions', { 
-                    count: mockSuggestions.length 
-                }, 'calendar');
+                // Temporarily disable fallback to see the actual error
+                throw moduleError;
             }
             
             // Track find meeting times duration
@@ -1437,7 +1375,7 @@ module.exports = ({ calendarModule }) => ({
             MonitoringService?.info('Getting available meeting rooms', { query: value }, 'calendar');
             
             // Try to use the module's getRooms method if available
-            let rooms;
+            let result;
             let isMock = false;
             try {
                 MonitoringService?.info('Attempting to get rooms using module', {}, 'calendar');
@@ -1445,8 +1383,8 @@ module.exports = ({ calendarModule }) => ({
                 const methodName = 'getRooms';
                 
                 if (isModuleMethodAvailable(methodName, calendarModule)) {
-                    rooms = await calendarModule[methodName](value);
-                    MonitoringService?.info('Successfully got rooms using module', { count: rooms.length }, 'calendar');
+                    result = await calendarModule[methodName](value);
+                    MonitoringService?.info('Successfully got rooms using module', { count: result.rooms?.length || 0 }, 'calendar');
                 } else {
                     throw new Error(`calendarModule.${methodName} is not implemented`);
                 }
@@ -1459,7 +1397,7 @@ module.exports = ({ calendarModule }) => ({
                 MonitoringService?.info('Falling back to mock rooms', {}, 'calendar');
                 
                 // If module method fails, create mock rooms
-                rooms = [
+                const mockRooms = [
                     {
                         id: 'room1',
                         displayName: 'Conference Room A',
@@ -1494,37 +1432,47 @@ module.exports = ({ calendarModule }) => ({
                         isMock: true
                     }
                 ];
-                isMock = true;
                 
                 // Filter mock rooms based on query parameters
+                let filteredRooms = [...mockRooms];
+                
                 if (value.building) {
-                    rooms = rooms.filter(room => 
+                    filteredRooms = filteredRooms.filter(room => 
                         room.building.toLowerCase() === value.building.toLowerCase());
                 }
                 
                 if (value.capacity) {
-                    rooms = rooms.filter(room => room.capacity >= value.capacity);
+                    filteredRooms = filteredRooms.filter(room => room.capacity >= value.capacity);
                 }
                 
                 if (value.hasAudio !== undefined) {
-                    rooms = rooms.filter(room => room.hasAudio === value.hasAudio);
+                    filteredRooms = filteredRooms.filter(room => room.hasAudio === value.hasAudio);
                 }
                 
                 if (value.hasVideo !== undefined) {
-                    rooms = rooms.filter(room => room.hasVideo === value.hasVideo);
+                    filteredRooms = filteredRooms.filter(room => room.hasVideo === value.hasVideo);
                 }
                 
                 if (value.floor) {
-                    rooms = rooms.filter(room => room.floorNumber === value.floor);
+                    filteredRooms = filteredRooms.filter(room => room.floorNumber === value.floor);
                 }
                 
                 // Apply limit if specified
-                if (value.limit && rooms.length > value.limit) {
-                    rooms = rooms.slice(0, value.limit);
+                if (value.limit && filteredRooms.length > value.limit) {
+                    filteredRooms = filteredRooms.slice(0, value.limit);
                 }
                 
-                MonitoringService?.info('Generated mock rooms', { count: rooms.length }, 'calendar');
+                result = {
+                    rooms: filteredRooms,
+                    nextLink: null
+                };
+                isMock = true;
+                
+                MonitoringService?.info('Generated mock rooms', { count: filteredRooms.length }, 'calendar');
             }
+            
+            // Extract rooms array from result
+            const rooms = result.rooms || [];
             
             // Track room retrieval time
             const duration = Date.now() - startTime;
@@ -1533,7 +1481,11 @@ module.exports = ({ calendarModule }) => ({
                 isMock
             });
             
-            res.json(rooms);
+            res.json({ 
+                rooms: rooms,
+                nextLink: result.nextLink || null,
+                fromCache: result.fromCache || false
+            });
         } catch (err) {
             const mcpError = ErrorService?.createError('api', 'Error retrieving meeting rooms', 'error', { 
                 stack: err.stack,
@@ -1740,24 +1692,29 @@ module.exports = ({ calendarModule }) => ({
                 attachment: safeAttachmentInfo 
             }, 'calendar');
             
-            // Try to use the module's addAttachment method if available
+            // Try to use the module's handleIntent method for addAttachment
             let attachment;
             try {
-                MonitoringService?.info(`Attempting to add attachment to event ${eventId} using module`, { 
+                MonitoringService?.info(`Attempting to add attachment to event ${eventId} using intent handler`, { 
                     eventId,
                     attachmentName: value.name
                 }, 'calendar');
                 
-                const methodName = 'addAttachment';
-                
-                if (isModuleMethodAvailable(methodName, calendarModule)) {
-                    attachment = await calendarModule[methodName](eventId, value);
-                    MonitoringService?.info(`Successfully added attachment to event ${eventId} using module`, { 
+                if (isModuleMethodAvailable('handleIntent', calendarModule)) {
+                    const entities = {
+                        id: eventId,
+                        name: value.name,
+                        contentBytes: value.contentBytes,
+                        contentType: value.contentType
+                    };
+                    const result = await calendarModule.handleIntent('addAttachment', entities);
+                    attachment = result.attachment;
+                    MonitoringService?.info(`Successfully added attachment to event ${eventId} using intent handler`, { 
                         eventId,
                         attachmentId: attachment.id
                     }, 'calendar');
                 } else {
-                    throw new Error(`calendarModule.${methodName} is not implemented`);
+                    throw new Error('calendarModule.handleIntent is not implemented');
                 }
             } catch (moduleError) {
                 const moduleCallError = ErrorService?.createError('api', `Error adding attachment to event ${eventId}`, 'error', { 
@@ -1851,25 +1808,28 @@ module.exports = ({ calendarModule }) => ({
                 attachmentId 
             }, 'calendar');
             
-            // Try to use the module's removeAttachment method if available
+            // Try to use the module's handleIntent method for removeAttachment
             let result;
             try {
-                MonitoringService?.info(`Attempting to remove attachment ${attachmentId} from event ${eventId} using module`, { 
+                MonitoringService?.info(`Attempting to remove attachment ${attachmentId} from event ${eventId} using intent handler`, { 
                     eventId,
                     attachmentId
                 }, 'calendar');
                 
-                const methodName = 'removeAttachment';
-                
-                if (isModuleMethodAvailable(methodName, calendarModule)) {
-                    result = await calendarModule[methodName](eventId, attachmentId);
-                    MonitoringService?.info(`Successfully removed attachment ${attachmentId} from event ${eventId} using module`, { 
+                if (isModuleMethodAvailable('handleIntent', calendarModule)) {
+                    const entities = {
+                        eventId: eventId,
+                        attachmentId: attachmentId
+                    };
+                    const intentResult = await calendarModule.handleIntent('removeAttachment', entities);
+                    result = intentResult.success;
+                    MonitoringService?.info(`Successfully removed attachment ${attachmentId} from event ${eventId} using intent handler`, { 
                         eventId,
                         attachmentId,
                         success: !!result
                     }, 'calendar');
                 } else {
-                    throw new Error(`calendarModule.${methodName} is not implemented`);
+                    throw new Error('calendarModule.handleIntent is not implemented');
                 }
             } catch (moduleError) {
                 const moduleCallError = ErrorService?.createError('api', `Error removing attachment ${attachmentId} from event ${eventId}`, 'error', { 
@@ -1879,21 +1839,9 @@ module.exports = ({ calendarModule }) => ({
                     stack: moduleError.stack
                 });
                 MonitoringService?.logError(moduleCallError);
-                MonitoringService?.info('Falling back to mock attachment removal', { 
-                    eventId,
-                    attachmentId
-                }, 'calendar');
                 
-                // If module method fails, create a mock result
-                result = {
-                    success: true,
-                    isMock: true // Flag to indicate this is mock data
-                };
-                MonitoringService?.info('Generated mock attachment removal result', { 
-                    eventId,
-                    attachmentId,
-                    success: true
-                }, 'calendar');
+                // Temporarily disable fallback to see the actual error
+                throw moduleError;
             }
             
             // Track remove attachment time

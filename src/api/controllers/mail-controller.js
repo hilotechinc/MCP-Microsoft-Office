@@ -79,6 +79,17 @@ const schemas = {
     
     getMailAttachments: Joi.object({
         id: Joi.string().required()
+    }),
+    
+    addMailAttachment: Joi.object({
+        name: Joi.string().required(),
+        contentBytes: Joi.string().required(),
+        contentType: Joi.string().optional(),
+        isInline: Joi.boolean().optional().default(false)
+    }),
+    
+    removeMailAttachment: Joi.object({
+        // No body parameters needed - ID and attachmentId come from URL params
     })
 };
 
@@ -1105,6 +1116,199 @@ module.exports = ({ mailModule }) => ({
                 }
             );
             res.status(500).json({ error: 'Internal error', message: err.message });
+        }
+    },
+
+    /**
+     * POST /api/mail/:id/attachments
+     * Add an attachment to an existing email
+     */
+    async addMailAttachment(req, res) {
+        const startTime = Date.now();
+        try {
+            // Log request
+            MonitoringService.info(`Processing ${req.method} ${req.path}`, {
+                method: req.method,
+                path: req.path,
+                params: req.params,
+                ip: req.ip
+            }, 'mail');
+            
+            // Ensure content type is set explicitly
+            res.setHeader('Content-Type', 'application/json');
+            
+            // Validate request body
+            const { error: bodyError, value: bodyValue } = schemas.addMailAttachment.validate(req.body);
+            if (bodyError) {
+                const validationError = ErrorService.createError(
+                    ErrorService.CATEGORIES.API,
+                    'addMailAttachment body validation error',
+                    ErrorService.SEVERITIES.WARNING,
+                    { 
+                        details: bodyError.details,
+                        endpoint: 'addMailAttachment'
+                    }
+                );
+                return res.status(400).json({ error: 'Invalid request', details: bodyError.details });
+            }
+            
+            // Validate email ID from URL params
+            const emailId = req.params.id;
+            if (!emailId || typeof emailId !== 'string') {
+                return res.status(400).json({ error: 'Invalid email ID' });
+            }
+            
+            // Prepare attachment data
+            const attachment = {
+                name: bodyValue.name,
+                contentBytes: bodyValue.contentBytes,
+                contentType: bodyValue.contentType || 'application/octet-stream',
+                isInline: bodyValue.isInline || false
+            };
+            
+            MonitoringService.debug('Adding attachment to email', {
+                emailId: emailId,
+                attachmentName: attachment.name,
+                contentType: attachment.contentType,
+                isInline: attachment.isInline,
+                timestamp: new Date().toISOString()
+            }, 'mail');
+            
+            // Call the mail module to add the attachment
+            const result = await mailModule.addMailAttachment(emailId, attachment, req);
+            
+            // Track performance
+            const duration = Date.now() - startTime;
+            MonitoringService.trackMetric('mail.addMailAttachment.duration', duration, {
+                emailId: emailId,
+                attachmentName: attachment.name,
+                success: true
+            });
+            
+            MonitoringService.info('Successfully added attachment to email', {
+                emailId: emailId,
+                attachmentId: result.id,
+                attachmentName: result.name,
+                duration: duration,
+                timestamp: new Date().toISOString()
+            }, 'mail');
+            
+            res.status(201).json(result);
+            
+        } catch (err) {
+            // Track error metrics
+            const duration = Date.now() - startTime;
+            MonitoringService.trackMetric('mail.addMailAttachment.error', 1, {
+                errorMessage: err.message,
+                duration,
+                success: false
+            });
+            
+            const mcpError = ErrorService.createError(
+                ErrorService.CATEGORIES.API,
+                'Error in addMailAttachment',
+                ErrorService.SEVERITIES.ERROR,
+                { 
+                    stack: err.stack,
+                    operation: 'addMailAttachment',
+                    endpoint: req.path,
+                    error: err.message,
+                    emailId: req.params.id
+                }
+            );
+            
+            res.status(500).json({ 
+                error: 'Failed to add attachment', 
+                message: err.message,
+                errorId: mcpError.id
+            });
+        }
+    },
+
+    /**
+     * DELETE /api/mail/:id/attachments/:attachmentId
+     * Remove an attachment from an existing email
+     */
+    async removeMailAttachment(req, res) {
+        const startTime = Date.now();
+        try {
+            // Log request
+            MonitoringService.info(`Processing ${req.method} ${req.path}`, {
+                method: req.method,
+                path: req.path,
+                params: req.params,
+                ip: req.ip
+            }, 'mail');
+            
+            // Ensure content type is set explicitly
+            res.setHeader('Content-Type', 'application/json');
+            
+            // Validate URL parameters
+            const emailId = req.params.id;
+            const attachmentId = req.params.attachmentId;
+            
+            if (!emailId || typeof emailId !== 'string') {
+                return res.status(400).json({ error: 'Invalid email ID' });
+            }
+            
+            if (!attachmentId || typeof attachmentId !== 'string') {
+                return res.status(400).json({ error: 'Invalid attachment ID' });
+            }
+            
+            MonitoringService.debug('Removing attachment from email', {
+                emailId: emailId,
+                attachmentId: attachmentId,
+                timestamp: new Date().toISOString()
+            }, 'mail');
+            
+            // Call the mail module to remove the attachment
+            const result = await mailModule.removeMailAttachment(emailId, attachmentId, req);
+            
+            // Track performance
+            const duration = Date.now() - startTime;
+            MonitoringService.trackMetric('mail.removeMailAttachment.duration', duration, {
+                emailId: emailId,
+                attachmentId: attachmentId,
+                success: true
+            });
+            
+            MonitoringService.info('Successfully removed attachment from email', {
+                emailId: emailId,
+                attachmentId: attachmentId,
+                duration: duration,
+                timestamp: new Date().toISOString()
+            }, 'mail');
+            
+            res.json(result);
+            
+        } catch (err) {
+            // Track error metrics
+            const duration = Date.now() - startTime;
+            MonitoringService.trackMetric('mail.removeMailAttachment.error', 1, {
+                errorMessage: err.message,
+                duration,
+                success: false
+            });
+            
+            const mcpError = ErrorService.createError(
+                ErrorService.CATEGORIES.API,
+                'Error in removeMailAttachment',
+                ErrorService.SEVERITIES.ERROR,
+                { 
+                    stack: err.stack,
+                    operation: 'removeMailAttachment',
+                    endpoint: req.path,
+                    error: err.message,
+                    emailId: req.params.id,
+                    attachmentId: req.params.attachmentId
+                }
+            );
+            
+            res.status(500).json({ 
+                error: 'Failed to remove attachment', 
+                message: err.message,
+                errorId: mcpError.id
+            });
         }
     }
 });
