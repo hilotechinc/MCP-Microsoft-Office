@@ -49,10 +49,10 @@ async function initializeModules(services = {}) {
         // Use helper function to redact sensitive information for fallback logging
         const safeServicesInfo = redactSensitiveServiceInfo(enrichedServices);
         
-        console.info('[MCP MODULE] Starting module initialization process', { 
+        console.info('[MCP MODULE] Starting module initialization process', JSON.stringify({ 
             moduleCount: moduleRegistry.getAllModules().length,
             servicesProvided: safeServicesInfo
-        });
+        }));
     }
     
     const modules = moduleRegistry.getAllModules();
@@ -111,9 +111,9 @@ async function initializeModules(services = {}) {
                     // Log the error with the monitoring service
                     MonitoringService.logError(mcpError);
                 } else {
-                    console.error(`[MCP MODULE] Failed to initialize module: ${mod.id}`, {
+                    console.error(`[MCP MODULE] Failed to initialize module: ${mod.id}`, JSON.stringify({
                         error: error.message
-                    });
+                    }));
                 }
             }
         } else {
@@ -165,12 +165,12 @@ async function initializeModules(services = {}) {
             // This is non-critical functionality
         }
     } else {
-        console.info('[MCP MODULE] Module initialization completed', {
+        console.info('[MCP MODULE] Module initialization completed', JSON.stringify({
             totalModules: modules.length,
             initializedCount: initialized.length,
             moduleIds: initialized.map(m => m.id),
             elapsedTimeMs: elapsedTime
-        });
+        }));
     }
     
     return initialized;

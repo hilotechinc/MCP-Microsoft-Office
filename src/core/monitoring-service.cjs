@@ -109,9 +109,29 @@ function initLogger(logFilePath, logLevel = 'info') {
         fs.mkdirSync(logsDir, { recursive: true });
     }
     
-    const consoleFormat = winston.format.printf(({ level, message, timestamp, context, category }) => {
+    const consoleFormat = winston.format.printf(({ level, message, timestamp, context, category, ...rest }) => {
         const prefix = category ? `[MCP ${category.toUpperCase()}]` : '[MCP]';
-        return `${prefix} ${message}`;
+        
+        // Handle context properly - it could be in different places
+        let contextObj = context;
+        if (!contextObj && rest.context) {
+            contextObj = rest.context;
+        }
+        
+        // Stringify context if it exists and is an object
+        let contextStr = '';
+        if (contextObj && typeof contextObj === 'object' && Object.keys(contextObj).length > 0) {
+            try {
+                contextStr = ` ${JSON.stringify(contextObj)}`;
+            } catch (err) {
+                contextStr = ` {context serialization failed}`;
+            }
+        }
+        
+        // Ensure message is a string
+        const messageStr = typeof message === 'object' ? JSON.stringify(message) : String(message);
+        
+        return `${prefix} ${messageStr}${contextStr}`;
     });
     
     const fileFormat = winston.format.combine(
@@ -291,20 +311,86 @@ function checkMemoryForEmergency() {
 }
 
 /**
+ * Determines if a log should be filtered out to reduce noise
+ */
+function shouldFilterLog(level, message, category, context = {}) {
+    // Always allow error logs
+    if (level === 'error') {
+        return false;
+    }
+    
+    // Filter static file requests
+    if (category === 'api' && message && message.includes('GET') && 
+        (message.includes('.js') || message.includes('.css') || message.includes('.ico') || 
+         message.includes('.png') || message.includes('.jpg') || message.includes('.gif'))) {
+        return true;
+    }
+    
+    // Filter excessive event system metrics
+    if (category === 'metrics' && message && (
+        message.includes('event_subscribe_success') ||
+        message.includes('event_listeners_count') ||
+        message.includes('event_emit_success') ||
+        message.includes('event_emit_no_listeners') ||
+        message.includes('event_emit_error')
+    )) {
+        return true;
+    }
+    
+    // Filter duplicate module registration messages
+    if (message && message.includes('Module') && message.includes('registered')) {
+        return true;
+    }
+    
+    // Filter health check logs in production
+    if (process.env.NODE_ENV === 'production' && 
+        message && (message.includes('health') || message.includes('ping'))) {
+        return true;
+    }
+    
+    // Filter verbose debug logs in production
+    if (process.env.NODE_ENV === 'production' && level === 'debug') {
+        return true;
+    }
+    
+    // Filter memory usage metrics unless they're warnings
+    if (category === 'metrics' && message && message.includes('memory_usage') && level === 'info') {
+        return true;
+    }
+    
+    // Filter performance metrics for very fast operations (< 10ms)
+    if (category === 'metrics' && context && context.metricValue && 
+        typeof context.metricValue === 'number' && context.metricValue < 10) {
+        return true;
+    }
+    
+    return false;
+}
+
+/**
  * Handle log events from other components (event subscription)
  */
 function handleLogEvent(logData) {
-  // Add to circular buffer
-  logBuffer.add(logData);
-  
-  // Log to Winston if available
-  if (logger) {
-    try {
-      logger.log(logData.level || 'info', logData);
-    } catch (err) {
-      console.error(`[MONITORING] Failed to log to Winston: ${err.message}`);
+    // Add to circular buffer
+    logBuffer.add(logData);
+    
+    // Log to Winston if available
+    if (logger) {
+        try {
+            logger.log(logData.level || 'info', logData.message, {
+                context: logData.context,
+                category: logData.category,
+                timestamp: logData.timestamp,
+                id: logData.id,
+                pid: logData.pid,
+                hostname: logData.hostname,
+                version: logData.version,
+                traceId: logData.traceId
+            });
+        } catch (err) {
+            console.error(`[MONITORING] Failed to log to Winston: ${err.message}`);
+        }
     }
-  }
 }
 
 /**
@@ -390,7 +476,16 @@ function logError(error) {
     // Don't emit event for our own logs - only handle events from other services
     
     try {
-        logger.error(logData);
+        logger.error(logData.message, {
+            context: logData.context,
+            category: logData.category,
+            timestamp: logData.timestamp,
+            id: logData.id,
+            pid: logData.pid,
+            hostname: logData.hostname,
+            version: logData.version,
+            traceId: logData.traceId
+        });
     } catch (err) {
         console.error(`[MONITORING] Failed to log error: ${err.message}`);
     }
@@ -427,7 +522,16 @@ function error(message, context = {}, category = '', traceId = null) {
     
     if (logger) {
         try {
-            logger.error(logData);
+            logger.error(logData.message, {
+                context: logData.context,
+                category: logData.category,
+                timestamp: logData.timestamp,
+                id: logData.id,
+                pid: logData.pid,
+                hostname: logData.hostname,
+                version: logData.version,
+                traceId: logData.traceId
+            });
         } catch (err) {
             console.error(`[MONITORING] Failed to log error: ${err.message}`);
         }
@@ -437,21 +541,18 @@ function error(message, context = {}, category = '', traceId = null) {
 /**
  * Logs an info message - maintains same signature as original
  */
-function info(message, context = {}, category = '', traceId = null) {
+function info(message, context = {}, category = 'general', traceId = null) {
     if (checkMemoryForEmergency()) {
         return;
     }
     
     if (!logger) initLogger();
     
-    const logData = createLogData('info', message, context, category, traceId);
-    
-    // Apply same category filtering as original
-    if (category === 'api' || category === 'calendar' || category === 'graph') {
-        if (process.env.NODE_ENV !== 'development') {
-            return;
-        }
+    if (shouldFilterLog('info', message, category, context)) {
+        return;
     }
+    
+    const logData = createLogData('info', message, context, category, traceId);
     
     // Add to circular buffer
     logBuffer.add(logData);
@@ -459,7 +560,16 @@ function info(message, context = {}, category = '', traceId = null) {
     // Don't emit event for our own logs - only handle events from other services
     
     try {
-        logger.info(logData);
+        logger.info(logData.message, {
+            context: logData.context,
+            category: logData.category,
+            timestamp: logData.timestamp,
+            id: logData.id,
+            pid: logData.pid,
+            hostname: logData.hostname,
+            version: logData.version,
+            traceId: logData.traceId
+        });
     } catch (err) {
         console.error(`[MONITORING] Failed to log info message: ${err.message}`);
     }
@@ -468,8 +578,12 @@ function info(message, context = {}, category = '', traceId = null) {
 /**
  * Logs a warning message - maintains same signature as original
  */
-function warn(message, context = {}, category = '', traceId = null) {
+function warn(message, context = {}, category = 'general', traceId = null) {
     if (!logger) initLogger();
+    
+    if (shouldFilterLog('warn', message, category, context)) {
+        return;
+    }
     
     const logData = createLogData('warn', message, context, category, traceId);
     
@@ -479,7 +593,16 @@ function warn(message, context = {}, category = '', traceId = null) {
     // Don't emit event for our own logs - only handle events from other services
     
     try {
-        logger.warn(logData);
+        logger.warn(logData.message, {
+            context: logData.context,
+            category: logData.category,
+            timestamp: logData.timestamp,
+            id: logData.id,
+            pid: logData.pid,
+            hostname: logData.hostname,
+            version: logData.version,
+            traceId: logData.traceId
+        });
     } catch (err) {
         console.error(`[MONITORING] Failed to log warning message: ${err.message}`);
     }
@@ -488,8 +611,12 @@ function warn(message, context = {}, category = '', traceId = null) {
 /**
  * Logs a debug message - maintains same signature as original
  */
-function debug(message, context = {}, category = '', traceId = null) {
+function debug(message, context = {}, category = 'general', traceId = null) {
     if (!logger) initLogger();
+    
+    if (shouldFilterLog('debug', message, category, context)) {
+        return;
+    }
     
     const logData = createLogData('debug', message, context, category, traceId);
     
@@ -499,35 +626,59 @@ function debug(message, context = {}, category = '', traceId = null) {
     // Don't emit event for our own logs - only handle events from other services
     
     try {
-        logger.debug(logData);
+        logger.debug(logData.message, {
+            context: logData.context,
+            category: logData.category,
+            timestamp: logData.timestamp,
+            id: logData.id,
+            pid: logData.pid,
+            hostname: logData.hostname,
+            version: logData.version,
+            traceId: logData.traceId
+        });
     } catch (err) {
         console.error(`[MONITORING] Failed to log debug message: ${err.message}`);
     }
 }
 
 /**
- * Tracks a performance metric - maintains same signature as original
+ * Track a metric
  */
 function trackMetric(name, value, context = {}) {
+    if (checkMemoryForEmergency()) {
+        return;
+    }
+    
     if (!logger) initLogger();
     
+    // Filter out excessive metrics
+    if (shouldFilterLog('info', `Metric: ${name}`, 'metrics', { name, value, ...context })) {
+        return;
+    }
+    
     const logData = {
-        type: 'metric',
-        metric: name,
-        value,
-        context,
-        timestamp: new Date().toISOString(),
-        pid: process.pid,
-        hostname: os.hostname(),
-        version: appVersion
+        level: 'info',
+        message: `Metric: ${name}`,
+        context: {
+            metricName: name,
+            metricValue: value,
+            ...context
+        },
+        category: 'metrics',
+        timestamp: new Date().toISOString()
     };
     
     // Add to circular buffer
     logBuffer.add(logData);
     
-    // Don't emit event for our own logs - only handle events from other services
+    // Log to Winston
+    logger.info(`Metric: ${name}`, {
+        context: logData.context,
+        category: logData.category,
+        timestamp: logData.timestamp
+    });
     
-    logger.info(logData);
+    // Don't emit events for metrics to prevent recursion
 }
 
 /**

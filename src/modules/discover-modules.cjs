@@ -23,7 +23,7 @@ async function discoverModules(modulesDir) {
     if (MonitoringService) {
         MonitoringService.info('Starting module discovery process', { modulesDir }, 'module');
     } else {
-        console.info('[MCP MODULE] Starting module discovery process', { modulesDir });
+        console.info('[MCP MODULE] Starting module discovery process', JSON.stringify({ modulesDir }));
     }
     
     let files;
@@ -47,15 +47,15 @@ async function discoverModules(modulesDir) {
             if (MonitoringService) {
                 MonitoringService.logError(mcpError);
             } else {
-                console.error('[MCP MODULE] Failed to read modules directory', mcpError);
+                console.error('[MCP MODULE] Failed to read modules directory', JSON.stringify(mcpError));
             }
         } else {
             // Fallback if ErrorService is not available
-            console.error('[MCP MODULE] Failed to read modules directory', {
+            console.error('[MCP MODULE] Failed to read modules directory', JSON.stringify({
                 modulesDir,
                 error: error.message,
                 errorCode: error.code || 'UNKNOWN'
-            });
+            }));
             // Create basic error object
             mcpError = {
                 category: 'module',
@@ -92,11 +92,11 @@ async function discoverModules(modulesDir) {
                         timestamp: new Date().toISOString()
                     }, 'module');
                 } else {
-                    console.info('[MCP MODULE] Module registered successfully', {
+                    console.info('[MCP MODULE] Module registered successfully', JSON.stringify({
                         moduleId: mod.id,
                         moduleName: mod.name,
                         capabilities: mod.capabilities.length
-                    });
+                    }));
                 }
             } else {
                 // Handle invalid module interface
@@ -115,18 +115,18 @@ async function discoverModules(modulesDir) {
                     if (MonitoringService) {
                         MonitoringService.logError(mcpError);
                     } else {
-                        console.warn('[MCP MODULE] Invalid module interface', {
+                        console.warn('[MCP MODULE] Invalid module interface', JSON.stringify({
                             file,
                             path: modPath,
                             missingProperties: getMissingProperties(mod)
-                        });
+                        }));
                     }
                 } else {
-                    console.warn('[MCP MODULE] Invalid module interface', {
+                    console.warn('[MCP MODULE] Invalid module interface', JSON.stringify({
                         file,
                         path: modPath,
                         missingProperties: getMissingProperties(mod)
-                    });
+                    }));
                 }
             }
         } catch (error) {
@@ -147,18 +147,18 @@ async function discoverModules(modulesDir) {
                 if (MonitoringService) {
                     MonitoringService.logError(mcpError);
                 } else {
-                    console.error(`[MCP MODULE] Failed to load module: ${file}`, {
+                    console.error(`[MCP MODULE] Failed to load module: ${file}`, JSON.stringify({
                         file,
                         path: modPath,
                         error: error.message
-                    });
+                    }));
                 }
             } else {
-                console.error(`[MCP MODULE] Failed to load module: ${file}`, {
+                console.error(`[MCP MODULE] Failed to load module: ${file}`, JSON.stringify({
                     file,
                     path: modPath,
                     error: error.message
-                });
+                }));
             }
         }
     }
@@ -180,11 +180,11 @@ async function discoverModules(modulesDir) {
             timestamp: new Date().toISOString()
         });
     } else {
-        console.info('[MCP MODULE] Module discovery completed', {
+        console.info('[MCP MODULE] Module discovery completed', JSON.stringify({
             totalModules: registered.length,
             moduleIds: registered.map(m => m.id),
             elapsedTimeMs: elapsedTime
-        });
+        }));
     }
     
     return registered;

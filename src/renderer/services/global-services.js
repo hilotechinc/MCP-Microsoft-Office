@@ -12,7 +12,7 @@ window.MonitoringService = {
             window.electron.ipcRenderer.send('monitoring:info', { message, metadata, category });
             return true;
         }
-        console.info(`[${category || 'renderer'}] ${message}`, metadata || {});
+        console.info(`[${category || 'renderer'}] ${message}`, JSON.stringify(metadata || {}));
         return false;
     },
     warn: (message, metadata, category) => {
@@ -20,7 +20,7 @@ window.MonitoringService = {
             window.electron.ipcRenderer.send('monitoring:warn', { message, metadata, category });
             return true;
         }
-        console.warn(`[${category || 'renderer'}] ${message}`, metadata || {});
+        console.warn(`[${category || 'renderer'}] ${message}`, JSON.stringify(metadata || {}));
         return false;
     },
     error: (message, metadata, category) => {
@@ -28,7 +28,7 @@ window.MonitoringService = {
             window.electron.ipcRenderer.send('monitoring:error', { message, metadata, category });
             return true;
         }
-        console.error(`[${category || 'renderer'}] ${message}`, metadata || {});
+        console.error(`[${category || 'renderer'}] ${message}`, JSON.stringify(metadata || {}));
         return false;
     },
     logError: (error) => {
@@ -44,7 +44,7 @@ window.MonitoringService = {
             window.electron.ipcRenderer.send('monitoring:trackMetric', { name, value, metadata });
             return true;
         }
-        console.log(`[metric] ${name}: ${value}`, metadata || {});
+        console.log(`[metric] ${name}: ${value}`, JSON.stringify(metadata || {}));
         return false;
     }
 };

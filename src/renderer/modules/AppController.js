@@ -89,28 +89,6 @@ export class AppController {
         try {
             window.MonitoringService && window.MonitoringService.info('Loading application dependencies', { operation: 'dependency-init' }, 'renderer');
             
-            // Load check-connections functionality
-            try {
-                const checkConnections = await import('../check-connections.js');
-                this.dependencies.checkConnections = checkConnections;
-            } catch (err) {
-                window.MonitoringService && window.MonitoringService.error('Failed to load check-connections.js', {
-                    error: err.message,
-                    operation: 'dependency-load'
-                }, 'renderer');
-            }
-            
-            // Load LogViewer component
-            try {
-                const LogViewer = await import('../components/LogViewer.js');
-                this.dependencies.LogViewer = LogViewer.default || LogViewer;
-            } catch (err) {
-                window.MonitoringService && window.MonitoringService.error('Failed to load LogViewer.js', {
-                    error: err.message,
-                    operation: 'dependency-load'
-                }, 'renderer');
-            }
-            
             // Check IPC availability
             if (!window.electron?.ipcRenderer) {
                 window.MonitoringService && window.MonitoringService.warn('Electron IPC not available. Using console fallbacks for monitoring and error services.', {
@@ -119,7 +97,6 @@ export class AppController {
             }
             
             window.MonitoringService && window.MonitoringService.info('Dependencies loaded successfully', { 
-                loadedCount: Object.keys(this.dependencies).length,
                 operation: 'dependency-init-complete'
             }, 'renderer');
             
@@ -418,12 +395,6 @@ export class AppController {
                             <button id="clear-logs-btn" class="action-btn">Clear</button>
                         </div>
                     </div>
-                    <div class="activity-filters">
-                        <button class="filter-btn active" data-filter="all">All</button>
-                        <button class="filter-btn" data-filter="mail">Mail</button>
-                        <button class="filter-btn" data-filter="calendar">Calendar</button>
-                        <button class="filter-btn" data-filter="files">Files</button>
-                    </div>
                 </div>
                 <div class="card-body">
                     <div id="recent-logs" class="recent-logs">
@@ -456,18 +427,6 @@ export class AppController {
                     this.handleAutoRefreshToggle(autoRefreshToggle.checked);
                 });
             }
-            
-            // Setup filter buttons
-            document.querySelectorAll('.filter-btn').forEach(btn => {
-                btn.addEventListener('click', () => {
-                    // Update active state
-                    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-                    btn.classList.add('active');
-                    
-                    const filter = btn.dataset.filter;
-                    this.handleLogFilter(filter);
-                });
-            });
             
             // Setup clear buttons
             const clearLogsBtn = document.getElementById('clear-logs-btn');
@@ -593,7 +552,7 @@ export class AppController {
     }
 
     /**
-     * Display logs in the UI with modern formatting and grouping
+     * Display logs in the UI with simple chronological listing and text search
      * @param {Array} logs - Log entries
      * @param {boolean} clearExisting - Whether to clear existing logs
      */
@@ -606,89 +565,61 @@ export class AppController {
             return;
         }
 
-        // Sort logs by timestamp (newest first) and group by level and category
+        // Sort logs by timestamp (newest first)
         const sortedLogs = logs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-        const groupedLogs = this.groupLogsByLevelAndCategory(sortedLogs);
         
-        // Build modern log interface
+        // Count logs by level for stats
+        const stats = {
+            error: sortedLogs.filter(log => log.level === 'error').length,
+            warn: sortedLogs.filter(log => log.level === 'warn').length,
+            info: sortedLogs.filter(log => log.level === 'info').length,
+            debug: sortedLogs.filter(log => log.level === 'debug').length
+        };
+        
+        // Build simple log interface with search
         let logsHtml = `
             <div class="log-viewer-controls">
                 <div class="log-stats">
-                    <span class="stat-badge error">${groupedLogs.stats.error} Errors</span>
-                    <span class="stat-badge warn">${groupedLogs.stats.warn} Warnings</span>
-                    <span class="stat-badge info">${groupedLogs.stats.info} Info</span>
-                    <span class="stat-badge debug">${groupedLogs.stats.debug} Debug</span>
+                    <span class="stat-badge error">${stats.error} Errors</span>
+                    <span class="stat-badge warn">${stats.warn} Warnings</span>
+                    <span class="stat-badge info">${stats.info} Info</span>
+                    <span class="stat-badge debug">${stats.debug} Debug</span>
+                    <span class="stat-badge total">${sortedLogs.length} Total</span>
                 </div>
-                <div class="log-filters">
-                    <button class="filter-toggle active" data-level="all">All</button>
-                    <button class="filter-toggle" data-level="error">Errors</button>
-                    <button class="filter-toggle" data-level="warn">Warnings</button>
-                    <button class="filter-toggle" data-level="info">Info</button>
-                    <button class="filter-toggle" data-level="debug">Debug</button>
+                <div class="log-search">
+                    <input type="text" id="log-search-input" placeholder="Search logs (e.g., 'tentativelyAccepted', 'error', 'calendar')..." class="search-input">
+                    <button id="clear-search-btn" class="clear-search-btn" title="Clear search">×</button>
                 </div>
             </div>
-            <div class="log-groups">
+            <div class="simple-log-list" id="simple-log-list">
         `;
 
-        // Display grouped logs
-        Object.entries(groupedLogs.groups).forEach(([level, categories]) => {
-            if (Object.keys(categories).length === 0) return;
+        // Display all logs in simple chronological order
+        sortedLogs.forEach((log, index) => {
+            const timestamp = new Date(log.timestamp).toLocaleString();
+            const level = log.level || 'info';
+            const category = log.category || 'general';
+            const message = log.message || '';
+            const context = log.context ? JSON.stringify(log.context, null, 2) : '';
+            
+            // Create searchable text content for filtering
+            const searchableContent = `${timestamp} ${level} ${category} ${message} ${context}`.toLowerCase();
             
             logsHtml += `
-                <div class="log-level-group" data-level="${level}">
-                    <div class="log-level-header">
-                        <h4 class="level-title level-${level}">
-                            <span class="level-indicator"></span>
-                            ${level.toUpperCase()} (${groupedLogs.stats[level]})
-                        </h4>
-                        <button class="collapse-toggle" data-target="${level}">−</button>
+                <div class="simple-log-entry" data-level="${level}" data-category="${category}" data-search="${searchableContent}" data-index="${index}">
+                    <div class="log-header">
+                        <span class="log-timestamp">${timestamp}</span>
+                        <span class="log-level level-${level}">${level.toUpperCase()}</span>
+                        <span class="log-category">${category}</span>
+                        ${log.id ? `<span class="log-id">${log.id.slice(0, 8)}</span>` : ''}
                     </div>
-                    <div class="log-categories" id="categories-${level}">
-            `;
-
-            Object.entries(categories).forEach(([category, logEntries]) => {
-                const categoryType = this.getCategoryType(category);
-                const recentLogs = logEntries.slice(0, 5); // Show only 5 most recent per category
-                
-                logsHtml += `
-                    <div class="log-category-group" data-category="${category}">
-                        <div class="category-header">
-                            <span class="category-icon ${categoryType}"></span>
-                            <span class="category-name">${category}</span>
-                            <span class="category-count">${logEntries.length}</span>
-                            ${logEntries.length > 5 ? `<button class="show-more" data-category="${category}" data-level="${level}">+${logEntries.length - 5} more</button>` : ''}
+                    <div class="log-message">${message}</div>
+                    ${context ? `
+                        <div class="log-context-container">
+                            <button class="context-toggle-btn" data-index="${index}">Show Context</button>
+                            <pre class="log-context" id="context-${index}" style="display: none;">${context}</pre>
                         </div>
-                        <div class="log-entries">
-                `;
-
-                recentLogs.forEach(log => {
-                    const timestamp = new Date(log.timestamp).toLocaleTimeString();
-                    const message = this.truncateMessage(log.message || '', 100);
-                    const context = log.context ? JSON.stringify(log.context, null, 2) : '';
-                    
-                    logsHtml += `
-                        <div class="log-entry" data-log-id="${log.id}" title="${log.message}">
-                            <div class="log-meta">
-                                <span class="log-time">${timestamp}</span>
-                                ${log.id ? `<span class="log-id">${log.id.slice(0, 8)}</span>` : ''}
-                            </div>
-                            <div class="log-content">
-                                <div class="log-message">${message}</div>
-                                ${context ? `<div class="log-context" style="display: none;">${context}</div>` : ''}
-                            </div>
-                            ${context ? '<button class="context-toggle" title="Show/hide context">⋯</button>' : ''}
-                        </div>
-                    `;
-                });
-
-                logsHtml += `
-                        </div>
-                    </div>
-                `;
-            });
-
-            logsHtml += `
-                    </div>
+                    ` : ''}
                 </div>
             `;
         });
@@ -696,154 +627,57 @@ export class AppController {
         logsHtml += '</div>';
         logsContainer.innerHTML = logsHtml;
         
-        // Setup event listeners for the new interface
-        this.setupLogViewerEventListeners();
+        // Setup simple event listeners
+        this.setupSimpleLogViewerEventListeners();
     }
 
     /**
-     * Group logs by level and category for better organization
+     * Setup simple event listeners for the log viewer interface
      */
-    groupLogsByLevelAndCategory(logs) {
-        const groups = {
-            error: {},
-            warn: {},
-            info: {},
-            debug: {}
-        };
-        
-        const stats = {
-            error: 0,
-            warn: 0,
-            info: 0,
-            debug: 0
-        };
-
-        logs.forEach(log => {
-            const level = log.level || log.severity || 'info';
-            const category = log.category || 'system';
-            
-            if (!groups[level]) groups[level] = {};
-            if (!groups[level][category]) groups[level][category] = [];
-            
-            groups[level][category].push(log);
-            stats[level]++;
-        });
-
-        return { groups, stats };
-    }
-
-    /**
-     * Determine category type for styling
-     */
-    getCategoryType(category) {
-        const categoryMap = {
-            'core': 'core-service',
-            'auth': 'core-service',
-            'storage': 'core-service',
-            'monitoring': 'core-service',
-            'error': 'core-service',
-            'events': 'core-service',
-            'cache': 'core-service',
-            'tools': 'core-service',
-            
-            'api': 'controller',
-            'routes': 'controller',
-            'controller': 'controller',
-            'middleware': 'controller',
-            
-            'mail': 'module',
-            'calendar': 'module',
-            'files': 'module',
-            'people': 'module',
-            'modules': 'module',
-            
-            'graph': 'service',
-            'llm': 'service',
-            'msal': 'service',
-            
-            'system': 'system',
-            'electron': 'system',
-            'main': 'system',
-            'renderer': 'system',
-            'ipc': 'system'
-        };
-        
-        const lowerCategory = category.toLowerCase();
-        return categoryMap[lowerCategory] || 'system';
-    }
-
-    /**
-     * Truncate long messages for display
-     */
-    truncateMessage(message, maxLength) {
-        if (!message) return '';
-        if (message.length <= maxLength) return message;
-        return message.substring(0, maxLength) + '...';
-    }
-
-    /**
-     * Setup event listeners for the log viewer interface
-     */
-    setupLogViewerEventListeners() {
-        // Level filter toggles
-        document.querySelectorAll('.filter-toggle').forEach(button => {
-            button.addEventListener('click', (e) => {
-                const level = e.target.dataset.level;
+    setupSimpleLogViewerEventListeners() {
+        // Search input
+        const searchInput = document.getElementById('log-search-input');
+        if (searchInput) {
+            searchInput.addEventListener('input', (e) => {
+                const searchQuery = e.target.value.toLowerCase();
+                const logEntries = document.querySelectorAll('.simple-log-entry');
                 
-                // Update active state
-                document.querySelectorAll('.filter-toggle').forEach(b => b.classList.remove('active'));
-                e.target.classList.add('active');
-                
-                // Show/hide log groups
-                document.querySelectorAll('.log-level-group').forEach(group => {
-                    if (level === 'all' || group.dataset.level === level) {
-                        group.style.display = 'block';
+                logEntries.forEach((entry) => {
+                    const searchableContent = entry.getAttribute('data-search');
+                    if (searchableContent.includes(searchQuery)) {
+                        entry.style.display = 'block';
                     } else {
-                        group.style.display = 'none';
+                        entry.style.display = 'none';
                     }
                 });
             });
-        });
-
-        // Collapse toggles
-        document.querySelectorAll('.collapse-toggle').forEach(button => {
-            button.addEventListener('click', (e) => {
-                const target = e.target.dataset.target;
-                const categories = document.getElementById(`categories-${target}`);
-                
-                if (categories.style.display === 'none') {
-                    categories.style.display = 'block';
-                    e.target.textContent = '−';
-                } else {
-                    categories.style.display = 'none';
-                    e.target.textContent = '+';
+        }
+        
+        // Clear search button
+        const clearSearchBtn = document.getElementById('clear-search-btn');
+        if (clearSearchBtn) {
+            clearSearchBtn.addEventListener('click', () => {
+                const searchInput = document.getElementById('log-search-input');
+                if (searchInput) {
+                    searchInput.value = '';
+                    searchInput.dispatchEvent(new Event('input'));
                 }
             });
-        });
-
+        }
+        
         // Context toggles
-        document.querySelectorAll('.context-toggle').forEach(button => {
+        document.querySelectorAll('.context-toggle-btn').forEach(button => {
             button.addEventListener('click', (e) => {
-                const logEntry = e.target.closest('.log-entry');
+                const logEntry = e.target.closest('.simple-log-entry');
                 const context = logEntry.querySelector('.log-context');
                 
                 if (context.style.display === 'none') {
                     context.style.display = 'block';
-                    e.target.textContent = '−';
+                    e.target.textContent = 'Hide Context';
                 } else {
                     context.style.display = 'none';
-                    e.target.textContent = '⋯';
+                    e.target.textContent = 'Show Context';
                 }
-            });
-        });
-
-        // Show more buttons
-        document.querySelectorAll('.show-more').forEach(button => {
-            button.addEventListener('click', (e) => {
-                const category = e.target.dataset.category;
-                const level = e.target.dataset.level;
-                // TODO: Implement show more functionality
-                console.log(`Show more logs for ${category} at ${level} level`);
             });
         });
     }

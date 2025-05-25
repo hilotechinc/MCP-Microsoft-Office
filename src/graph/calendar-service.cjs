@@ -1360,7 +1360,7 @@ async function respondToEvent(eventId, responseType, options = {}) {
       
       // Normalize event for consistent response format
       const normalizedEvent = normalizeEvent(updatedEvent);
-      
+
       // Emit event for UI updates with redacted data
       EventService?.emit('calendar:event:response', {
         eventId: redactSensitiveData({ eventId }),
@@ -1858,12 +1858,12 @@ async function findMeetingTimes(options = {}) {
     }, 'calendar');
     
     // Also log to console for immediate visibility during development
-    console.error('GRAPH API ERROR:', {
+    console.error('GRAPH API ERROR:', JSON.stringify({
       message: error.message,
       statusCode: error.statusCode,
       body: error.body,
       requestBody: requestBody
-    });
+    }));
     
     // Provide more specific error messages for common Graph API errors
     let errorMessage = `Failed to find meeting times: ${error.message}`;
