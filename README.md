@@ -30,7 +30,7 @@ Claude/LLM ←→ MCP Adapter ←→ Express API ←→ Graph Services ←→ Mi
 
 ### Production-Ready Tools 
 
-#### Mail Tools (100% Working)
+#### Mail Tools (80% Working)
 - `getMail` - Read emails from inbox
 - `sendMail` - Send emails with attachments
 - `searchMail` - Search emails by query
@@ -52,7 +52,7 @@ Claude/LLM ←→ MCP Adapter ←→ Express API ←→ Graph Services ←→ Mi
 - `findMeetingTimes` - Find optimal meeting slots
 - `scheduleMeeting` - Smart meeting scheduling
 
-#### Files Tools (100% Working)
+#### Files Tools (70% Working)
 - `listFiles` - Browse OneDrive/SharePoint
 - `uploadFile` - Upload files to cloud storage
 - `downloadFile` - Download file content
@@ -68,13 +68,6 @@ Claude/LLM ←→ MCP Adapter ←→ Express API ←→ Graph Services ←→ Mi
 - `query` - Natural language queries across all Microsoft 365 data
 
 ### What We Fixed & Learned 
-
-#### Calendar Event Response Tools - Complete Fix
-- **Problem**: `acceptEvent`, `declineEvent`, `tentativelyAcceptEvent` failed on first attempt
-- **Root Cause #1**: Missing tool definitions - MCP clients didn't know `id` was required
-- **Root Cause #2**: Endpoint path mismatch - tool definitions used `/api/v1/...` but MCP adapter expected `/v1/...`
-- **Solution**: Added proper tool definitions with correct endpoint paths
-- **Result**:  **All tools now work perfectly on first attempt**
 
 #### Tool Definition Architecture
 - **Pattern Discovered**: Every MCP tool needs proper parameter definitions with `required: true`
@@ -98,8 +91,8 @@ Claude/LLM ←→ MCP Adapter ←→ Express API ←→ Graph Services ←→ Mi
 
 1. **Clone & Install**
    ```bash
-   git clone <your-repo>
-   cd mcp-microsoft-office
+   git clone https://github.com/Aanerud/MCP-Microsoft-Office.git
+   cd MCP-Microsoft-Office
    npm install
    ```
 
@@ -112,9 +105,11 @@ Claude/LLM ←→ MCP Adapter ←→ Express API ←→ Graph Services ←→ Mi
 3. **Environment Setup**
    ```bash
    # Create .env file
-   CLIENT_ID=your-azure-client-id
-   TENANT_ID=your-azure-tenant-id
-   REDIRECT_URI=http://localhost:3000/api/auth/callback
+      MICROSOFT_CLIENT_ID=your_client_id
+      MICROSOFT_TENANT_ID=your_tenant_id
+      LLM_PROVIDER=claude  # or openai
+      CLAUDE_API_KEY=your_claude_api_key
+      OPENAI_API_KEY=your_openai_api_key
    ```
 
 4. **Start the Server**
@@ -124,9 +119,7 @@ Claude/LLM ←→ MCP Adapter ←→ Express API ←→ Graph Services ←→ Mi
    
    # Production mode (minimal logging)
    npm start
-   
-   # Electron desktop app
-   npm run dev:electron
+
    ```
 
 5. **Authenticate**
@@ -187,22 +180,6 @@ src/
 5. **Graph API Call** → Services handle Microsoft Graph integration
 6. **Data Normalization** → Consistent response formatting
 7. **Response** → JSON-RPC back to Claude
-
-## Testing & Validation
-
-We've built comprehensive test scripts that validate every tool:
-
-```bash
-# Test calendar event response tools
-node test-calendar-response-tools.js
-
-# Test calendar event updates
-node test-calendar-events.js
-
-# All tests use real Microsoft Graph API (no mocks)
-```
-
-**Test Results**:  **100% Pass Rate** - All 25+ tools working in production
 
 ## Production Readiness
 
