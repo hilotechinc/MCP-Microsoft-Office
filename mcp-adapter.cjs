@@ -422,6 +422,44 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
         // Log the module method being executed for debugging
         
         
+        // Helper functions for parameter transformation
+        
+        // Helper function to format meeting duration in ISO 8601 format
+        const formatMeetingDuration = (duration) => {
+            // If already in ISO 8601 format (starts with PT), return as is
+            if (typeof duration === 'string' && duration.startsWith('PT')) {
+                return duration;
+            }
+            
+            // If it's a string but not in ISO format, try to parse it as minutes
+            if (typeof duration === 'string') {
+                // Check if it's a number in string format (e.g., '60')
+                const minutes = parseInt(duration, 10);
+                if (!isNaN(minutes)) {
+                    return `PT${minutes}M`;
+                }
+                
+                // Check if it's in hours format (e.g., '1h' or '1 hour')
+                if (duration.toLowerCase().includes('h')) {
+                    const hours = parseInt(duration, 10);
+                    if (!isNaN(hours)) {
+                        return `PT${hours}H`;
+                    }
+                }
+                
+                // Default to 30 minutes if we can't parse it
+                return 'PT30M';
+            }
+            
+            // If it's a number, assume it's minutes
+            if (typeof duration === 'number') {
+                return `PT${duration}M`;
+            }
+            
+            // Default to 30 minutes
+            return 'PT30M';
+        };
+        
         // Helper function to transform attendees from string or array to proper format
         const transformAttendees = (attendees) => {
             if (!attendees) return undefined;
@@ -919,6 +957,15 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                     let timeConstraints = transformedParams.timeConstraints;
                     let timeSlots = [];
                     
+                    // Extract meetingDuration if it's incorrectly nested in timeConstraints
+                    // This handles the case where the client sends meetingDuration inside timeConstraints
+                    // but the Graph API expects it at the top level
+                    if (timeConstraints && timeConstraints.meetingDuration) {
+                        transformedParams.meetingDuration = timeConstraints.meetingDuration;
+                        // Remove it from timeConstraints to avoid confusion
+                        delete timeConstraints.meetingDuration;
+                    }
+                    
                     // Handle different formats of time constraints
                     if (timeConstraints && timeConstraints.timeSlots && Array.isArray(timeConstraints.timeSlots)) {
                         // Format 1: Explicit timeSlots array in timeConstraints
@@ -972,33 +1019,41 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                     // Create the API data with proper structure following Microsoft Graph API requirements
                     apiData = {
                         // Transform attendees to array format - ensure it's never null/undefined
-                        attendees: transformAttendees(transformedParams.attendees) || [].map(attendee => {
+                        attendees: (transformAttendees(transformedParams.attendees) || []).map(attendee => {
                             // Ensure each attendee has the correct format
-                            const email = typeof attendee === 'string' ? attendee : (attendee.email || attendee.address);
-                            return { 
-                                emailAddress: { address: email },
-                                type: attendee.type || 'required'
-                            };
+                            if (typeof attendee === 'string') {
+                                return {
+                                    emailAddress: { address: attendee },
+                                    type: 'required'
+                                };
+                            } else if (typeof attendee === 'object') {
+                                return {
+                                    emailAddress: { address: attendee.email || attendee.address },
+                                    type: attendee.type || 'required'
+                                };
+                            }
                         }),
                         
-                        // Time constraints with properly formatted timeSlots array
-                        // IMPORTANT: Microsoft Graph API expects 'timeSlots' (capital 'S')
+                        // Time constraints with properly formatted timeSlots array (capital 'S') for controller validation
                         timeConstraint: {
+                            activityDomain: timeConstraints?.activityDomain || transformedParams.activityDomain || 'work',
+                            // Only use timeSlots (capital 'S') for controller validation
                             timeSlots: timeSlots.map(slot => ({
                                 start: {
-                                    dateTime: slot.start.dateTime,
+                                    // Format date to match Microsoft Graph API expectations (without milliseconds and Z)
+                                    dateTime: slot.start.dateTime.replace(/\.\d{3}Z$/, ''),
                                     timeZone: slot.start.timeZone || 'UTC'
                                 },
                                 end: {
-                                    dateTime: slot.end.dateTime,
+                                    // Format date to match Microsoft Graph API expectations (without milliseconds and Z)
+                                    dateTime: slot.end.dateTime.replace(/\.\d{3}Z$/, ''),
                                     timeZone: slot.end.timeZone || 'UTC'
                                 }
-                            })),
-                            activityDomain: timeConstraints?.activityDomain || transformedParams.activityDomain || 'work'
+                            }))
                         },
                         
-                        // Duration in minutes - ensure it's a positive number
-                        meetingDuration: parseInt(transformedParams.meetingDuration || transformedParams.duration || 60, 10),
+                        // Duration in ISO 8601 format (e.g., 'PT1H' for 1 hour)
+                        meetingDuration: formatMeetingDuration(transformedParams.meetingDuration || transformedParams.duration || 60),
                         
                         // Additional parameters with reasonable defaults
                         maxCandidates: parseInt(transformedParams.maxCandidates || 10, 10),
@@ -1012,6 +1067,17 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                             emailAddress: { address: 'me@example.com' }, // This will be replaced by the API
                             type: 'required'
                         }];
+                    }
+                    
+                    // Log using monitoring service only - avoid console logging in MCP adapter
+                    if (monitoringService) {
+                        monitoringService.debug('MCP ADAPTER - findMeetingTimes - FINAL API DATA', {
+                            apiData: JSON.stringify(apiData, null, 2),
+                            originalParams: JSON.stringify(transformedParams, null, 2),
+                            apiPath,
+                            apiMethod,
+                            timestamp: new Date().toISOString()
+                        }, 'mcp-adapter');
                     }
                     
                     // Log the transformed parameters for debugging

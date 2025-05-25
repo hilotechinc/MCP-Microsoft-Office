@@ -10,8 +10,8 @@ const ErrorService = require('../core/error-service.cjs');
 const MonitoringService = require('../core/monitoring-service.cjs');
 const fetch = require('node-fetch');
 
-// Log service initialization
-MonitoringService.info('Graph Client initialized', {
+// Log service initialization - use optional chaining to prevent errors if service not fully initialized
+MonitoringService?.info?.('Graph Client initialized', {
     serviceName: 'graph-client',
     timestamp: new Date().toISOString()
 }, 'graph');
@@ -25,7 +25,7 @@ async function createClient(req) {
     const startTime = Date.now();
     
     if (process.env.NODE_ENV === 'development') {
-        MonitoringService.debug('Graph client creation started', {
+        MonitoringService?.debug('Graph client creation started', {
             method: 'createClient',
             hasRequest: !!req,
             timestamp: new Date().toISOString()
@@ -37,7 +37,7 @@ async function createClient(req) {
         const isApiCall = req && (req.isApiCall || req.path?.startsWith('/v1/') || req.headers?.['x-mcp-internal-call'] === 'true');
         
         if (process.env.NODE_ENV === 'development') {
-            MonitoringService.debug('Graph client creation type determined', {
+            MonitoringService?.debug('Graph client creation type determined', {
                 isApiCall,
                 requestType: isApiCall ? 'API call' : 'regular request',
                 timestamp: new Date().toISOString()
@@ -49,7 +49,7 @@ async function createClient(req) {
         // For API calls (including internal MCP calls), use the stored token
         if (isApiCall) {
             if (process.env.NODE_ENV === 'development') {
-                MonitoringService.debug('Getting stored token for API call', {
+                MonitoringService?.debug('Getting stored token for API call', {
                     timestamp: new Date().toISOString()
                 }, 'graph');
             }
@@ -57,7 +57,7 @@ async function createClient(req) {
         } else {
             // Normal flow - get token from session
             if (process.env.NODE_ENV === 'development') {
-                MonitoringService.debug('Getting token from session', {
+                MonitoringService?.debug('Getting token from session', {
                     timestamp: new Date().toISOString()
                 }, 'graph');
             }
@@ -76,14 +76,14 @@ async function createClient(req) {
                     timestamp: new Date().toISOString()
                 }
             );
-            MonitoringService.logError(mcpError);
+            MonitoringService?.logError(mcpError);
             throw mcpError;
         }
         
         const client = new GraphClient(token);
         const executionTime = Date.now() - startTime;
         
-        MonitoringService.trackMetric('graph_client_creation_success', executionTime, {
+        MonitoringService?.trackMetric('graph_client_creation_success', executionTime, {
             service: 'graph-client',
             method: 'createClient',
             isApiCall,
@@ -91,7 +91,7 @@ async function createClient(req) {
         });
         
         if (process.env.NODE_ENV === 'development') {
-            MonitoringService.debug('Graph client created successfully', {
+            MonitoringService?.debug('Graph client created successfully', {
                 executionTimeMs: executionTime,
                 timestamp: new Date().toISOString()
             }, 'graph');
@@ -103,7 +103,7 @@ async function createClient(req) {
         
         // If it's already an MCP error, just track metrics and rethrow
         if (error.category) {
-            MonitoringService.trackMetric('graph_client_creation_failure', executionTime, {
+            MonitoringService?.trackMetric('graph_client_creation_failure', executionTime, {
                 service: 'graph-client',
                 method: 'createClient',
                 errorType: error.code || 'auth_error',
@@ -125,8 +125,8 @@ async function createClient(req) {
             }
         );
         
-        MonitoringService.logError(mcpError);
-        MonitoringService.trackMetric('graph_client_creation_failure', executionTime, {
+        MonitoringService?.logError(mcpError);
+        MonitoringService?.trackMetric('graph_client_creation_failure', executionTime, {
             service: 'graph-client',
             method: 'createClient',
             errorType: error.code || 'unknown',
@@ -200,7 +200,7 @@ async function _fetchWithRetry(path, token, method, body, options, retries = 2) 
     }, options.headers || {});
     
     if (process.env.NODE_ENV === 'development') {
-        MonitoringService.debug('Graph API request started', {
+        MonitoringService?.debug('Graph API request started', {
             method,
             path,
             url,
@@ -223,7 +223,7 @@ async function _fetchWithRetry(path, token, method, body, options, retries = 2) 
             const totalTime = Date.now() - startTime;
             
             // Track all Graph API requests
-            MonitoringService.trackMetric('graph_api_request', responseTime, {
+            MonitoringService?.trackMetric('graph_api_request', responseTime, {
                 method: method,
                 endpoint: path,
                 statusCode: res.status,
@@ -234,7 +234,7 @@ async function _fetchWithRetry(path, token, method, body, options, retries = 2) 
             
             if (res.status === 202) { 
                 if (process.env.NODE_ENV === 'development') {
-                    MonitoringService.debug('Graph API request accepted', {
+                    MonitoringService?.debug('Graph API request accepted', {
                         method,
                         path,
                         status: 202,
@@ -248,7 +248,7 @@ async function _fetchWithRetry(path, token, method, body, options, retries = 2) 
             
             if (res.ok) {
                 if (process.env.NODE_ENV === 'development') {
-                    MonitoringService.debug('Graph API request successful', {
+                    MonitoringService?.debug('Graph API request successful', {
                         method,
                         path,
                         status: res.status,
@@ -263,7 +263,7 @@ async function _fetchWithRetry(path, token, method, body, options, retries = 2) 
             if (res.status === 429) {
                 const retryAfter = Number(res.headers.get('retry-after')) || 1;
                 
-                MonitoringService.trackMetric('graph_api_throttled', responseTime, {
+                MonitoringService?.trackMetric('graph_api_throttled', responseTime, {
                     method,
                     endpoint: path,
                     attempt: attempt + 1,
@@ -286,12 +286,12 @@ async function _fetchWithRetry(path, token, method, body, options, retries = 2) 
                             timestamp: new Date().toISOString()
                         }
                     );
-                    MonitoringService.logError(mcpError);
+                    MonitoringService?.logError(mcpError);
                     throw mcpError;
                 }
                 
                 if (process.env.NODE_ENV === 'development') {
-                    MonitoringService.debug('Graph API throttled, retrying', {
+                    MonitoringService?.debug('Graph API throttled, retrying', {
                         method,
                         path,
                         attempt: attempt + 1,
@@ -327,8 +327,8 @@ async function _fetchWithRetry(path, token, method, body, options, retries = 2) 
                         }
                     );
                     
-                    MonitoringService.logError(mcpError);
-                    MonitoringService.trackMetric('graph_api_error', totalTime, {
+                    MonitoringService?.logError(mcpError);
+                    MonitoringService?.trackMetric('graph_api_error', totalTime, {
                         method,
                         endpoint: path,
                         statusCode: res.status,
@@ -358,8 +358,8 @@ async function _fetchWithRetry(path, token, method, body, options, retries = 2) 
                         }
                     );
                     
-                    MonitoringService.logError(mcpError);
-                    MonitoringService.trackMetric('graph_api_error', totalTime, {
+                    MonitoringService?.logError(mcpError);
+                    MonitoringService?.trackMetric('graph_api_error', totalTime, {
                         method,
                         endpoint: path,
                         statusCode: res.status,
@@ -395,8 +395,8 @@ async function _fetchWithRetry(path, token, method, body, options, retries = 2) 
                     }
                 );
                 
-                MonitoringService.logError(mcpError);
-                MonitoringService.trackMetric('graph_api_network_error', responseTime, {
+                MonitoringService?.logError(mcpError);
+                MonitoringService?.trackMetric('graph_api_network_error', responseTime, {
                     method,
                     endpoint: path,
                     errorType: 'network',
@@ -416,7 +416,7 @@ GraphClient.prototype.batch = async function(requests, retries = 2) {
     const startTime = Date.now();
     
     if (process.env.NODE_ENV === 'development') {
-        MonitoringService.debug('Graph API batch request started', {
+        MonitoringService?.debug('Graph API batch request started', {
             method: 'batch',
             requestCount: requests.length,
             timestamp: new Date().toISOString()
@@ -433,7 +433,7 @@ GraphClient.prototype.batch = async function(requests, retries = 2) {
             const response = await _fetchWithRetry('/$batch', this.token, 'POST', { requests: pending }, {});
             const batchTime = Date.now() - batchStartTime;
             
-            MonitoringService.trackMetric('graph_api_batch_request', batchTime, {
+            MonitoringService?.trackMetric('graph_api_batch_request', batchTime, {
                 requestCount: pending.length,
                 attempt: attempts + 1,
                 timestamp: new Date().toISOString()
@@ -458,7 +458,7 @@ GraphClient.prototype.batch = async function(requests, retries = 2) {
             });
             
             if (process.env.NODE_ENV === 'development') {
-                MonitoringService.debug('Graph API batch attempt completed', {
+                MonitoringService?.debug('Graph API batch attempt completed', {
                     attempt: attempts + 1,
                     successCount,
                     throttledCount,
@@ -485,7 +485,7 @@ GraphClient.prototype.batch = async function(requests, retries = 2) {
                         timestamp: new Date().toISOString()
                     }
                 );
-                MonitoringService.logError(mcpError);
+                MonitoringService?.logError(mcpError);
                 throw mcpError;
             }
             
@@ -495,7 +495,7 @@ GraphClient.prototype.batch = async function(requests, retries = 2) {
         }
         
         const executionTime = Date.now() - startTime;
-        MonitoringService.trackMetric('graph_api_batch_success', executionTime, {
+        MonitoringService?.trackMetric('graph_api_batch_success', executionTime, {
             service: 'graph-client',
             method: 'batch',
             totalRequests: requests.length,
@@ -504,7 +504,7 @@ GraphClient.prototype.batch = async function(requests, retries = 2) {
         });
         
         if (process.env.NODE_ENV === 'development') {
-            MonitoringService.debug('Graph API batch completed successfully', {
+            MonitoringService?.debug('Graph API batch completed successfully', {
                 totalRequests: requests.length,
                 totalAttempts: attempts + 1,
                 executionTimeMs: executionTime,
@@ -518,7 +518,7 @@ GraphClient.prototype.batch = async function(requests, retries = 2) {
         
         // If it's already an MCP error, just track metrics and rethrow
         if (error.category) {
-            MonitoringService.trackMetric('graph_api_batch_failure', executionTime, {
+            MonitoringService?.trackMetric('graph_api_batch_failure', executionTime, {
                 service: 'graph-client',
                 method: 'batch',
                 totalRequests: requests.length,
@@ -542,8 +542,8 @@ GraphClient.prototype.batch = async function(requests, retries = 2) {
             }
         );
         
-        MonitoringService.logError(mcpError);
-        MonitoringService.trackMetric('graph_api_batch_failure', executionTime, {
+        MonitoringService?.logError(mcpError);
+        MonitoringService?.trackMetric('graph_api_batch_failure', executionTime, {
             service: 'graph-client',
             method: 'batch',
             totalRequests: requests.length,

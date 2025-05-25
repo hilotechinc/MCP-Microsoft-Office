@@ -485,31 +485,40 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                             description: 'Time constraints for the meeting',
                             required: true,
                             properties: {
-                                startTime: { 
-                                    type: 'object', 
-                                    description: 'Start time',
-                                    required: true,
-                                    properties: {
-                                        dateTime: { type: 'string', description: 'ISO date string', required: true },
-                                        timeZone: { type: 'string', description: 'Time zone', optional: true, default: 'UTC' }
-                                    }
-                                },
-                                endTime: { 
-                                    type: 'object', 
-                                    description: 'End time',
-                                    required: true,
-                                    properties: {
-                                        dateTime: { type: 'string', description: 'ISO date string', required: true },
-                                        timeZone: { type: 'string', description: 'Time zone', optional: true, default: 'UTC' }
-                                    }
-                                },
-                                meetingDuration: { 
-                                    type: 'number', 
-                                    description: 'Duration in minutes', 
+                                activityDomain: { 
+                                    type: 'string', 
+                                    description: 'Activity domain (work/personal/unrestricted)', 
                                     optional: true, 
-                                    min: 15, 
-                                    max: 480, 
-                                    default: 60 
+                                    default: 'work',
+                                    enum: ['work', 'personal', 'unrestricted']
+                                },
+                                timeslots: { 
+                                    type: 'array', 
+                                    description: 'Array of time slots',
+                                    required: true,
+                                    items: {
+                                        type: 'object',
+                                        properties: {
+                                            start: {
+                                                type: 'object',
+                                                description: 'Start time',
+                                                required: true,
+                                                properties: {
+                                                    dateTime: { type: 'string', description: 'ISO date string (e.g. 2025-05-26T09:00:00)', required: true },
+                                                    timeZone: { type: 'string', description: 'Time zone', optional: true, default: 'UTC' }
+                                                }
+                                            },
+                                            end: {
+                                                type: 'object',
+                                                description: 'End time',
+                                                required: true,
+                                                properties: {
+                                                    dateTime: { type: 'string', description: 'ISO date string (e.g. 2025-05-26T17:00:00)', required: true },
+                                                    timeZone: { type: 'string', description: 'Time zone', optional: true, default: 'UTC' }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         },
@@ -533,6 +542,12 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                                     }
                                 }
                             }
+                        },
+                        meetingDuration: { 
+                            type: 'string', 
+                            description: 'Duration in ISO8601 format (e.g., PT1H for 1 hour, PT30M for 30 minutes)', 
+                            optional: true, 
+                            default: 'PT30M' 
                         },
                         maxCandidates: { 
                             type: 'number', 

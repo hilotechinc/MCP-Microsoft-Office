@@ -1664,88 +1664,168 @@ async function cancelEvent(eventId, options = {}) {
 
 /**
  * Find suitable meeting times for attendees.
- * @param {object} options - Options for finding meeting times (in Microsoft Graph API format)
+ * @param {object} options - Options for finding meeting times
  * @param {Array<object>} [options.attendees=[]] - Attendees with type and emailAddress
- * @param {object} [options.timeConstraint] - Time constraints for the meeting
- * @param {string} [options.timeConstraint.activityDomain='work'] - Activity domain (work/personal/unrestricted)
- * @param {Array<object>} [options.timeConstraint.timeSlots] - Array of time slots with start/end
- * @param {string} [options.meetingDuration='PT30M'] - Duration in ISO8601 format (e.g., 'PT1H')
- * @param {number} [options.maxCandidates=20] - Maximum number of time slots to return
- * @param {number} [options.minimumAttendeePercentage=50] - Minimum attendee percentage
- * @param {boolean} [options.returnSuggestionReasons=true] - Whether to return suggestion reasons
- * @param {boolean} [options.isOrganizerOptional=false] - Whether organizer attendance is optional
- * @param {object} [options.locationConstraint] - Location constraints
- * @param {string} [options.userId='me'] - User ID to find meeting times for
- * @returns {Promise<object>} Meeting time suggestions with normalized error handling
+ * @param {object} [options.timeConstraints] - Time constraints for the meeting
+ * @param {string} [options.meetingDuration='PT30M'] - Duration in ISO8601 format
+ * @param {number} [options.maxCandidates=20] - Maximum number of meeting time suggestions
+ * @param {string} [userId='me'] - User ID to find meeting times for
+ * @returns {Promise<object>} Meeting time suggestions
  */
-async function findMeetingTimes(options = {}, userId = 'me') {
+async function findMeetingTimes(options = {}) {
+  // Validate the options
+  if (!options) {
+    throw new Error('Options are required for findMeetingTimes');
+  }
+
+  // Get an authenticated client
   const client = await graphClientFactory.createClient();
-  
-  // Validate timeConstraint if provided (now expects Graph API format with timeSlots)
-  if (options.timeConstraint) {
-    if (options.timeConstraint.timeSlots && Array.isArray(options.timeConstraint.timeSlots)) {
-      // Validate each time slot
-      for (const slot of options.timeConstraint.timeSlots) {
-        const isoDateRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?(Z|[+-]\d{2}:\d{2})?$/;
-        
-        if (slot.start?.dateTime && !isoDateRegex.test(slot.start.dateTime)) {
-          throw new Error('timeConstraint.timeSlots[].start.dateTime must be a valid ISO date string');
-        }
-        
-        if (slot.end?.dateTime && !isoDateRegex.test(slot.end.dateTime)) {
-          throw new Error('timeConstraint.timeSlots[].end.dateTime must be a valid ISO date string');
-        }
+  const userId = options.userId || 'me';
+
+  // Process attendees if provided
+  let attendees = [];
+  if (options.attendees && Array.isArray(options.attendees)) {
+    attendees = options.attendees.map(attendee => {
+      if (typeof attendee === 'string') {
+        return {
+          type: 'required',
+          emailAddress: {
+            address: attendee
+          }
+        };
       }
+      return attendee;
+    });
+  } else if (options.users && Array.isArray(options.users)) {
+    // For backward compatibility
+    attendees = options.users.map(user => {
+      if (typeof user === 'string') {
+        return {
+          type: 'required',
+          emailAddress: {
+            address: user
+          }
+        };
+      } else if (user.email || user.address) {
+        return {
+          type: user.type || 'required',
+          emailAddress: {
+            address: user.email || user.address
+          }
+        };
+      }
+      return user;
+    });
+  }
+
+  // Process time constraints - ensure we use the format expected by the API
+  let timeConstraint = null;
+  
+  // First check if timeConstraint is provided directly
+  if (options.timeConstraint) {
+    // Make a copy to avoid modifying the original
+    timeConstraint = { ...options.timeConstraint };
+    
+    // Ensure timeslots is lowercase as expected by the API
+    if (timeConstraint.timeSlots && !timeConstraint.timeslots) {
+      timeConstraint.timeslots = timeConstraint.timeSlots;
+      delete timeConstraint.timeSlots;
+    }
+  } 
+  // Then check for the plural form for backward compatibility
+  else if (options.timeConstraints) {
+    // Make a copy to avoid modifying the original
+    timeConstraint = { ...options.timeConstraints };
+    
+    // Ensure timeslots is lowercase as expected by the API
+    if (timeConstraint.timeSlots && !timeConstraint.timeslots) {
+      timeConstraint.timeslots = timeConstraint.timeSlots;
+      delete timeConstraint.timeSlots;
     }
   }
-  
-  // Build the request body from the provided options (now in Graph API format)
-  const requestBody = {
-    // Attendees - already in correct Graph API format from controller
-    attendees: options.attendees || [],
+
+  // If no time constraint is provided or no timeslots, create a default one
+  if (!timeConstraint || !timeConstraint.timeslots || !Array.isArray(timeConstraint.timeslots) || timeConstraint.timeslots.length === 0) {
+    // If we have no timeConstraint at all, create a new one
+    if (!timeConstraint) {
+      timeConstraint = {
+        activityDomain: 'work',
+        timeslots: []
+      };
+    }
     
-    // Time constraint - use provided timeSlots or create default
-    timeConstraint: options.timeConstraint || {
-      activityDomain: 'work',
-      timeSlots: [{
+    // Ensure timeslots exists and is an array
+    if (!timeConstraint.timeslots || !Array.isArray(timeConstraint.timeslots)) {
+      timeConstraint.timeslots = [];
+    }
+    
+    // If no timeslots, add a default one
+    if (timeConstraint.timeslots.length === 0) {
+      const startDateTime = options.startDateTime || new Date().toISOString().replace(/\.\d+Z?$/, '');
+      const endDateTime = options.endDateTime || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().replace(/\.\d+Z?$/, '');
+
+      timeConstraint.timeslots.push({
         start: {
-          dateTime: new Date().toISOString(),
+          dateTime: startDateTime,
           timeZone: 'UTC'
         },
         end: {
-          dateTime: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+          dateTime: endDateTime,
           timeZone: 'UTC'
         }
-      }]
-    },
+      });
+    }
+  }
+
+  // Build the request body exactly matching the format that works with the Graph API
+  const requestBody = {
+    // Only include attendees if we have any
+    ...(attendees.length > 0 && { attendees }),
     
-    // Meeting duration - already in ISO8601 format from controller
+    // Always include timeConstraint with lowercase 'timeslots'
+    timeConstraint,
+    
+    // Include other parameters
     meetingDuration: options.meetingDuration || 'PT30M',
-    
-    // Additional Graph API parameters
     maxCandidates: options.maxCandidates || 20,
     minimumAttendeePercentage: options.minimumAttendeePercentage || 50,
     returnSuggestionReasons: options.returnSuggestionReasons !== undefined ? options.returnSuggestionReasons : true,
     isOrganizerOptional: options.isOrganizerOptional || false
   };
-  
+
   // Add location constraints if provided
   if (options.locationConstraint) {
     requestBody.locationConstraint = options.locationConstraint;
   }
-  
+
   try {
-    if (process.env.NODE_ENV !== 'production') {
-      MonitoringService?.debug('Finding meeting times with constraints', {
-        requestData: redactSensitiveData(requestBody),
-        timestamp: new Date().toISOString()
-      }, 'calendar');
-    }
+    // Always log in all environments for debugging purposes
+    MonitoringService?.debug('Finding meeting times - FULL REQUEST DETAILS', {
+      userId,
+      options: redactSensitiveData(options),
+      requestBody: redactSensitiveData(requestBody),
+      timestamp: new Date().toISOString()
+    }, 'calendar');
+    
+    // Log to console for immediate visibility
+    console.log('GRAPH API REQUEST BODY:', JSON.stringify(requestBody, null, 2));
     
     // Start timer for performance tracking
     const startTime = Date.now();
     
-    const response = await client.api(`/users/${userId}/findMeetingTimes`).post(requestBody);
+    // Add a delay to ensure logs are flushed
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    // Make the API call exactly as in our successful hybrid test
+    // Use /me/findMeetingTimes instead of /users/${userId}/findMeetingTimes
+    const response = await client.api('/me/findMeetingTimes').post(requestBody);
+    
+    // Log successful response
+    MonitoringService?.debug('Finding meeting times - SUCCESSFUL RESPONSE', {
+      responseData: JSON.stringify(response, null, 2),
+      duration: Date.now() - startTime,
+      timestamp: new Date().toISOString()
+    }, 'calendar');
     
     // Calculate execution time
     const executionTime = Date.now() - startTime;
@@ -1760,23 +1840,30 @@ async function findMeetingTimes(options = {}, userId = 'me') {
     // Process and return the response
     return {
       meetingTimeSuggestions: response.meetingTimeSuggestions || [],
-      emptySuggestionsReason: response.emptySuggestionsReason || null,
-      timeConstraint: {
-        start: startTime,
-        end: endTime,
-        timeZone: timeZone,
-        meetingDuration: meetingDuration
-      }
+      emptySuggestionsReason: response.emptySuggestionsReason || null
     };
   } catch (error) {
-    if (process.env.NODE_ENV !== 'production') {
-      MonitoringService?.error('Error finding meeting times', {
-        userId: redactSensitiveData({ userId }),
-        errorMessage: error.message || 'No message',
-        statusCode: error.statusCode || 'unknown',
-        timestamp: new Date().toISOString()
-      }, 'calendar');
-    }
+    // Always log detailed error information for debugging
+    MonitoringService?.error('Error finding meeting times - DETAILED ERROR', {
+      requestBody: JSON.stringify(requestBody, null, 2),
+      endpoint: `/users/${userId}/findMeetingTimes`,
+      method: 'POST',
+      errorMessage: error.message || 'No message',
+      errorCode: error.code || 'unknown',
+      statusCode: error.statusCode || 'unknown',
+      errorBody: error.body ? JSON.stringify(error.body, null, 2) : 'No body',
+      errorDetails: error.details ? JSON.stringify(error.details, null, 2) : 'No details',
+      stack: error.stack,
+      timestamp: new Date().toISOString()
+    }, 'calendar');
+    
+    // Also log to console for immediate visibility during development
+    console.error('GRAPH API ERROR:', {
+      message: error.message,
+      statusCode: error.statusCode,
+      body: error.body,
+      requestBody: requestBody
+    });
     
     // Provide more specific error messages for common Graph API errors
     let errorMessage = `Failed to find meeting times: ${error.message}`;

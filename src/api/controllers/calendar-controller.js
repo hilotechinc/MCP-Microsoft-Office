@@ -1134,19 +1134,31 @@ module.exports = ({ calendarModule }) => ({
                     )
                 ).min(1).required(),
                 
-                // Time constraint - support both timeConstraint (Graph API) and timeConstraints (Claude format)
+                // Time constraint - support both formats
                 timeConstraint: Joi.object({
                     activityDomain: Joi.string().valid('work', 'personal', 'unrestricted').default('work'),
+                    // Accept either timeSlots (capital S) or timeslots (lowercase s)
                     timeSlots: Joi.array().items(Joi.object({
                         start: Joi.object({
-                            dateTime: Joi.string().required(), // Accept any string, let Graph API validate
+                            dateTime: Joi.string().required(),
                             timeZone: Joi.string().default('UTC')
                         }).required(),
                         end: Joi.object({
-                            dateTime: Joi.string().required(), // Accept any string, let Graph API validate
+                            dateTime: Joi.string().required(),
                             timeZone: Joi.string().default('UTC')
                         }).required()
-                    })).min(1).required()
+                    })).min(1).optional(),
+                    // Also accept lowercase 'timeslots' as used by the Graph API
+                    timeslots: Joi.array().items(Joi.object({
+                        start: Joi.object({
+                            dateTime: Joi.string().required(),
+                            timeZone: Joi.string().default('UTC')
+                        }).required(),
+                        end: Joi.object({
+                            dateTime: Joi.string().required(),
+                            timeZone: Joi.string().default('UTC')
+                        }).required()
+                    })).min(1).optional()
                 }).optional(),
                 
                 // Alternative: timeConstraints (plural) for backward compatibility with Claude
@@ -1223,10 +1235,21 @@ module.exports = ({ calendarModule }) => ({
                         };
                     }
                     return attendee; // Already in correct format
-                }),
-                // Normalize timeConstraint (handle both timeConstraint and timeConstraints)
-                timeConstraint: value.timeConstraint || value.timeConstraints
+                })
             };
+            
+            // Handle timeConstraint/timeConstraints with special attention to the timeslots/timeSlots format
+            if (value.timeConstraint || value.timeConstraints) {
+                const constraint = value.timeConstraint || value.timeConstraints;
+                normalizedValue.timeConstraint = {
+                    ...constraint,
+                    // Ensure we use lowercase 'timeslots' as expected by the Graph API
+                    timeslots: constraint.timeslots || constraint.timeSlots || []
+                };
+                
+                // Remove the capitalized version if it exists to avoid confusion
+                delete normalizedValue.timeConstraint.timeSlots;
+            }
             
             // Remove the old timeConstraints field if it was used
             delete normalizedValue.timeConstraints;
@@ -1257,6 +1280,9 @@ module.exports = ({ calendarModule }) => ({
             let suggestions;
             let isMock = false;
             try {
+                // Extract meeting duration from normalized value for logging
+                const meetingDuration = normalizedValue.meetingDuration || 'PT30M';
+                
                 MonitoringService?.info('Attempting to find meeting times using module', {
                     attendeeCount,
                     meetingDuration
