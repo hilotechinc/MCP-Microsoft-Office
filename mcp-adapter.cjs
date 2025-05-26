@@ -1465,9 +1465,8 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
             }
         }
 
-        
         // Add enhanced logging for calendar controller API calls
-        if (moduleName === 'calendar' || apiPath.includes('/v1/calendar')) {
+        if (moduleName === 'calendar' || apiPath.startsWith('/v1/calendar')) {
             logDebug(`[MCP Adapter] Making calendar API call: ${apiMethod} ${apiPath}`, {
                 method: apiMethod,
                 path: apiPath,
@@ -1481,7 +1480,7 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
         const result = await callApi(apiMethod, apiPath, apiData);
         
         // Log the result for calendar calls
-        if (moduleName === 'calendar' || apiPath.includes('/v1/calendar')) {
+        if (moduleName === 'calendar' || apiPath.startsWith('/v1/calendar')) {
             logDebug(`[MCP Adapter] Calendar API call result: ${apiMethod} ${apiPath}`, {
                 success: true,
                 resultType: typeof result,
