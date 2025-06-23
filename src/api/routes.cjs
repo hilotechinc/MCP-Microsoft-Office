@@ -10,6 +10,10 @@ const calendarControllerFactory = require('./controllers/calendar-controller.js'
 const filesControllerFactory = require('./controllers/files-controller.js');
 const peopleControllerFactory = require('./controllers/people-controller.cjs');
 const logController = require('./controllers/log-controller.cjs');
+const deviceAuthController = require('./controllers/device-auth-controller.cjs');
+const adapterController = require('./controllers/adapter-controller.cjs');
+const ErrorService = require('../core/error-service.cjs');
+const MonitoringService = require('../core/monitoring-service.cjs');
 const { requireAuth } = require('./middleware/auth-middleware.cjs');
 const { routesLogger, controllerLogger } = require('./middleware/request-logger.cjs');
 const apiContext = require('./api-context.cjs');
@@ -57,7 +61,8 @@ function registerRoutes(router) {
     // Apply routes logger middleware to all v1 routes
     v1.use(routesLogger());
     
-    // No authentication required for v1 endpoints - the backend will handle authentication internally
+    // Apply authentication middleware to ensure user context is available
+    v1.use(requireAuth);
 
     // Create injected controller instances
     // TODO: Consider moving controller instantiation closer to where their routers are defined/used.
@@ -154,7 +159,6 @@ function registerRoutes(router) {
     // Apply controller logger middleware
     peopleRouter.use(controllerLogger());
     peopleRouter.get('/', peopleController.getRelevantPeople); // /v1/people
-    peopleRouter.get('/search', peopleController.searchPeople);
     peopleRouter.get('/find', peopleController.findPeople);
     peopleRouter.get('/:id', peopleController.getPersonById); // /v1/people/:id
     v1.use('/people', peopleRouter);
@@ -175,6 +179,35 @@ function registerRoutes(router) {
     // TODO: Apply rate limiting
     logRouter.post('/clear', placeholderRateLimit, logController.clearLogEntries); // /v1/logs/clear
     v1.use('/logs', logRouter); // Mounted at /v1/logs
+
+    // --- Device Authentication Router --- (OAuth2 Device Flow)
+    const deviceAuthRouter = express.Router();
+    // Apply controller logger middleware
+    deviceAuthRouter.use(controllerLogger());
+    
+    // Device flow endpoints - no authentication required for registration and polling
+    deviceAuthRouter.post('/register', deviceAuthController.registerDevice); // /api/auth/device/register
+    deviceAuthRouter.post('/authorize', deviceAuthController.authorizeDevice); // /api/auth/device/authorize  
+    deviceAuthRouter.post('/token', deviceAuthController.pollForToken); // /api/auth/device/token
+    deviceAuthRouter.post('/refresh', deviceAuthController.refreshToken); // /api/auth/device/refresh
+    
+    // MCP token generation - requires authentication
+    deviceAuthRouter.post('/generate-mcp-token', requireAuth, deviceAuthController.generateMcpToken); // /api/auth/device/generate-mcp-token
+    
+    // Mount device auth routes at /auth/device (since router is already mounted at /api)
+    router.use('/auth/device', deviceAuthRouter);
+    
+    // OAuth2 Resource Server Discovery endpoint
+    router.get('/.well-known/oauth-protected-resource', deviceAuthController.getResourceServerInfo);
+
+    // --- Adapter Router --- 
+    const adapterRouter = express.Router();
+    // Apply controller logger middleware
+    adapterRouter.use(controllerLogger());
+    adapterRouter.get('/download/:deviceId', adapterController.downloadAdapter); // /adapter/download/:deviceId
+    adapterRouter.get('/package/:deviceId', adapterController.downloadPackageJson); // /adapter/package/:deviceId
+    adapterRouter.get('/setup/:deviceId', adapterController.downloadSetupInstructions); // /adapter/setup/:deviceId
+    router.use('/adapter', adapterRouter);
 
     // Debug routes (development only)
     if (process.env.NODE_ENV === 'development') {

@@ -36,11 +36,40 @@ const monitoringService = require('./src/core/monitoring-service.cjs');
 const errorService = require('./src/core/error-service.cjs');
 const createToolsService = require('./src/core/tools-service.cjs');
 
-// API configuration
+// Remote server configuration
+const MCP_SERVER_URL = process.env.MCP_SERVER_URL || 'http://localhost:3000';
 const API_HOST = process.env.API_HOST || 'localhost';
 const API_PORT = process.env.API_PORT || 3000;
 const API_BASE_PATH = process.env.API_BASE_PATH || '/api';
 const API_TIMEOUT = process.env.API_TIMEOUT || 30000; // 30 seconds
+
+// Simple bearer token mode (if MCP_BEARER_TOKEN is provided)
+const MCP_BEARER_TOKEN = process.env.MCP_BEARER_TOKEN;
+const SIMPLE_MODE = !!MCP_BEARER_TOKEN;
+
+// OAuth 2.0 and device credential configuration
+const OAUTH_DISCOVERY_PATH = '/.well-known/oauth-protected-resource';
+const DEVICE_REGISTRATION_PATH = '/api/auth/device/register';
+const DEVICE_TOKEN_PATH = '/api/auth/device/token';
+
+// Device credential storage
+let deviceCredentials = {
+    deviceId: SIMPLE_MODE ? 'simple-bearer-token' : null,
+    deviceSecret: null,
+    accessToken: SIMPLE_MODE ? MCP_BEARER_TOKEN : null,
+    refreshToken: null,
+    tokenExpiry: SIMPLE_MODE ? Date.now() + (24 * 60 * 60 * 1000) : null, // 24 hours from now
+    serverUrl: MCP_SERVER_URL
+};
+
+// OAuth 2.0 discovery cache
+let oauthDiscovery = {
+    discovered: false,
+    authorizationEndpoint: null,
+    tokenEndpoint: null,
+    deviceAuthorizationEndpoint: null,
+    lastDiscovery: null
+};
 
 // MCP adapters should not attempt to write to files directly as they may not have permissions
 // All file logging should be handled by the backend via the monitoring service
@@ -109,15 +138,12 @@ const toolsService = createToolsService({
     }
 });
 
-// Helper: Initialize the adapter and check backend availability
-let healthCheckInterval = null; // Keep track of the interval timer
-const HEALTH_CHECK_INTERVAL_MS = 60 * 1000; // Check every 60 seconds
-
 /**
  * Call the API server
  * @param {string} method - HTTP method (GET, POST, PUT, PATCH, DELETE)
  * @param {string} path - API path (e.g., '/v1/mail')
  * @param {object} data - Request data for POST requests
+ * @param {number} _retryCount - Current retry count (internal use)
  * @returns {Promise<object>} - API response
  */
 // TODO: [callApi] Implement circuit breaker pattern (e.g., using 'opossum') (HIGH)
@@ -129,9 +155,31 @@ const HEALTH_CHECK_INTERVAL_MS = 60 * 1000; // Check every 60 seconds
  * @param {string} method - HTTP method (GET, POST, PUT, PATCH, DELETE)
  * @param {string} path - API path to call
  * @param {Object} data - Optional data to send in the request body
+ * @param {number} _retryCount - Current retry count (internal use)
  * @returns {Promise<Object>} - Parsed response data
  */
-async function callApi(method, path, data = null) {
+async function callApi(method, path, data = null, _retryCount = 0) {
+    // Prevent infinite authentication retry loops
+    const MAX_AUTH_RETRIES = 1;
+    
+    // Ensure we have a valid token before making API calls (except for health checks)
+    if (path !== '/health' && !_retryCount) {
+        try {
+            const hasValidToken = await ensureValidToken();
+            if (!hasValidToken) {
+                // Try to authenticate if we don't have a valid token
+                const authSuccess = await authenticateDevice();
+                if (!authSuccess) {
+                    // Continue without authentication for non-critical calls
+                    process.stderr.write('⚠️  Warning: No valid authentication token available.\n');
+                }
+            }
+        } catch (authError) {
+            // Continue without authentication for non-critical calls
+            process.stderr.write('⚠️  Warning: Token validation failed, continuing without authentication.\n');
+        }
+    }
+
     // Retry configuration
     const MAX_RETRIES = 3;
     const BASE_DELAY_MS = 100;
@@ -148,9 +196,14 @@ async function callApi(method, path, data = null) {
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
             return await new Promise((resolve, reject) => {
+                // Parse the server URL to support both localhost and remote servers
+                const serverUrl = new URL(MCP_SERVER_URL);
+                const isHttps = serverUrl.protocol === 'https:';
+                const httpModule = isHttps ? https : http;
+                
                 const options = {
-                    hostname: API_HOST,
-                    port: API_PORT,
+                    hostname: serverUrl.hostname,
+                    port: serverUrl.port || (isHttps ? 443 : 80),
                     path: `${API_BASE_PATH}${path}`,
                     method: method,
                     headers: {
@@ -161,17 +214,51 @@ async function callApi(method, path, data = null) {
                     timeout: API_TIMEOUT
                 };
 
+                // Add authorization header if we have an access token
+                if (deviceCredentials.accessToken) {
+                    options.headers['Authorization'] = `Bearer ${deviceCredentials.accessToken}`;
+                }
+
                 const requestBody = data ? JSON.stringify(data) : null;
 
                 if (requestBody && ['POST', 'PUT', 'PATCH'].includes(method.toUpperCase())) {
                     options.headers['Content-Length'] = Buffer.byteLength(requestBody);
                 }
 
-                const req = http.request(options, (res) => {
+                const req = httpModule.request(options, (res) => {
                     let responseData = '';
                     res.on('data', (chunk) => { responseData += chunk; });
-                    res.on('end', () => {
+                    res.on('end', async () => {
                         try {
+                            // Handle 401 Unauthorized responses with automatic re-authentication
+                            if (res.statusCode === 401 && _retryCount < MAX_AUTH_RETRIES) {
+                                try {
+                                    // Clear current token and attempt re-authentication
+                                    deviceCredentials.accessToken = null;
+                                    deviceCredentials.tokenExpiry = null;
+                                    
+                                    // Try to re-authenticate
+                                    const authSuccess = await authenticateDevice();
+                                    if (authSuccess) {
+                                        // Retry the original request with new token
+                                        try {
+                                            const retryResult = await callApi(method, path, data, _retryCount + 1);
+                                            return resolve(retryResult);
+                                        } catch (retryError) {
+                                            return reject(retryError);
+                                        }
+                                    } else {
+                                        const authErr = new Error('Authentication failed after 401 response');
+                                        authErr.statusCode = 401;
+                                        return reject(authErr);
+                                    }
+                                } catch (authError) {
+                                    const err = new Error(`Authentication error after 401: ${authError.message}`);
+                                    err.statusCode = 401;
+                                    return reject(err);
+                                }
+                            }
+
                             if (!responseData) {
                                 if (res.statusCode >= 200 && res.statusCode < 300) {
                                     return resolve({});
@@ -254,6 +341,81 @@ async function callApi(method, path, data = null) {
     throw lastError || new Error(`callApi failed after ${MAX_RETRIES} retries: ${path}`);
 }
 
+/**
+ * Discover OAuth 2.0 endpoints from the server
+ * @returns {Promise<boolean>} - True if discovery was successful
+ */
+async function discoverOAuthEndpoints() {
+    try {
+        // Check if discovery is still valid (cache for 1 hour)
+        const now = Date.now();
+        if (oauthDiscovery.discovered && oauthDiscovery.lastDiscovery && 
+            (now - oauthDiscovery.lastDiscovery) < 3600000) {
+            return true;
+        }
+
+        // Parse the server URL for discovery
+        const serverUrl = new URL(MCP_SERVER_URL);
+        const isHttps = serverUrl.protocol === 'https:';
+        const httpModule = isHttps ? https : http;
+        
+        const discoveryOptions = {
+            hostname: serverUrl.hostname,
+            port: serverUrl.port || (isHttps ? 443 : 80),
+            path: OAUTH_DISCOVERY_PATH,
+            method: 'GET',
+            headers: {
+                'Accept': 'application/json'
+            },
+            timeout: 10000 // 10 second timeout for discovery
+        };
+
+        const discoveryData = await new Promise((resolve, reject) => {
+            const req = httpModule.request(discoveryOptions, (res) => {
+                let responseData = '';
+                res.on('data', (chunk) => { responseData += chunk; });
+                res.on('end', () => {
+                    try {
+                        if (res.statusCode >= 200 && res.statusCode < 300) {
+                            const parsedData = JSON.parse(responseData);
+                            resolve(parsedData);
+                        } else {
+                            reject(new Error(`Discovery failed: ${res.statusCode}`));
+                        }
+                    } catch (parseError) {
+                        reject(new Error(`Failed to parse discovery response: ${parseError.message}`));
+                    }
+                });
+            });
+
+            req.on('error', (error) => {
+                reject(new Error(`Discovery request error: ${error.message}`));
+            });
+
+            req.on('timeout', () => {
+                req.destroy();
+                reject(new Error('Discovery request timed out'));
+            });
+
+            req.end();
+        });
+
+        // Update discovery cache
+        oauthDiscovery.discovered = true;
+        oauthDiscovery.authorizationEndpoint = discoveryData.authorization_endpoint;
+        oauthDiscovery.tokenEndpoint = discoveryData.token_endpoint;
+        oauthDiscovery.deviceAuthorizationEndpoint = discoveryData.device_authorization_endpoint;
+        oauthDiscovery.lastDiscovery = now;
+
+        return true;
+    } catch (error) {
+        // Discovery failed - reset cache
+        oauthDiscovery.discovered = false;
+        oauthDiscovery.lastDiscovery = null;
+        return false;
+    }
+}
+
 // Helper: Completely silent for MCP protocol compliance
 function logDebug(message, ...args) {
     // MCP requires absolute silence - no logging at all
@@ -315,6 +477,9 @@ function sendResponse(id, result, error) {
 }
 
 // Helper: Initialize the adapter and check backend availability
+let healthCheckInterval = null; // Keep track of the interval timer
+const HEALTH_CHECK_INTERVAL_MS = 60 * 1000; // Check every 60 seconds
+
 async function initializeAdapter() {
     if (adapterState.initialized) {
         return adapterState.backendAvailable;
@@ -329,6 +494,27 @@ async function initializeAdapter() {
         } else {
             adapterState.backendAvailable = true;
             adapterState.initialized = true;
+
+            // Perform OAuth 2.0 discovery
+            await discoverOAuthEndpoints();
+
+            // Initialize token management system
+            initializeTokenManagement();
+
+            // Perform device authentication
+            try {
+                const authSuccess = await authenticateDevice();
+                if (authSuccess) {
+                    // Start token refresh scheduler after successful authentication
+                    startTokenRefreshScheduler();
+                    process.stderr.write('✅ Authentication completed and token management started\n');
+                } else {
+                    process.stderr.write('⚠️  Warning: Authentication failed. Some features may not be available.\n');
+                }
+            } catch (authError) {
+                process.stderr.write('⚠️  Warning: Authentication error occurred. Continuing without authentication.\n');
+                // Continue adapter initialization even if authentication fails
+            }
 
             // Start periodic health checks only if initial check was successful
             if (!healthCheckInterval) {
@@ -945,17 +1131,29 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 
                 break;
             case 'calendar.acceptEvent':
-                apiPath = `/v1/calendar/events/${params.eventId}/accept`;
+                const acceptEventId = params.eventId || params.id;
+                if (!acceptEventId) {
+                    throw new Error('Event ID is required for acceptEvent (either eventId or id parameter)');
+                }
+                apiPath = `/v1/calendar/events/${acceptEventId}/accept`;
                 apiMethod = 'POST';
                 apiData = params.comment ? { comment: params.comment } : {};
                 break;
             case 'calendar.tentativelyAcceptEvent':
-                apiPath = `/v1/calendar/events/${params.eventId}/tentativelyAccept`;
+                const tentativeEventId = params.eventId || params.id;
+                if (!tentativeEventId) {
+                    throw new Error('Event ID is required for tentativelyAcceptEvent (either eventId or id parameter)');
+                }
+                apiPath = `/v1/calendar/events/${tentativeEventId}/tentativelyAccept`;
                 apiMethod = 'POST';
                 apiData = params.comment ? { comment: params.comment } : {};
                 break;
             case 'calendar.declineEvent':
-                apiPath = `/v1/calendar/events/${params.eventId}/decline`;
+                const declineEventId = params.eventId || params.id;
+                if (!declineEventId) {
+                    throw new Error('Event ID is required for declineEvent (either eventId or id parameter)');
+                }
+                apiPath = `/v1/calendar/events/${declineEventId}/decline`;
                 apiMethod = 'POST';
                 apiData = params.comment ? { comment: params.comment } : {};
                 break;
@@ -1257,7 +1455,7 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
             case 'calendar.tentativelyAcceptEvent':
             case 'calendar.tentative':
                 if (!transformedParams.eventId) {
-                    throw new Error('Event ID is required for tentatively accepting an event');
+                    throw new Error('Event ID is required for tentatively accepting an event')
                 }
                 
                 apiPath = `/v1/calendar/events/${transformedParams.eventId}/tentativelyAccept`;
@@ -1277,7 +1475,7 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
             case 'calendar.declineEvent':
             case 'calendar.decline':
                 if (!transformedParams.eventId) {
-                    throw new Error('Event ID is required for declining an event');
+                    throw new Error('Event ID is required for declining an event')
                 }
                 
                 apiPath = `/v1/calendar/events/${transformedParams.eventId}/decline`;
@@ -1297,7 +1495,7 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
             case 'calendar.cancelEvent':
             case 'calendar.cancel':
                 if (!transformedParams.eventId) {
-                    throw new Error('Event ID is required for canceling an event');
+                    throw new Error('Event ID is required for canceling an event')
                 }
                 
                 apiPath = `/v1/calendar/events/${transformedParams.eventId}/cancel`;
@@ -1316,7 +1514,7 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 
             case 'calendar.addAttachment':
                 if (!transformedParams.id) {
-                    throw new Error('Event ID is required for adding attachment');
+                    throw new Error('Event ID is required for adding attachment')
                 }
                 apiPath = `/v1/calendar/events/${transformedParams.id}/attachments`;
                 apiMethod = 'POST';
@@ -1329,10 +1527,10 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 break;
             case 'calendar.removeAttachment':
                 if (!transformedParams.eventId) {
-                    throw new Error('Event ID is required for removing attachment');
+                    throw new Error('Event ID is required for removing attachment')
                 }
                 if (!transformedParams.attachmentId) {
-                    throw new Error('Attachment ID is required for removing attachment');
+                    throw new Error('Attachment ID is required for removing attachment')
                 }
                 apiPath = `/v1/calendar/events/${transformedParams.eventId}/attachments/${transformedParams.attachmentId}`;
                 apiMethod = 'DELETE';
@@ -1425,6 +1623,9 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 }
                 break;
             case 'people.getPersonById':
+                if (!params.id) {
+                    throw new Error('Person ID is required for getPersonById');
+                }
                 apiPath = `/v1/people/${params.id}`;
                 apiMethod = 'GET';
                 break;
@@ -1683,7 +1884,7 @@ async function handleRequest(msg) {
                         manifest: true
                     },
                     serverInfo: {
-                        name: "MCP Microsoft 365 Gateway",
+                        name: "MCP Microsoft Office Adapter",
                         version: "1.0.0"
                     }
                 };
@@ -1963,3 +2164,706 @@ process.on('SIGTERM', () => {
 
 // Run initialization (proxy approach)
 initialize();
+
+/**
+ * Register a new device with the MCP server
+ * @returns {Promise<Object>} - Device registration response with user code and verification URI
+ */
+async function registerDevice() {
+    const MAX_REGISTRATION_RETRIES = 3;
+    const REGISTRATION_TIMEOUT_MS = 30000; // 30 seconds
+    
+    for (let attempt = 1; attempt <= MAX_REGISTRATION_RETRIES; attempt++) {
+        try {
+            // Log registration attempt
+            if (attempt > 1) {
+                process.stderr.write(`🔄 Device registration attempt ${attempt}/${MAX_REGISTRATION_RETRIES}...\n`);
+            }
+            
+            // Ensure OAuth discovery has been performed
+            if (!oauthDiscovery.discovered) {
+                const discoverySuccess = await discoverOAuthEndpoints();
+                if (!discoverySuccess) {
+                    throw new Error('OAuth discovery failed - cannot register device');
+                }
+            }
+
+            // Create a timeout promise for the registration request
+            const timeoutPromise = new Promise((_, reject) => {
+                setTimeout(() => reject(new Error('Device registration timed out')), REGISTRATION_TIMEOUT_MS);
+            });
+
+            // Call the device registration endpoint with timeout
+            const registrationPromise = callApi('POST', DEVICE_REGISTRATION_PATH, {
+                client_info: {
+                    name: 'MCP Microsoft Office Adapter',
+                    version: '1.0.0',
+                    platform: process.platform,
+                    arch: process.arch
+                }
+            });
+
+            const registrationData = await Promise.race([registrationPromise, timeoutPromise]);
+
+            if (!registrationData || !registrationData.device_code) {
+                throw new Error('Invalid device registration response - missing device_code');
+            }
+
+            if (!registrationData.user_code || !registrationData.verification_uri) {
+                throw new Error('Invalid device registration response - missing user_code or verification_uri');
+            }
+
+            // Store device credentials
+            deviceCredentials.deviceId = registrationData.device_id;
+            deviceCredentials.deviceSecret = registrationData.device_secret;
+            
+            // Log successful registration
+            process.stderr.write('✅ Device registration successful\n');
+            
+            return {
+                deviceCode: registrationData.device_code,
+                userCode: registrationData.user_code,
+                verificationUri: registrationData.verification_uri,
+                verificationUriComplete: registrationData.verification_uri_complete,
+                expiresIn: registrationData.expires_in,
+                interval: registrationData.interval || 5
+            };
+        } catch (error) {
+            const isLastAttempt = attempt === MAX_REGISTRATION_RETRIES;
+            
+            // Categorize error types for better handling
+            if (error.message.includes('timeout') || error.message.includes('TIMEOUT')) {
+                process.stderr.write(`⚠️  Registration timeout on attempt ${attempt}\n`);
+            } else if (error.message.includes('ECONNREFUSED') || error.message.includes('ENOTFOUND')) {
+                process.stderr.write(`⚠️  Network connection failed on attempt ${attempt}\n`);
+            } else if (error.message.includes('OAuth discovery failed')) {
+                process.stderr.write(`⚠️  OAuth discovery failed on attempt ${attempt}\n`);
+            } else {
+                process.stderr.write(`⚠️  Registration error on attempt ${attempt}: ${error.message}\n`);
+            }
+            
+            if (isLastAttempt) {
+                // Final attempt failed - provide detailed error
+                if (error.message.includes('ECONNREFUSED') || error.message.includes('ENOTFOUND')) {
+                    throw new Error('Device registration failed: Unable to connect to MCP server. Please check your network connection and server URL.');
+                } else if (error.message.includes('timeout')) {
+                    throw new Error('Device registration failed: Request timed out. The MCP server may be overloaded or unreachable.');
+                } else {
+                    throw new Error(`Device registration failed after ${MAX_REGISTRATION_RETRIES} attempts: ${error.message}`);
+                }
+            }
+            
+            // Wait before retrying (exponential backoff)
+            const backoffDelay = 1000 * Math.pow(2, attempt - 1); // 1s, 2s, 4s
+            await new Promise(resolve => setTimeout(resolve, backoffDelay));
+        }
+    }
+}
+
+/**
+ * Display user code and verification instructions to the user
+ * @param {Object} deviceInfo - Device registration information
+ */
+function displayUserCode(deviceInfo) {
+    // Use stderr for user-facing messages (not stdout which is reserved for JSON-RPC)
+    process.stderr.write('\n=== MCP Microsoft Office Authentication Required ===\n');
+    process.stderr.write('To authenticate this MCP adapter with the Microsoft Office server:\n\n');
+    process.stderr.write(`1. Open your web browser and go to: ${deviceInfo.verificationUri}\n`);
+    process.stderr.write(`2. Enter this code: ${deviceInfo.userCode}\n`);
+    process.stderr.write(`3. Follow the instructions to sign in with your Microsoft account\n\n`);
+    
+    if (deviceInfo.verificationUriComplete) {
+        process.stderr.write(`Or use this direct link: ${deviceInfo.verificationUriComplete}\n\n`);
+    }
+    
+    process.stderr.write('Waiting for authentication...\n');
+    process.stderr.write('(This adapter will automatically continue once you complete authentication)\n\n');
+}
+
+/**
+ * Poll for access tokens after user authorization
+ * @param {string} deviceCode - Device code from registration
+ * @param {number} interval - Polling interval in seconds
+ * @param {number} expiresIn - Device code expiration time in seconds
+ * @returns {Promise<Object>} - Token response with access and refresh tokens
+ */
+async function pollForTokens(deviceCode, interval = 5, expiresIn = 600) {
+    const POLL_TIMEOUT_MS = 15000; // 15 seconds per poll request
+    const MAX_CONSECUTIVE_ERRORS = 5;
+    
+    let consecutiveErrors = 0;
+    let pollCount = 0;
+    
+    const startTime = Date.now();
+    const expirationTime = startTime + (expiresIn * 1000);
+    
+    process.stderr.write('🔄 Waiting for user authorization...\n');
+    
+    while (Date.now() < expirationTime) {
+        pollCount++;
+        
+        try {
+            // Create a timeout promise for each poll request
+            const timeoutPromise = new Promise((_, reject) => {
+                setTimeout(() => reject(new Error('Poll request timed out')), POLL_TIMEOUT_MS);
+            });
+
+            // Poll the token endpoint with timeout
+            const tokenPromise = callApi('POST', DEVICE_TOKEN_PATH, {
+                grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+                device_code: deviceCode,
+                client_id: deviceCredentials.deviceId
+            });
+
+            const tokenData = await Promise.race([tokenPromise, timeoutPromise]);
+
+            if (tokenData && tokenData.access_token) {
+                // Store tokens
+                deviceCredentials.accessToken = tokenData.access_token;
+                deviceCredentials.refreshToken = tokenData.refresh_token;
+                deviceCredentials.tokenExpiry = Date.now() + (tokenData.expires_in * 1000);
+                
+                // Update refresh token if provided
+                if (tokenData.refresh_token) {
+                    deviceCredentials.refreshToken = tokenData.refresh_token;
+                }
+                
+                process.stderr.write('✅ Authentication successful!\n\n');
+                return tokenData;
+            }
+            
+            // Reset consecutive error count on successful request
+            consecutiveErrors = 0;
+            
+        } catch (error) {
+            consecutiveErrors++;
+            
+            // Handle specific OAuth errors
+            if (error.message.includes('authorization_pending')) {
+                // User hasn't completed authorization yet - continue polling
+                // Log progress every 10 polls to show we're still waiting
+                if (pollCount % 10 === 0) {
+                    const remainingTime = Math.ceil((expirationTime - Date.now()) / 1000);
+                    process.stderr.write(`⏳ Still waiting for authorization... (${remainingTime}s remaining)\n`);
+                }
+            } else if (error.message.includes('slow_down')) {
+                // Server requested slower polling - increase interval
+                const oldInterval = interval;
+                interval = Math.min(interval * 2, 30); // Cap at 30 seconds
+                process.stderr.write(`⚠️  Server requested slower polling. Increasing interval from ${oldInterval}s to ${interval}s\n`);
+            } else if (error.message.includes('expired_token')) {
+                throw new Error('Device code expired. Please restart the authentication process.');
+            } else if (error.message.includes('access_denied')) {
+                throw new Error('Authentication was denied by the user.');
+            } else if (error.message.includes('Poll request timed out')) {
+                process.stderr.write(`⚠️  Poll request ${pollCount} timed out\n`);
+            } else if (error.message.includes('ECONNREFUSED') || error.message.includes('ENOTFOUND')) {
+                process.stderr.write(`⚠️  Network connection failed during poll ${pollCount}\n`);
+            } else {
+                // Other error - log it but continue polling
+                process.stderr.write(`⚠️  Poll error ${pollCount}: ${error.message}\n`);
+            }
+            
+            // If we have too many consecutive errors, fail fast
+            if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                if (error.message.includes('ECONNREFUSED') || error.message.includes('ENOTFOUND')) {
+                    throw new Error(`Authentication failed: Lost connection to MCP server after ${MAX_CONSECUTIVE_ERRORS} consecutive network errors.`);
+                } else if (error.message.includes('timeout')) {
+                    throw new Error(`Authentication failed: Server not responding after ${MAX_CONSECUTIVE_ERRORS} consecutive timeouts.`);
+                } else {
+                    throw new Error(`Authentication failed: Too many consecutive errors (${MAX_CONSECUTIVE_ERRORS}). Last error: ${error.message}`);
+                }
+            }
+            
+            // Wait for the specified interval before next poll
+            await new Promise(resolve => setTimeout(resolve, interval * 1000));
+        }
+    }
+
+    throw new Error('Authentication timed out. Please restart the authentication process.');
+}
+
+/**
+ * Refresh the access token using the refresh token
+ * @returns {Promise<boolean>} - True if refresh was successful
+ */
+async function refreshAccessToken() {
+    const REFRESH_TIMEOUT_MS = 15000; // 15 seconds
+    const MAX_REFRESH_RETRIES = 2;
+    
+    for (let attempt = 1; attempt <= MAX_REFRESH_RETRIES; attempt++) {
+        try {
+            if (!deviceCredentials.refreshToken) {
+                process.stderr.write('⚠️  No refresh token available for token refresh\n');
+                return false;
+            }
+
+            if (attempt > 1) {
+                process.stderr.write(`🔄 Token refresh attempt ${attempt}/${MAX_REFRESH_RETRIES}...\n`);
+            }
+
+            // Create a timeout promise for the refresh request
+            const timeoutPromise = new Promise((_, reject) => {
+                setTimeout(() => reject(new Error('Token refresh timed out')), REFRESH_TIMEOUT_MS);
+            });
+
+            const refreshPromise = callApi('POST', DEVICE_TOKEN_PATH, {
+                grant_type: 'refresh_token',
+                refresh_token: deviceCredentials.refreshToken,
+                client_id: deviceCredentials.deviceId
+            });
+
+            const tokenData = await Promise.race([refreshPromise, timeoutPromise]);
+
+            if (tokenData && tokenData.access_token) {
+                deviceCredentials.accessToken = tokenData.access_token;
+                deviceCredentials.tokenExpiry = Date.now() + (tokenData.expires_in * 1000);
+                
+                // Update refresh token if provided
+                if (tokenData.refresh_token) {
+                    deviceCredentials.refreshToken = tokenData.refresh_token;
+                }
+                
+                process.stderr.write('✅ Token refresh successful\n');
+                return true;
+            } else {
+                process.stderr.write('⚠️  Token refresh returned invalid response\n');
+            }
+            
+        } catch (error) {
+            const isLastAttempt = attempt === MAX_REFRESH_RETRIES;
+            
+            // Categorize error types for better handling
+            if (error.message.includes('invalid_grant') || error.message.includes('invalid_token')) {
+                // Refresh token is invalid or expired - clear all tokens
+                process.stderr.write('⚠️  Refresh token expired or invalid - will require re-authentication\n');
+                deviceCredentials.accessToken = null;
+                deviceCredentials.refreshToken = null;
+                deviceCredentials.tokenExpiry = null;
+                return false;
+            } else if (error.message.includes('timeout') || error.message.includes('TIMEOUT')) {
+                process.stderr.write(`⚠️  Token refresh timeout on attempt ${attempt}\n`);
+            } else if (error.message.includes('ECONNREFUSED') || error.message.includes('ENOTFOUND')) {
+                process.stderr.write(`⚠️  Network connection failed during token refresh attempt ${attempt}\n`);
+            } else {
+                process.stderr.write(`⚠️  Token refresh error on attempt ${attempt}: ${error.message}\n`);
+            }
+            
+            if (isLastAttempt) {
+                // Final attempt failed - clear tokens to force re-authentication
+                process.stderr.write('❌ Token refresh failed - clearing tokens to force re-authentication\n');
+                deviceCredentials.accessToken = null;
+                deviceCredentials.refreshToken = null;
+                deviceCredentials.tokenExpiry = null;
+                return false;
+            }
+            
+            // Wait before retrying
+            const backoffDelay = 2000 * attempt; // 2s, 4s
+            await new Promise(resolve => setTimeout(resolve, backoffDelay));
+        }
+    }
+    
+    return false;
+}
+
+/**
+ * Check if the current access token is valid and refresh if needed
+ * @returns {Promise<boolean>} - True if we have a valid access token
+ */
+async function ensureValidToken() {
+    const TOKEN_REFRESH_BUFFER_MS = 10 * 60 * 1000; // 10 minutes before expiry
+    const TOKEN_MINIMUM_VALIDITY_MS = 2 * 60 * 1000; // 2 minutes minimum validity
+    
+    try {
+        // Check if we have basic token information
+        if (!deviceCredentials.accessToken || !deviceCredentials.tokenExpiry) {
+            // Clear any partial token data to ensure clean state
+            clearTokenCredentials();
+            return false;
+        }
+        
+        const now = Date.now();
+        const timeUntilExpiry = deviceCredentials.tokenExpiry - now;
+        
+        // Check if token is already expired
+        if (timeUntilExpiry <= 0) {
+            process.stderr.write('⚠️  Access token has expired\n');
+            
+            // Try to refresh if we have a refresh token
+            if (deviceCredentials.refreshToken) {
+                const refreshSuccess = await refreshAccessToken();
+                if (refreshSuccess) {
+                    return true;
+                } else {
+                    // Refresh failed - clear all tokens
+                    clearTokenCredentials();
+                    return false;
+                }
+            } else {
+                // No refresh token - clear credentials and require re-authentication
+                clearTokenCredentials();
+                return false;
+            }
+        }
+        
+        // Check if token needs proactive refresh (expires within buffer time)
+        if (timeUntilExpiry <= TOKEN_REFRESH_BUFFER_MS) {
+            process.stderr.write(`🔄 Access token expires in ${Math.ceil(timeUntilExpiry / 60000)} minutes, attempting refresh...\n`);
+            
+            // Try to refresh the token proactively
+            if (deviceCredentials.refreshToken) {
+                const refreshSuccess = await refreshAccessToken();
+                if (refreshSuccess) {
+                    return true;
+                } else {
+                    // Refresh failed but token is still valid for a bit
+                    if (timeUntilExpiry > TOKEN_MINIMUM_VALIDITY_MS) {
+                        process.stderr.write('⚠️  Token refresh failed, but current token is still valid\n');
+                        return true; // Use current token for now
+                    } else {
+                        // Token expires too soon and refresh failed
+                        clearTokenCredentials();
+                        return false;
+                    }
+                }
+            } else {
+                // No refresh token but current token is still valid
+                if (timeUntilExpiry > TOKEN_MINIMUM_VALIDITY_MS) {
+                    process.stderr.write('⚠️  No refresh token available, using current token\n');
+                    return true;
+                } else {
+                    clearTokenCredentials();
+                    return false;
+                }
+            }
+        }
+        
+        // Token is valid and doesn't need refresh yet
+        return true;
+        
+    } catch (error) {
+        process.stderr.write(`⚠️  Error during token validation: ${error.message}\n`);
+        
+        // On any error, clear tokens to ensure clean state
+        clearTokenCredentials();
+        return false;
+    }
+}
+
+/**
+ * Securely clear all token credentials from memory
+ */
+function clearTokenCredentials() {
+    // Overwrite sensitive data before clearing (basic security measure)
+    if (deviceCredentials.accessToken) {
+        deviceCredentials.accessToken = null;
+    }
+    if (deviceCredentials.refreshToken) {
+        deviceCredentials.refreshToken = null;
+    }
+    
+    // Clear all token-related fields
+    deviceCredentials.accessToken = null;
+    deviceCredentials.refreshToken = null;
+    deviceCredentials.tokenExpiry = null;
+    
+    // Note: Keep deviceId and deviceSecret as they're needed for re-authentication
+    // deviceCredentials.deviceId and deviceCredentials.deviceSecret remain intact
+}
+
+/**
+ * Get token status information for debugging/monitoring
+ * @returns {Object} - Token status information (no sensitive data)
+ */
+function getTokenStatus() {
+    const now = Date.now();
+    const hasAccessToken = !!deviceCredentials.accessToken;
+    const hasRefreshToken = !!deviceCredentials.refreshToken;
+    const hasDeviceCredentials = !!(deviceCredentials.deviceId && deviceCredentials.deviceSecret);
+    
+    let timeUntilExpiry = null;
+    let isExpired = null;
+    let needsRefresh = null;
+    
+    if (deviceCredentials.tokenExpiry) {
+        timeUntilExpiry = deviceCredentials.tokenExpiry - now;
+        isExpired = timeUntilExpiry <= 0;
+        needsRefresh = timeUntilExpiry <= (10 * 60 * 1000); // 10 minutes
+    }
+    
+    return {
+        hasAccessToken,
+        hasRefreshToken,
+        hasDeviceCredentials,
+        isExpired,
+        needsRefresh,
+        timeUntilExpiryMs: timeUntilExpiry,
+        timeUntilExpiryMinutes: timeUntilExpiry ? Math.ceil(timeUntilExpiry / 60000) : null
+    };
+}
+
+/**
+ * Token refresh scheduler to proactively refresh tokens
+ */
+let tokenRefreshInterval = null;
+
+/**
+ * Start the token refresh scheduler
+ */
+function startTokenRefreshScheduler() {
+    // Clear any existing interval
+    if (tokenRefreshInterval) {
+        clearInterval(tokenRefreshInterval);
+    }
+    
+    // Check token status every 5 minutes
+    const CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+    
+    tokenRefreshInterval = setInterval(async () => {
+        try {
+            const tokenStatus = getTokenStatus();
+            
+            // Only attempt refresh if we have tokens and they need refreshing
+            if (tokenStatus.hasAccessToken && tokenStatus.needsRefresh && !tokenStatus.isExpired) {
+                process.stderr.write('🔄 Scheduled token refresh triggered\n');
+                await ensureValidToken();
+            }
+            
+            // Clear expired tokens that couldn't be refreshed
+            if (tokenStatus.isExpired && tokenStatus.hasAccessToken) {
+                process.stderr.write('⚠️  Clearing expired tokens from scheduler\n');
+                clearTokenCredentials();
+            }
+            
+        } catch (error) {
+            // Silent error handling for scheduler - don't spam logs
+            // Only log if it's a critical issue
+            if (error.message.includes('ECONNREFUSED') || error.message.includes('ENOTFOUND')) {
+                process.stderr.write('⚠️  Token refresh scheduler: Connection to server lost\n');
+            }
+        }
+    }, CHECK_INTERVAL_MS);
+}
+
+/**
+ * Stop the token refresh scheduler
+ */
+function stopTokenRefreshScheduler() {
+    if (tokenRefreshInterval) {
+        clearInterval(tokenRefreshInterval);
+        tokenRefreshInterval = null;
+    }
+}
+
+/**
+ * Perform complete device authentication flow
+ * @returns {Promise<boolean>} - True if authentication was successful
+ */
+async function authenticateDevice() {
+    // In simple mode, we already have the bearer token - no OAuth flow needed
+    if (SIMPLE_MODE) {
+        process.stderr.write('✅ Using bearer token authentication (simple mode)\n');
+        return true;
+    }
+    
+    const MAX_AUTH_ATTEMPTS = 2;
+    
+    for (let attempt = 1; attempt <= MAX_AUTH_ATTEMPTS; attempt++) {
+        try {
+            // Check if we already have a valid token
+            const hasValidToken = await ensureValidToken();
+            if (hasValidToken) {
+                process.stderr.write('✅ Using existing valid authentication token\n');
+                return true;
+            }
+
+            if (attempt > 1) {
+                process.stderr.write(`\n🔄 Authentication attempt ${attempt}/${MAX_AUTH_ATTEMPTS}...\n`);
+            }
+
+            // Register the device
+            const deviceInfo = await registerDevice();
+            
+            // Display user code to user
+            displayUserCode(deviceInfo);
+            
+            // Poll for tokens
+            await pollForTokens(deviceInfo.deviceCode, deviceInfo.interval, deviceInfo.expiresIn);
+            
+            process.stderr.write('🎉 Device authentication completed successfully!\n\n');
+            return true;
+            
+        } catch (error) {
+            const isLastAttempt = attempt === MAX_AUTH_ATTEMPTS;
+            
+            // Categorize authentication errors for better user feedback
+            if (error.message.includes('Unable to connect to MCP server') || 
+                error.message.includes('ECONNREFUSED') || 
+                error.message.includes('ENOTFOUND')) {
+                
+                process.stderr.write(`❌ Authentication failed (attempt ${attempt}): Cannot connect to MCP server\n`);
+                process.stderr.write(`   Please check your network connection and server URL: ${MCP_SERVER_URL}\n`);
+                
+                if (isLastAttempt) {
+                    process.stderr.write('   The adapter will continue without authentication (limited functionality)\n\n');
+                }
+                
+            } else if (error.message.includes('OAuth discovery failed')) {
+                process.stderr.write(`❌ Authentication failed (attempt ${attempt}): Server does not support OAuth authentication\n`);
+                
+                if (isLastAttempt) {
+                    process.stderr.write('   The adapter will continue without authentication (limited functionality)\n\n');
+                }
+                
+            } else if (error.message.includes('timed out') || error.message.includes('timeout')) {
+                process.stderr.write(`❌ Authentication failed (attempt ${attempt}): Request timed out\n`);
+                process.stderr.write('   The MCP server may be overloaded or unreachable\n');
+                
+                if (isLastAttempt) {
+                    process.stderr.write('   The adapter will continue without authentication (limited functionality)\n\n');
+                }
+                
+            } else if (error.message.includes('Authentication was denied by the user')) {
+                process.stderr.write(`❌ Authentication failed: User denied authorization\n`);
+                process.stderr.write('   The adapter will continue without authentication (limited functionality)\n\n');
+                return false; // Don't retry if user explicitly denied
+                
+            } else if (error.message.includes('Device code expired')) {
+                process.stderr.write(`❌ Authentication failed (attempt ${attempt}): Device code expired\n`);
+                process.stderr.write('   Please complete the authentication process more quickly\n');
+                
+                if (!isLastAttempt) {
+                    process.stderr.write('   Retrying with a new device code...\n');
+                }
+                
+            } else {
+                process.stderr.write(`❌ Authentication failed (attempt ${attempt}): ${error.message}\n`);
+            }
+            
+            if (isLastAttempt) {
+                process.stderr.write('\n💡 Troubleshooting tips:\n');
+                process.stderr.write('   • Ensure the MCP server is running and accessible\n');
+                process.stderr.write('   • Check your network connection\n');
+                process.stderr.write('   • Verify the MCP_SERVER_URL environment variable\n');
+                process.stderr.write('   • Try restarting the adapter if the issue persists\n\n');
+                return false;
+            }
+            
+            // Wait before retrying (progressive backoff)
+            const backoffDelay = 2000 * attempt; // 2s, 4s
+            process.stderr.write(`   Retrying in ${backoffDelay / 1000} seconds...\n`);
+            await new Promise(resolve => setTimeout(resolve, backoffDelay));
+        }
+    }
+    
+    return false;
+}
+
+/**
+ * Initialize token management system
+ */
+function initializeTokenManagement() {
+    // Validate existing token storage
+    validateTokenStorage();
+    
+    // Start the token refresh scheduler if we have tokens
+    const tokenStatus = getTokenStatus();
+    if (tokenStatus.hasAccessToken) {
+        startTokenRefreshScheduler();
+        process.stderr.write('✅ Token refresh scheduler started\n');
+    }
+}
+
+/**
+ * Cleanup token management system
+ */
+function cleanupTokenManagement() {
+    stopTokenRefreshScheduler();
+    clearTokenCredentials();
+}
+
+/**
+ * Enhanced token validation with automatic re-authentication fallback
+ * @param {boolean} allowReauth - Whether to attempt re-authentication if tokens are invalid
+ * @returns {Promise<boolean>} - True if we have a valid access token
+ */
+async function ensureValidTokenWithReauth(allowReauth = true) {
+    const hasValidToken = await ensureValidToken();
+    
+    if (!hasValidToken && allowReauth) {
+        // Attempt re-authentication if we don't have valid tokens
+        process.stderr.write('🔄 No valid tokens available, attempting re-authentication...\n');
+        
+        const authSuccess = await authenticateDevice();
+        if (authSuccess) {
+            // Restart the token refresh scheduler after successful authentication
+            startTokenRefreshScheduler();
+            return true;
+        } else {
+            process.stderr.write('❌ Re-authentication failed\n');
+            return false;
+        }
+    }
+    
+    return hasValidToken;
+}
+
+/**
+ * Secure token storage validation
+ * @returns {boolean} - True if token storage is in a valid state
+ */
+function validateTokenStorage() {
+    try {
+        // Check for token storage consistency
+        const hasAccessToken = !!deviceCredentials.accessToken;
+        const hasTokenExpiry = !!deviceCredentials.tokenExpiry;
+        const hasRefreshToken = !!deviceCredentials.refreshToken;
+        
+        // If we have an access token, we should have an expiry time
+        if (hasAccessToken && !hasTokenExpiry) {
+            process.stderr.write('⚠️  Invalid token storage: access token without expiry\n');
+            clearTokenCredentials();
+            return false;
+        }
+        
+        // If we have an expiry time, we should have an access token
+        if (hasTokenExpiry && !hasAccessToken) {
+            process.stderr.write('⚠️  Invalid token storage: expiry without access token\n');
+            clearTokenCredentials();
+            return false;
+        }
+        
+        // Validate expiry time format
+        if (hasTokenExpiry && (typeof deviceCredentials.tokenExpiry !== 'number' || deviceCredentials.tokenExpiry <= 0)) {
+            process.stderr.write('⚠️  Invalid token storage: malformed expiry time\n');
+            clearTokenCredentials();
+            return false;
+        }
+        
+        return true;
+        
+    } catch (error) {
+        process.stderr.write(`⚠️  Token storage validation error: ${error.message}\n`);
+        clearTokenCredentials();
+        return false;
+    }
+}
+
+// Graceful shutdown handling for token management
+process.on('SIGINT', () => {
+    process.stderr.write('\n🔄 Gracefully shutting down token management...\n');
+    cleanupTokenManagement();
+    process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+    process.stderr.write('\n🔄 Gracefully shutting down token management...\n');
+    cleanupTokenManagement();
+    process.exit(0);
+});
+
+process.on('exit', () => {
+    // Final cleanup on any exit
+    cleanupTokenManagement();
+});

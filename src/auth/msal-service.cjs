@@ -47,8 +47,37 @@ storageService.init().catch(err => {
     MonitoringService.logError(mcpError);
 });
 
-// Session storage for tokens and accounts
-let currentSession = null;
+// Session storage for tokens and accounts - Multi-user support
+const userSessions = new Map(); // Map<userId, sessionData>
+
+/**
+ * Get user session by user ID
+ * @param {string} userId - User ID
+ * @returns {Object|null} User session data or null
+ */
+function getUserSession(userId) {
+    if (!userId) return null;
+    return userSessions.get(userId) || null;
+}
+
+/**
+ * Set user session data
+ * @param {string} userId - User ID
+ * @param {Object} sessionData - Session data
+ */
+function setUserSession(userId, sessionData) {
+    if (!userId) return;
+    userSessions.set(userId, sessionData);
+}
+
+/**
+ * Clear user session
+ * @param {string} userId - User ID
+ */
+function clearUserSession(userId) {
+    if (!userId) return;
+    userSessions.delete(userId);
+}
 
 const msalConfig = {
     auth: {
@@ -103,16 +132,12 @@ function base64URLEncode(buffer) {
 /**
  * Get the login URL for Microsoft authentication
  * @param {Object} req - Express request object
- * @returns {Promise<string>} The login URL
  */
 async function getLoginUrl(req) {
     const { codeVerifier, codeChallenge } = generatePkceCodes();
-    if (req && req.session) {
-        req.session.pkceCodeVerifier = codeVerifier;
-    } else {
-        // Store in memory if no session available
-        currentSession = { pkceCodeVerifier: codeVerifier };
-    }
+    
+    // Store PKCE verifier in session (simple approach)
+    req.session.pkceCodeVerifier = codeVerifier;
     
     const authCodeUrlParameters = {
         scopes: SCOPES,
@@ -134,9 +159,24 @@ async function login(req, res) {
     try {
         if (process.env.NODE_ENV === 'development') {
             MonitoringService.debug('Login attempt received', {
+                hasSession: !!req.session,
+                sessionId: req.session?.id,
                 timestamp: new Date().toISOString()
             }, 'auth');
         }
+        
+        // Check if session is available
+        if (!req.session) {
+            const mcpError = ErrorService.createError(
+                ErrorService.CATEGORIES.AUTH,
+                'Session middleware not available',
+                'error',
+                { endpoint: '/api/auth/login' }
+            );
+            MonitoringService.logError(mcpError);
+            return res.status(500).json({ error: 'Session not available' });
+        }
+        
         const authUrl = await getLoginUrl(req);
         if (process.env.NODE_ENV === 'development') {
             MonitoringService.debug('Generated auth URL', {
@@ -179,23 +219,9 @@ async function handleAuthCallback(req, res) {
         }, 'auth');
     }
     
-    // Get code verifier from session or memory
-    let codeVerifier;
-    if (req.session && req.session.pkceCodeVerifier) {
-        if (process.env.NODE_ENV === 'development') {
-            MonitoringService.debug('Using PKCE codeVerifier from session', {
-                timestamp: new Date().toISOString()
-            }, 'auth');
-        }
-        codeVerifier = req.session.pkceCodeVerifier;
-    } else if (currentSession && currentSession.pkceCodeVerifier) {
-        if (process.env.NODE_ENV === 'development') {
-            MonitoringService.debug('Using PKCE codeVerifier from memory', {
-                timestamp: new Date().toISOString()
-            }, 'auth');
-        }
-        codeVerifier = currentSession.pkceCodeVerifier;
-    } else {
+    // Get code verifier from session
+    const codeVerifier = req.session.pkceCodeVerifier;
+    if (!codeVerifier) {
         const mcpError = ErrorService.createError(
             ErrorService.CATEGORIES.AUTH,
             'No PKCE codeVerifier found',
@@ -229,29 +255,36 @@ async function handleAuthCallback(req, res) {
         // Store in session if available
         if (req.session) {
             req.session.msUser = userInfo;
-            delete req.session.pkceCodeVerifier;
         }
         
-        // Always store in memory
-        currentSession = {
-            msUser: userInfo
-        };
+        // Store in user session map
+        setUserSession(userInfo.homeAccountId, { msUser: userInfo });
+        
+        // Clean up temporary session
+        delete req.session.pkceCodeVerifier;
         
         // Also store in SQLite database for persistence across restarts
         try {
             MonitoringService.info('Storing authentication token in database', {
                 username: userInfo.username,
+                sessionId: req.session?.id,
                 timestamp: new Date().toISOString()
             }, 'auth');
-            await storageService.setSecure('ms-access-token', userInfo.accessToken);
-            await storageService.setSetting('ms-user-info', {
+            
+            // Store token using session ID as user identifier for session-based auth
+            const userKey = req.session?.id ? `user:${req.session.id}` : 'default';
+            await storageService.setSecureSetting(`${userKey}:ms-access-token`, userInfo.accessToken, req.session?.id);
+            await storageService.setSetting(`${userKey}:ms-user-info`, {
                 username: userInfo.username,
                 name: userInfo.name,
                 homeAccountId: userInfo.homeAccountId,
                 expiresOn: userInfo.expiresOn
-            });
+            }, req.session?.id);
+            
             MonitoringService.info('Authentication token stored successfully', {
                 username: userInfo.username,
+                sessionId: req.session?.id,
+                userKey: userKey,
                 timestamp: new Date().toISOString()
             }, 'auth');
         } catch (dbError) {
@@ -284,14 +317,69 @@ async function handleAuthCallback(req, res) {
  * @returns {Promise<boolean>} - True if authenticated
  */
 async function isAuthenticated(req) {
-    if (req && req.session && req.session.msUser && req.session.msUser.accessToken) {
+    // Handle both session-based auth (browser) and device-based auth (MCP adapter)
+    let userId, sessionId;
+    
+    if (req.user?.isApiCall && req.user?.userId) {
+        // Device auth flow - use userId from JWT token
+        userId = req.user.userId;
+        sessionId = req.user.sessionId || req.user.userId;
+    } else if (req.session?.id) {
+        // Session-based auth flow - use session ID
+        sessionId = req.session.id;
+        userId = `user:${sessionId}`;
+    }
+    
+    MonitoringService.info('Checking authentication status', {
+        hasSession: !!req.session,
+        sessionId: sessionId,
+        hasUser: !!req.user,
+        isApiCall: req.user?.isApiCall,
+        userId: userId,
+        hasMsUser: !!req.session?.msUser,
+        hasAccessToken: !!req.session?.msUser?.accessToken,
+        timestamp: new Date().toISOString()
+    }, 'auth');
+    
+    // Check if user is authenticated via Express session (primary method for browser)
+    if (req.session?.msUser?.accessToken) {
+        MonitoringService.info('User authenticated via Express session', {
+            username: req.session.msUser.username,
+            sessionId: req.session.id,
+            timestamp: new Date().toISOString()
+        }, 'auth');
         return true;
     }
     
-    if (currentSession && currentSession.msUser && currentSession.msUser.accessToken) {
-        return true;
+    // Check database storage using userId (works for both session and device auth)
+    if (userId) {
+        try {
+            const tokenKey = `${userId}:ms-access-token`;
+            const storedToken = await storageService.getSecureSetting(tokenKey, sessionId);
+            if (storedToken) {
+                MonitoringService.info('User authenticated via database', {
+                    userId: userId,
+                    sessionId: sessionId,
+                    isApiCall: req.user?.isApiCall,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+                return true;
+            }
+        } catch (error) {
+            MonitoringService.debug('Failed to check database authentication', {
+                userId: userId,
+                sessionId: sessionId,
+                error: error.message,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
     }
     
+    MonitoringService.info('User not authenticated', {
+        sessionId: sessionId,
+        userId: userId,
+        timestamp: new Date().toISOString()
+    }, 'auth');
     return false;
 }
 
@@ -302,51 +390,72 @@ async function isAuthenticated(req) {
  */
 async function getAccessToken(req) {
     try {
-        // Check Express session if available
-        if (req && req.session && req.session.msUser && req.session.msUser.accessToken) {
-            // TODO: Check token expiration and refresh if needed
-            console.log('[MSAL] Using access token from Express session');
-            return req.session.msUser.accessToken;
+        // Handle both session-based auth (browser) and device-based auth (MCP adapter)
+        let userId, sessionId;
+        
+        if (req.user?.isApiCall && req.user?.userId) {
+            // Device auth flow - use userId from JWT token
+            userId = req.user.userId;
+            sessionId = req.user.sessionId || req.user.userId; // Use userId as sessionId if not provided
+            console.log('[MSAL] Getting token for device auth user:', userId);
+        } else if (req.session?.id) {
+            // Session-based auth flow - use session ID
+            sessionId = req.session.id;
+            userId = `user:${sessionId}`;
+            console.log('[MSAL] Getting token for session user:', userId);
+        } else {
+            // Fallback to query parameter
+            userId = req.query?.userId;
+            sessionId = userId;
+            console.log('[MSAL] Getting token for query user:', userId);
         }
         
-        // Check in-memory session storage as fallback
-        if (currentSession && currentSession.msUser && currentSession.msUser.accessToken) {
-            // TODO: Check token expiration and refresh if needed
-            console.log('[MSAL] Using access token from in-memory session');
-            return currentSession.msUser.accessToken;
+        if (!userId) {
+            throw new Error('No user ID available for token retrieval');
         }
         
-        // If not in memory, try to get from SQLite database
-        try {
-            const storedToken = await storageService.getSecure('ms-access-token');
-            if (storedToken) {
-                console.log('[MSAL] Using access token from SQLite database');
-                
-                // Also load it into memory for future use
-                const userInfo = await storageService.getSetting('ms-user-info') || {};
-                currentSession = {
-                    msUser: {
-                        ...userInfo,
-                        accessToken: storedToken
-                    }
-                };
-                
-                return storedToken;
+        const userSession = getUserSession(userId);
+        if (userSession?.msUser?.accessToken) {
+            // TODO: Check token expiration and refresh if needed
+            console.log('[MSAL] Using access token from user session');
+            return userSession.msUser.accessToken;
+        }
+        
+        // If not in memory, try to get from SQLite database using session-based key
+        if (userId) {
+            try {
+                const tokenKey = `${userId}:ms-access-token`;
+                const storedToken = await storageService.getSecureSetting(tokenKey, sessionId);
+                if (storedToken) {
+                    console.log('[MSAL] Using access token from SQLite database');
+                    
+                    // Also load it into memory for future use
+                    const userInfoKey = `${userId}:ms-user-info`;
+                    const userInfo = await storageService.getSetting(userInfoKey, sessionId) || {};
+                    setUserSession(userId, {
+                        msUser: {
+                            ...userInfo,
+                            accessToken: storedToken
+                        }
+                    });
+                    
+                    return storedToken;
+                }
+            } catch (dbError) {
+                const mcpError = ErrorService.createError(
+                    ErrorService.CATEGORIES.DATABASE,
+                    `Error getting token from database: ${dbError.message}`,
+                    ErrorService.SEVERITIES.WARNING,
+                    { stack: dbError.stack, timestamp: new Date().toISOString() }
+                );
+                MonitoringService.logError(mcpError);
             }
-        } catch (dbError) {
-            const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.DATABASE,
-                `Error getting token from database: ${dbError.message}`,
-                ErrorService.SEVERITIES.WARNING,
-                { stack: dbError.stack, timestamp: new Date().toISOString() }
-            );
-            MonitoringService.logError(mcpError);
         }
         
         // If we have an account, try to get a token silently
-        if (currentSession && currentSession.msUser && currentSession.msUser.account) {
+        if (userSession?.msUser?.account) {
             const silentRequest = {
-                account: currentSession.msUser.account,
+                account: userSession.msUser.account,
                 scopes: SCOPES
             };
             
@@ -354,8 +463,13 @@ async function getAccessToken(req) {
                 const response = await pca.acquireTokenSilent(silentRequest);
                 if (response && response.accessToken) {
                     // Update the token in session
-                    currentSession.msUser.accessToken = response.accessToken;
-                    currentSession.msUser.expiresOn = response.expiresOn;
+                    setUserSession(userId, {
+                        msUser: {
+                            ...userSession.msUser,
+                            accessToken: response.accessToken,
+                            expiresOn: response.expiresOn
+                        }
+                    });
                     return response.accessToken;
                 }
             } catch (error) {
@@ -378,10 +492,31 @@ async function getAccessToken(req) {
  */
 async function statusDetails(req) {
     if (await isAuthenticated(req)) {
-        const userInfo = req.session?.msUser || currentSession?.msUser;
+        // First try to get user info from Express session
+        let userInfo = req.session?.msUser;
+        
+        // Fallback: get from database using session ID
+        if (!userInfo && req.session?.id) {
+            try {
+                const userKey = `user:${req.session.id}`;
+                const storedUserInfo = await storageService.getSetting(`${userKey}:ms-user-info`, req.session.id);
+                if (storedUserInfo) {
+                    userInfo = storedUserInfo;
+                }
+            } catch (error) {
+                MonitoringService.debug('Failed to get user info from database', {
+                    sessionId: req.session.id,
+                    error: error.message,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+        }
+        
         return {
             authenticated: true,
-            user: userInfo.username,
+            user: userInfo?.username || 'Unknown User',
+            name: userInfo?.name,
+            sessionId: req.session?.id,
             message: 'Authenticated',
             logoutUrl: '/api/auth/logout'
         };
@@ -410,17 +545,26 @@ async function logout(req, res) {
             });
         }
         
-        // Clear memory storage
-        currentSession = null;
+        // Clear user session
+        const userId = req.session?.userId || req.query.userId;
+        clearUserSession(userId);
         
         // Clear SQLite database storage
         try {
             MonitoringService.info('Clearing authentication token from database', {
+                sessionId: req.session?.id,
                 timestamp: new Date().toISOString()
             }, 'auth');
-            await storageService.setSecure('ms-access-token', '');
-            await storageService.setSetting('ms-user-info', null);
+            
+            // Clear session-based tokens if session exists
+            if (req.session?.id) {
+                const userKey = `user:${req.session.id}`;
+                await storageService.setSecureSetting(`${userKey}:ms-access-token`, '', req.session.id);
+                await storageService.setSetting(`${userKey}:ms-user-info`, null, req.session.id);
+            }
+            
             MonitoringService.info('Authentication token cleared from database', {
+                sessionId: req.session?.id,
                 timestamp: new Date().toISOString()
             }, 'auth');
         } catch (dbError) {
@@ -450,49 +594,75 @@ async function logout(req, res) {
 /**
  * Get the most recently used access token for internal MCP adapter calls.
  * This allows the MCP adapter to leverage existing authentication without handling it directly.
+ * @param {string} userId - User ID for multi-user token isolation
  * @returns {Promise<string|null>} The most recent access token, or null if none available
  */
-async function getMostRecentToken() {
+async function getMostRecentToken(userId) {
     try {
         if (process.env.NODE_ENV === 'development') {
             MonitoringService.debug('Attempting to get most recent token for internal MCP call', {
+                userId,
                 timestamp: new Date().toISOString()
             }, 'auth');
         }
         
-        // First try to get token from in-memory session
-        if (currentSession && currentSession.msUser && currentSession.msUser.accessToken) {
-            if (process.env.NODE_ENV === 'development') {
-                MonitoringService.debug('Found valid token in in-memory session', {
-                    timestamp: new Date().toISOString()
-                }, 'auth');
+        // First try to get token from user sessions
+        if (userId) {
+            const userSession = getUserSession(userId);
+            if (userSession?.msUser?.accessToken) {
+                if (process.env.NODE_ENV === 'development') {
+                    MonitoringService.debug('Found valid token in user session', {
+                        userId,
+                        timestamp: new Date().toISOString()
+                    }, 'auth');
+                }
+                return userSession.msUser.accessToken;
             }
-            return currentSession.msUser.accessToken;
         }
         
-        // If not in memory, try to get from SQLite database
+        // If userId not provided or no session found, try any available user session
+        for (const [sessionUserId, userSession] of userSessions.entries()) {
+            if (userSession.msUser?.accessToken) {
+                if (process.env.NODE_ENV === 'development') {
+                    MonitoringService.debug('Found valid token in user session', {
+                        userId: sessionUserId,
+                        timestamp: new Date().toISOString()
+                    }, 'auth');
+                }
+                return userSession.msUser.accessToken;
+            }
+        }
+        
+        // If not in memory, try to get from SQLite database with user-specific key
         if (process.env.NODE_ENV === 'development') {
             MonitoringService.debug('Trying to get token from SQLite database', {
+                userId,
                 timestamp: new Date().toISOString()
             }, 'auth');
         }
         try {
-            const storedToken = await storageService.getSecure('ms-access-token');
+            const tokenKey = userId ? `user:${userId}:ms-access-token` : 'ms-access-token';
+            const storedToken = await storageService.getSecureSetting(tokenKey, userId);
             if (storedToken) {
                 if (process.env.NODE_ENV === 'development') {
                     MonitoringService.debug('Found valid token in SQLite database', {
+                        userId,
+                        tokenKey,
                         timestamp: new Date().toISOString()
                     }, 'auth');
                 }
                 
                 // Also load it into memory for future use
-                const userInfo = await storageService.getSetting('ms-user-info') || {};
-                currentSession = {
-                    msUser: {
-                        ...userInfo,
-                        accessToken: storedToken
-                    }
-                };
+                const userInfoKey = userId ? `user:${userId}:ms-user-info` : 'ms-user-info';
+                const userInfo = await storageService.getSetting(userInfoKey, userId) || {};
+                if (userId) {
+                    setUserSession(userId, {
+                        msUser: {
+                            ...userInfo,
+                            accessToken: storedToken
+                        }
+                    });
+                }
                 
                 return storedToken;
             }
@@ -501,13 +671,14 @@ async function getMostRecentToken() {
                 ErrorService.CATEGORIES.DATABASE,
                 `Error getting token from database: ${dbError.message}`,
                 ErrorService.SEVERITIES.WARNING,
-                { stack: dbError.stack, timestamp: new Date().toISOString() }
+                { userId, stack: dbError.stack, timestamp: new Date().toISOString() }
             );
             MonitoringService.logError(mcpError);
         }
         
         // If no token found, we have no authenticated user
         MonitoringService.warn('No authenticated user found for internal MCP call', {
+            userId,
             timestamp: new Date().toISOString()
         }, 'auth');
         return null;
@@ -516,7 +687,7 @@ async function getMostRecentToken() {
             ErrorService.CATEGORIES.AUTH,
             `Error getting most recent token: ${error.message}`,
             ErrorService.SEVERITIES.ERROR,
-            { stack: error.stack, timestamp: new Date().toISOString() }
+            { userId, stack: error.stack, timestamp: new Date().toISOString() }
         );
         MonitoringService.logError(mcpError);
         return null;

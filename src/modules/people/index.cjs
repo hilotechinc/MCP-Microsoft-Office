@@ -9,7 +9,6 @@ const ErrorService = require('../../core/error-service.cjs');
 
 const PEOPLE_CAPABILITIES = [
     'findPeople',
-    'searchPeople',
     'getPersonById',
     'getRelevantPeople'
 ];
@@ -25,13 +24,22 @@ const PeopleModule = {
     /**
      * Helper method to redact sensitive data from objects before logging
      * @param {object} data - The data object to redact
+     * @param {WeakSet} [visited] - Set of visited objects to detect circular references
      * @returns {object} Redacted copy of the data
      * @private
      */
-    redactSensitiveData(data) {
+    redactSensitiveData(data, visited = new WeakSet()) {
         if (!data || typeof data !== 'object') {
             return data;
         }
+        
+        // Check for circular references
+        if (visited.has(data)) {
+            return '[Circular Reference]';
+        }
+        
+        // Add current object to visited set
+        visited.add(data);
         
         // Create a deep copy to avoid modifying the original
         const result = Array.isArray(data) ? [...data] : {...data};
@@ -39,7 +47,7 @@ const PeopleModule = {
         // Fields that should be redacted
         const sensitiveFields = [
             'user', 'email', 'mail', 'address', 'emailAddress', 'password', 'token', 'accessToken',
-            'refreshToken', 'content', 'body', 'personId', 'id'
+            'refreshToken', 'content', 'body', 'contentBytes'
         ];
         
         // Recursively process the object
@@ -57,7 +65,7 @@ const PeopleModule = {
                 } 
                 // Recursively process nested objects
                 else if (typeof result[key] === 'object' && result[key] !== null) {
-                    result[key] = this.redactSensitiveData(result[key]);
+                    result[key] = this.redactSensitiveData(result[key], visited);
                 }
             }
         }
@@ -156,102 +164,6 @@ const PeopleModule = {
         }
     },
     
-    /**
-     * Search for people by name or email
-     * @param {string} query - Search query
-     * @param {object} options - Search options
-     * @param {object} req - Express request object (optional)
-     * @returns {Promise<Array<object>>} List of matching people
-     */
-    async searchPeople(query, options = {}, req) {
-        const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
-        
-        // Redact potentially sensitive data for logging
-        const redactedOptions = this.redactSensitiveData(options);
-        const redactedQuery = query ? 'REDACTED_QUERY' : '';
-        
-        // Log the request attempt
-        monitoringService?.debug('Attempting to search for people', { 
-            query: redactedQuery,
-            options: redactedOptions,
-            timestamp: new Date().toISOString()
-        }, 'people');
-        
-        if (!graphService || typeof graphService.searchPeople !== 'function') {
-            const error = errorService?.createError(
-                'people',
-                'GraphService.searchPeople not implemented',
-                'error',
-                { timestamp: new Date().toISOString() }
-            ) || {
-                category: 'people',
-                message: 'GraphService.searchPeople not implemented',
-                severity: 'error',
-                context: {}
-            };
-            
-            monitoringService?.logError(error);
-                
-            throw error;
-        }
-        
-        try {
-            // Track performance
-            const startTime = Date.now();
-            
-            // Call the Graph API
-            const results = await graphService.searchPeople(query, options, req);
-            
-            // Calculate elapsed time and track metric
-            const elapsedTime = Date.now() - startTime;
-            monitoringService?.trackMetric('people_search_duration', elapsedTime, {
-                count: results?.length || 0,
-                hasQuery: !!query,
-                timestamp: new Date().toISOString()
-            });
-            
-            monitoringService?.info('Successfully searched for people', {
-                count: results?.length || 0,
-                hasQuery: !!query,
-                elapsedTime,
-                timestamp: new Date().toISOString()
-            }, 'people');
-                
-            return results;
-        } catch (error) {
-            // Extract Graph API details if available
-            const graphDetails = {
-                statusCode: error.statusCode,
-                code: error.code,
-                graphRequestId: error.requestId,
-                originalMessage: error.message
-            };
-            
-            // Create a standardized error object
-            const mcpError = errorService?.createError(
-                'people',
-                `Failed to search people: ${error.code || error.message}`,
-                error.statusCode && error.statusCode >= 500 ? 'error' : 'warn',
-                { 
-                    graphDetails, 
-                    originalError: error.stack,
-                    requestParams: { options: redactedOptions, hasQuery: !!query },
-                    timestamp: new Date().toISOString()
-                }
-            ) || {
-                category: 'people',
-                message: `Failed to search people: ${error.message}`,
-                severity: 'error',
-                context: { graphDetails }
-            };
-            
-            // Log the error
-            monitoringService?.logError(mcpError);
-                
-            // Throw the structured error
-            throw mcpError;
-        }
-    },
     
     /**
      * Get a specific person by ID
@@ -584,60 +496,6 @@ const PeopleModule = {
                     break;
                 }
                 
-                case 'searchPeople': {
-                    const query = entities.query || '';
-                    
-                    monitoringService?.debug('Handling searchPeople intent', { 
-                        hasQuery: !!query,
-                        timestamp: new Date().toISOString()
-                    }, 'people');
-                    
-                    // Try cache first if available
-                    let results;
-                    let cacheHit = false;
-                    
-                    if (cacheService) {
-                        try {
-                            const cacheKey = `people:search:${query}`;
-                            results = await cacheService.get(cacheKey);
-                            cacheHit = !!results;
-                            
-                            if (cacheHit) {
-                                monitoringService?.debug('Found search results in cache', { 
-                                    count: results.length,
-                                    timestamp: new Date().toISOString()
-                                }, 'people');
-                            }
-                        } catch (cacheError) {
-                            // Log cache error but continue with API call
-                            monitoringService?.warn('Cache error in searchPeople intent', { 
-                                error: cacheError.message,
-                                timestamp: new Date().toISOString()
-                            }, 'people');
-                        }
-                    }
-                    
-                    if (!results) {
-                        results = await graphService.searchPeople(query, {}, context.req);
-                        
-                        // Cache the results if possible
-                        if (cacheService) {
-                            try {
-                                const cacheKey = `people:search:${query}`;
-                                await cacheService.set(cacheKey, results, 60); // Cache for 1 minute
-                            } catch (cacheError) {
-                                // Log cache error but continue
-                                monitoringService?.warn('Failed to cache search results', { 
-                                    error: cacheError.message,
-                                    timestamp: new Date().toISOString()
-                                }, 'people');
-                            }
-                        }
-                    }
-                    
-                    result = { type: 'peopleList', items: results };
-                    break;
-                }
                 
                 case 'getPersonById': {
                     const personId = entities.personId;

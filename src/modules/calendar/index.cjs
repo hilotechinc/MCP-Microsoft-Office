@@ -33,6 +33,7 @@ const ALLOWED_ATTACHMENT_TYPES = new Set([
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',     // .xlsx
     'application/vnd.openxmlformats-officedocument.presentationml.presentation', // .pptx
     'text/plain',
+    'application/octet-stream', // Generic binary fallback for various file types
     'image/jpeg',
     'image/png',
     'image/gif'
@@ -69,13 +70,22 @@ const CalendarModule = {
     /**
      * Helper method to redact sensitive data from objects before logging
      * @param {object} data - The data object to redact
+     * @param {WeakSet} visited - Set to track visited objects for circular reference detection
      * @returns {object} Redacted copy of the data
      * @private
      */
-    redactSensitiveData(data) {
+    redactSensitiveData(data, visited = new WeakSet()) {
         if (!data || typeof data !== 'object') {
             return data;
         }
+        
+        // Check for circular references
+        if (visited.has(data)) {
+            return '[Circular Reference]';
+        }
+        
+        // Add current object to visited set
+        visited.add(data);
         
         // Create a deep copy to avoid modifying the original
         const result = Array.isArray(data) ? [...data] : {...data};
@@ -99,9 +109,9 @@ const CalendarModule = {
                         result[key] = '{REDACTED}';
                     }
                 } 
-                // Recursively process nested objects
+                // Recursively process nested objects with proper context binding
                 else if (typeof result[key] === 'object' && result[key] !== null) {
-                    result[key] = this.redactSensitiveData(result[key]);
+                    result[key] = this.redactSensitiveData(result[key], visited);
                 }
             }
         }
@@ -117,7 +127,7 @@ const CalendarModule = {
      * @returns {Promise<object[]>} - Raw event objects from Graph API
      * @throws {Error} When called in production environment
      */
-    async getEventsRaw(options = {}) {
+    async getEventsRaw(options = {}, req) {
         // Get services with fallbacks
         const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
         
@@ -167,7 +177,8 @@ const CalendarModule = {
         
         try {
             const startTime = Date.now();
-            const events = await graphService.getEventsRaw(options);
+            // Include req in options for getEventsRaw
+            const events = await graphService.getEventsRaw({ ...options, req });
             const elapsedTime = Date.now() - startTime;
             
             // Log success and track performance
@@ -213,7 +224,7 @@ const CalendarModule = {
      * @param {object} options
      * @returns {Promise<object[]>}
      */
-    async getEvents(options = {}) {
+    async getEvents(options = {}, req) {
         // Get services with fallbacks
         const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
         
@@ -244,11 +255,12 @@ const CalendarModule = {
         try {
             const startTime = Date.now();
             
-            // Extract user context if available in options.req for the service layer (e.g., caching)
-            const userContext = options.req && options.req.user ? { user: options.req.user } : {};
+            // Extract user context if available in req for the service layer (e.g., caching)
+            const userContext = req && req.user ? { user: req.user } : {};
             
-            // Pass original options along with extracted user context
-            const events = await graphService.getEvents({ ...options, ...userContext });
+            // Pass original options along with extracted user context and req object
+            // Note: req must be included in the options object, not as a separate argument
+            const events = await graphService.getEvents({ ...options, ...userContext, req });
             const elapsedTime = Date.now() - startTime;
             
             // Log success and track performance
@@ -390,7 +402,7 @@ const CalendarModule = {
             }
 
             // 2. Create the event via the service
-            const createdEvent = await graphService.createEvent(finalEventData);
+            const createdEvent = await graphService.createEvent(finalEventData, 'me', { req });
             const elapsedTime = Date.now() - startTime;
             
             // 3. Normalize the result before returning
@@ -700,7 +712,8 @@ const CalendarModule = {
                 timestamp: new Date().toISOString()
             }, 'calendar');
             
-            const updatedGraphEvent = await graphService.updateEvent(eventId, updatesToApply);
+            // Pass req in the options parameter (4th parameter)
+            const updatedGraphEvent = await graphService.updateEvent(eventId, updatesToApply, 'me', { req });
             const elapsedTime = Date.now() - startTime;
             
             monitoringService?.info('Event updated successfully', { 
@@ -768,7 +781,7 @@ const CalendarModule = {
      * @returns {Promise<object>} Availability data object.
      * @throws {Error} If input validation fails or Graph API call errors occur.
      */
-    async getAvailability(options = {}) {
+    async getAvailability(options = {}, req) {
         // Get services with fallbacks
         const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
         
@@ -984,10 +997,7 @@ const CalendarModule = {
             }, 'calendar');
             
             // Call the Graph service
-            const result = await graphService.getAvailability(emails, startDateTime, endDateTime, {
-                timeZone: options.timeZone,
-                intervalMinutes: options.intervalMinutes
-            });
+            const result = await graphService.getAvailability(emails, startDateTime, endDateTime, { ...options, req });
             
             // Calculate execution time
             const executionTime = Date.now() - startTime;
@@ -1075,7 +1085,7 @@ const CalendarModule = {
      * @returns {Promise<object>} Response from Graph Service.
      * @private
      */
-    async _handleEventAction(action, eventId, comment = '') {
+    async _handleEventAction(action, eventId, comment = '', req) {
         // Get services with fallbacks
         const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
         const graphMethodName = `${action}Event`; // e.g., 'acceptEvent'
@@ -1110,7 +1120,7 @@ const CalendarModule = {
             const startTime = Date.now();
             
             // Call the Graph service
-            const result = await graphService[graphMethodName](eventId, comment);
+            const result = await graphService[graphMethodName](eventId, comment, req);
             
             // Calculate elapsed time and track metric
             const elapsedTime = Date.now() - startTime;
@@ -1160,8 +1170,8 @@ const CalendarModule = {
      * @param {string} comment - Optional comment to include with the response
      * @returns {Promise<object>} Response status
      */
-    async acceptEvent(eventId, comment = '') {
-        return await this._handleEventAction('accept', eventId, comment);
+    async acceptEvent(eventId, comment = '', req) {
+        return await this._handleEventAction('accept', eventId, comment, req);
     },
     
     /**
@@ -1170,8 +1180,8 @@ const CalendarModule = {
      * @param {string} comment - Optional comment to include with the response
      * @returns {Promise<object>} Response status
      */
-    async tentativelyAcceptEvent(eventId, comment = '') {
-        return await this._handleEventAction('tentativelyAccept', eventId, comment);
+    async tentativelyAcceptEvent(eventId, comment = '', req) {
+        return await this._handleEventAction('tentativelyAccept', eventId, comment, req);
     },
     
     /**
@@ -1180,8 +1190,8 @@ const CalendarModule = {
      * @param {string} comment - Optional comment to include with the response
      * @returns {Promise<object>} Response status
      */
-    async declineEvent(eventId, comment = '') {
-        return await this._handleEventAction('decline', eventId, comment);
+    async declineEvent(eventId, comment = '', req) {
+        return await this._handleEventAction('decline', eventId, comment, req);
     },
     
     /**
@@ -1190,8 +1200,8 @@ const CalendarModule = {
      * @param {string} comment - Optional comment to include with the cancellation
      * @returns {Promise<object>} Response status
      */
-    async cancelEvent(eventId, comment = '') {
-        return await this._handleEventAction('cancel', eventId, comment);
+    async cancelEvent(eventId, comment = '', req) {
+        return await this._handleEventAction('cancel', eventId, comment, req);
     },
     
     /**
@@ -1199,7 +1209,7 @@ const CalendarModule = {
      * @param {object} options - Options for finding meeting times
      * @returns {Promise<object>} Meeting time suggestions
      */
-    async findMeetingTimes(options = {}) {
+    async findMeetingTimes(options = {}, req) {
         // Get services with fallbacks
         const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
 
@@ -1230,7 +1240,7 @@ const CalendarModule = {
             const startTime = Date.now();
             
             // Call the Graph API
-            const result = await graphService.findMeetingTimes(options);
+            const result = await graphService.findMeetingTimes({ ...options, req });
             
             // Calculate elapsed time and track metric
             const elapsedTime = Date.now() - startTime;
@@ -1276,7 +1286,7 @@ const CalendarModule = {
      * @param {object} options - Options for filtering rooms
      * @returns {Promise<Array>} List of available rooms
      */
-    async getRooms(options = {}) {
+    async getRooms(options = {}, req) {
         // Get services with fallbacks
         const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
         const { skip, top, ...otherOptions } = options; // Extract paging params
@@ -1314,7 +1324,8 @@ const CalendarModule = {
                 timestamp: new Date().toISOString()
             }, 'calendar');
                 
-            const result = await graphService.getRooms(graphOptions);
+            // Include req in the options for getRooms
+            const result = await graphService.getRooms({ ...graphOptions, req });
             
             // Calculate elapsed time and track metric
             const elapsedTime = Date.now() - startTime;
@@ -1371,87 +1382,37 @@ const CalendarModule = {
      * Get user calendars
      * @returns {Promise<Array>} List of calendars
      */
-    async getCalendars() {
-        // Get services with fallbacks
+    async getCalendars(options = {}, req) {
         const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
 
-        // Log the request attempt
-        monitoringService?.debug('Getting user calendars', { 
-            timestamp: new Date().toISOString()
-        }, 'calendar');
+        monitoringService?.debug('Attempting to get calendars', { options, timestamp: new Date().toISOString() }, 'calendar');
 
         if (!graphService || typeof graphService.getCalendars !== 'function') {
-            const methodError = errorService?.createError(
-                'calendar',
-                'Required GraphService method \'getCalendars\' not implemented or service unavailable',
-                'error',
-                { timestamp: new Date().toISOString() }
-            );
-            
-            monitoringService?.logError(methodError);
-                
-            throw new Error('Required GraphService method \'getCalendars\' not implemented or service unavailable.');
+            const error = errorService?.createError('calendar', 'GraphService.getCalendars not implemented', 'error');
+            monitoringService?.logError(error);
+            throw error || new Error('GraphService.getCalendars not implemented');
         }
 
+        const startTime = Date.now();
         try {
-            // Track performance
-            const startTime = Date.now();
-            
-            monitoringService?.debug('Calling getCalendars Graph API', {
-                timestamp: new Date().toISOString()
-            }, 'calendar');
-                
-            const result = await graphService.getCalendars(); // Assuming graphService handles $select if needed
-            
-            // Calculate elapsed time and track metric
-            const elapsedTime = Date.now() - startTime;
-            monitoringService?.trackMetric('calendar_get_calendars', elapsedTime, {
-                timestamp: new Date().toISOString()
-            });
+            const result = await graphService.getCalendars({ ...options, req });
 
-            // Normalize the result to ensure essential fields, including canEdit
-            const normalizedCalendars = (Array.isArray(result) ? result : result?.value || []).map(cal => ({
-                id: cal.id,
-                name: cal.name,
-                canEdit: cal.canEdit, // Ensure this field is passed through
-                owner: cal.owner, // Include owner information
-                color: cal.color, // Include color
-                canShare: cal.canShare, // Include sharing capability
-                canViewPrivateItems: cal.canViewPrivateItems, // Include privacy settings
-                defaultOnlineMeetingProvider: cal.defaultOnlineMeetingProvider, // Include meeting provider
-                // Add other relevant fields if necessary
-            }));
+            const duration = Date.now() - startTime;
+            monitoringService?.trackMetric('calendar.getCalendars.duration', duration, { success: true });
+            monitoringService?.info('Successfully retrieved calendars', { count: result?.length, duration }, 'calendar');
 
-            monitoringService?.info('Successfully retrieved user calendars', {
-                calendarCount: normalizedCalendars.length,
-                elapsedTime,
-                timestamp: new Date().toISOString()
-            }, 'calendar');
-                
-            return normalizedCalendars; // Return the array directly
-
+            return result;
         } catch (error) {
-            const graphDetails = {
-                statusCode: error.statusCode,
-                code: error.code,
-                graphRequestId: error.requestId,
-                originalMessage: error.message
-            };
-            
-            const calendarsError = errorService?.createError(
+            const duration = Date.now() - startTime;
+            const mcpError = errorService?.createError(
                 'calendar',
-                `Failed to get calendars: ${error.code || error.message}`,
+                'Failed to get calendars in module',
                 'error',
-                { 
-                    originalError: error.stack,
-                    graphDetails,
-                    timestamp: new Date().toISOString()
-                }
+                { originalError: error.message, stack: error.stack }
             );
-            
-            monitoringService?.logError(calendarsError);
-                
-            throw calendarsError || new Error(`Failed to get calendars: ${error.message}`);
+            monitoringService?.logError(mcpError);
+            monitoringService?.trackMetric('calendar.getCalendars.duration', duration, { success: false });
+            throw mcpError;
         }
     },
     
@@ -1461,7 +1422,7 @@ const CalendarModule = {
      * @param {object} attachment - Attachment data
      * @returns {Promise<object>} Created attachment
      */
-    async addAttachment(eventId, attachment) {
+    async addAttachment(eventId, attachment, req) {
         // Get services with fallbacks
         const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
 
@@ -1530,7 +1491,7 @@ const CalendarModule = {
             const startTime = Date.now();
             
             // Call the Graph API
-            const result = await graphService.addEventAttachment(eventId, validatedAttachment);
+            const result = await graphService.addEventAttachment(eventId, validatedAttachment, req);
             
             // Calculate elapsed time and track metric
             const elapsedTime = Date.now() - startTime;
@@ -1581,7 +1542,7 @@ const CalendarModule = {
      * @param {string} attachmentId - ID of the attachment to remove
      * @returns {Promise<boolean>} Success status
      */
-    async removeAttachment(eventId, attachmentId) {
+    async removeAttachment(eventId, attachmentId, req) {
         // Get services with fallbacks
         const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
 
@@ -1624,7 +1585,7 @@ const CalendarModule = {
             const startTime = Date.now();
             
             // Graph remove attachment usually returns void (204 No Content) on success
-            await graphService.removeEventAttachment(eventId, attachmentId);
+            await graphService.removeEventAttachment(eventId, attachmentId, req);
             
             // Calculate elapsed time and track metric
             const elapsedTime = Date.now() - startTime;
@@ -1699,7 +1660,7 @@ const CalendarModule = {
                 if (!events) {
                     // Ensure graphService is available before using
                     if (!graphService) throw new Error('GraphService is unavailable for getEvents.');
-                    const raw = await graphService.getEvents(range);
+                    const raw = await graphService.getEvents(range, context.req);
                     events = Array.isArray(raw) ? raw.map(normalizeEvent) : [];
                     if (cacheService) await cacheService.set(cacheKey, events, 60); // Cache for 1 minute
                 }
@@ -1707,62 +1668,62 @@ const CalendarModule = {
             },
             'createEvent': async (entities, context) => {
                 const eventData = entities.event;
-                const normalizedEvent = await this.createEvent(eventData, context?.req);
+                const normalizedEvent = await this.createEvent(eventData, context.req);
                 return { type: 'calendarEvent', event: normalizedEvent };
             },
             'updateEvent': async (entities, context) => {
                 const { eventId, updates } = entities;
-                const normalizedUpdatedEvent = await this.updateEvent(eventId, updates, context?.req);
+                const normalizedUpdatedEvent = await this.updateEvent(eventId, updates, context.req);
                 return { type: 'calendarEvent', event: normalizedUpdatedEvent };
             },
             'getAvailability': async (entities, context) => {
-                const availabilityResult = await this.getAvailability(entities);
+                const availabilityResult = await this.getAvailability(entities, context.req);
                 return { type: 'availabilityResult', data: availabilityResult };
             },
             'acceptEvent': async (entities, context) => {
                 const { eventId, comment } = entities;
-                await this.acceptEvent(eventId, comment);
+                await this.acceptEvent(eventId, comment, context.req);
                 return { type: 'eventResponse', status: 'accepted', eventId };
             },
             'tentativelyAcceptEvent': async (entities, context) => {
                 const { eventId, comment } = entities;
-                await this.tentativelyAcceptEvent(eventId, comment);
+                await this.tentativelyAcceptEvent(eventId, comment, context.req);
                 return { type: 'eventResponse', status: 'tentativelyAccepted', eventId };
             },
             'declineEvent': async (entities, context) => {
                 const { eventId, comment } = entities;
-                await this.declineEvent(eventId, comment);
+                await this.declineEvent(eventId, comment, context.req);
                 return { type: 'eventResponse', status: 'declined', eventId };
             },
             'cancelEvent': async (entities, context) => {
                 const { eventId, comment } = entities;
-                await this.cancelEvent(eventId, comment);
+                await this.cancelEvent(eventId, comment, context.req);
                 return { type: 'eventResponse', status: 'cancelled', eventId };
             },
             'findMeetingTimes': async (entities, context) => {
                 const options = entities.options || {};
-                const suggestions = await this.findMeetingTimes(options);
+                const suggestions = await this.findMeetingTimes(options, context.req);
                 // Ensure suggestions structure aligns with expected response type
                 return { type: 'meetingTimeSuggestions', suggestions: suggestions };
             },
             'getRooms': async (entities, context) => {
                 const options = entities.options || {};
-                const roomData = await this.getRooms(options); // Expect { rooms: [], nextLink: ... }
+                const roomData = await this.getRooms(options, context.req); // Expect { rooms: [], nextLink: ... }
                 return { type: 'roomList', rooms: roomData.rooms, nextLink: roomData.nextLink };
             },
             'getCalendars': async (entities, context) => {
-                const calendars = await this.getCalendars(); // Expect array
+                const calendars = await this.getCalendars({}, context.req); // Expect array
                 return { type: 'calendarList', calendars: calendars };
             },
             'addAttachment': async (entities, context) => {
                 const { id, name, contentBytes, contentType } = entities;
                 const attachment = { name, contentBytes, contentType };
-                const result = await this.addAttachment(id, attachment);
+                const result = await this.addAttachment(id, attachment, context.req);
                 return { type: 'attachmentAdded', attachment: result };
             },
             'removeAttachment': async (entities, context) => {
                 const { eventId, attachmentId } = entities;
-                const success = await this.removeAttachment(eventId, attachmentId);
+                const success = await this.removeAttachment(eventId, attachmentId, context.req);
                 return { type: 'attachmentRemoved', success, eventId, attachmentId };
             }
             // Add handlers for addAttachment/removeAttachment if they become intents

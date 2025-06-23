@@ -84,6 +84,30 @@ export class UINotification {
     }
     
     /**
+     * Generic show method that routes to specific notification types
+     * @param {string} message - Message to display
+     * @param {string} type - Type of notification ('error', 'success', 'warning', 'info')
+     * @param {Object} options - Notification options
+     */
+    static show(message, type = 'info', options = {}) {
+        switch (type) {
+            case 'error':
+                this.showError(message, options);
+                break;
+            case 'success':
+                this.showSuccess(message, options);
+                break;
+            case 'warning':
+                this.showWarning(message, options);
+                break;
+            case 'info':
+            default:
+                this.showInfo(message, options);
+                break;
+        }
+    }
+    
+    /**
      * Create notification element
      * @param {string} type - Notification type (error, success, warning, info)
      * @param {string} message - Message to display

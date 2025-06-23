@@ -11,9 +11,14 @@ const express = require('express');
 const session = require('express-session');
 const path = require('path');
 const http = require('http');
+const https = require('https');
+const fs = require('fs');
+const helmet = require('helmet');
 const { setupMiddleware } = require('./server.cjs');
 const monitoringService = require('../core/monitoring-service.cjs');
 const errorService = require('../core/error-service.cjs');
+const { initializeModules } = require('../modules/init-modules.cjs');
+const { databaseFactory } = require('../core/database-factory.cjs');
 
 // Create a combined express server instance
 const app = express();
@@ -142,6 +147,23 @@ process.on('SIGINT', async () => {
  */
 async function startCombinedServer(port = 3000) {
   monitoringService?.info('Setting up combined server...', { port }, 'server');
+  
+  // Initialize database factory and storage service first
+  try {
+    monitoringService?.info('Initializing database factory and storage service...', {}, 'server');
+    await initializeModules();
+    monitoringService?.info('Database factory and storage service initialized successfully', {}, 'server');
+  } catch (error) {
+    const mcpError = errorService?.createError(
+      errorService?.CATEGORIES.DATABASE,
+      `Failed to initialize database factory and storage service: ${error.message}`,
+      errorService?.SEVERITIES.ERROR,
+      { stack: error.stack }
+    );
+    monitoringService?.logError(mcpError);
+    throw error;
+  }
+  
   // Set up middleware from the server module
   try {
     setupMiddleware(app);
@@ -214,6 +236,47 @@ async function startCombinedServer(port = 3000) {
     }
     next();
   });
+  
+  // Add helmet middleware for security headers
+  monitoringService?.info('Configuring security headers with Helmet...', {}, 'security');
+  app.use(helmet({
+    // Content Security Policy
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+        fontSrc: ["'self'", "https://fonts.gstatic.com"],
+        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"], // unsafe-eval needed for some frameworks
+        imgSrc: ["'self'", "data:", "https:"],
+        connectSrc: ["'self'", "https://graph.microsoft.com", "https://login.microsoftonline.com"],
+        frameSrc: ["'none'"],
+        objectSrc: ["'none'"],
+        baseUri: ["'self'"]
+      }
+    },
+    // HTTP Strict Transport Security (HSTS)
+    hsts: {
+      maxAge: 31536000, // 1 year
+      includeSubDomains: true,
+      preload: true
+    },
+    // X-Frame-Options
+    frameguard: { action: 'deny' },
+    // X-Content-Type-Options
+    noSniff: true,
+    // X-XSS-Protection
+    xssFilter: true,
+    // Referrer Policy
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+    // Hide X-Powered-By header
+    hidePoweredBy: true,
+    // DNS Prefetch Control
+    dnsPrefetchControl: { allow: false },
+    // IE No Open
+    ieNoOpen: true,
+    // Don't infer MIME type
+    noSniff: true
+  }));
   
   // Set up session middleware for authentication
   monitoringService?.info('Setting up session middleware...', {}, 'server');
@@ -439,16 +502,72 @@ async function startCombinedServer(port = 3000) {
   // Start the server
   const startTime = Date.now();
   return new Promise((resolve) => {
-    server = app.listen(port, () => {
+    // Check if HTTPS should be enabled
+    const useHttps = process.env.ENABLE_HTTPS === 'true';
+    const sslKeyPath = process.env.SSL_KEY_PATH;
+    const sslCertPath = process.env.SSL_CERT_PATH;
+    
+    let serverInstance;
+    let protocol = 'http';
+    
+    if (useHttps && sslKeyPath && sslCertPath) {
+      try {
+        // Check if SSL certificate files exist
+        if (fs.existsSync(sslKeyPath) && fs.existsSync(sslCertPath)) {
+          const sslOptions = {
+            key: fs.readFileSync(sslKeyPath),
+            cert: fs.readFileSync(sslCertPath)
+          };
+          serverInstance = https.createServer(sslOptions, app);
+          protocol = 'https';
+          monitoringService?.info('HTTPS enabled with SSL certificates', { 
+            keyPath: sslKeyPath, 
+            certPath: sslCertPath 
+          }, 'server');
+        } else {
+          monitoringService?.warn('SSL certificate files not found, falling back to HTTP', { 
+            keyPath: sslKeyPath, 
+            certPath: sslCertPath 
+          }, 'server');
+          serverInstance = http.createServer(app);
+        }
+      } catch (error) {
+        monitoringService?.error('Failed to load SSL certificates, falling back to HTTP', { 
+          error: error.message,
+          keyPath: sslKeyPath, 
+          certPath: sslCertPath 
+        }, 'server');
+        serverInstance = http.createServer(app);
+      }
+    } else {
+      serverInstance = http.createServer(app);
+      if (useHttps) {
+        monitoringService?.warn('HTTPS requested but SSL paths not configured, using HTTP', {
+          enableHttps: useHttps,
+          sslKeyPath,
+          sslCertPath
+        }, 'server');
+      }
+    }
+    
+    server = serverInstance.listen(port, () => {
       const startupTime = Date.now() - startTime;
+      const serverUrl = `${protocol}://localhost:${port}`;
+      
       if (monitoringService) {
-        monitoringService.info(`Combined server running at http://localhost:${port}`, { startupTime, port, startup: true }, 'server');
-        monitoringService.trackMetric('server.startup.time', startupTime, { port });
+        monitoringService.info(`Combined server running at ${serverUrl}`, { 
+          startupTime, 
+          port, 
+          protocol,
+          startup: true 
+        }, 'server');
+        monitoringService.trackMetric('server.startup.time', startupTime, { port, protocol });
       } else {
         // Fallback logging when MonitoringService is not available
-        process.stdout.write(`[monitoringService missing] Server running at http://localhost:${port} ${JSON.stringify({
+        process.stdout.write(`[monitoringService missing] Server running at ${serverUrl} ${JSON.stringify({
           startupTime,
           port,
+          protocol,
           startup: true
         })}\n`);
       }
@@ -456,10 +575,10 @@ async function startCombinedServer(port = 3000) {
       // Emit event for UI subscribers if available
       const logData = {
         level: 'info',
-        message: `Combined server running at http://localhost:${port}`,
+        message: `Combined server running at ${serverUrl}`,
         timestamp: new Date().toISOString(),
         category: 'server',
-        context: { startupTime, port, startup: true }
+        context: { startupTime, port, protocol, startup: true }
       };
       
       if (monitoringService?.logEmitter) {
@@ -479,10 +598,29 @@ async function startCombinedServer(port = 3000) {
  * @returns {Promise<void>}
  */
 function stopCombinedServer() {
-  return new Promise((resolve, reject) => {
+  return new Promise(async (resolve, reject) => {
+    const startTime = Date.now();
+    monitoringService?.info('Stopping combined server...', {}, 'server');
+    
+    try {
+      // Close database factory
+      if (databaseFactory && databaseFactory.initialized) {
+        monitoringService?.info('Closing database factory...', {}, 'server');
+        await databaseFactory.close();
+        monitoringService?.info('Database factory closed successfully', {}, 'server');
+      }
+    } catch (error) {
+      const mcpError = errorService?.createError(
+        errorService?.CATEGORIES.DATABASE,
+        `Error closing database factory: ${error.message}`,
+        errorService?.SEVERITIES.ERROR,
+        { stack: error.stack }
+      );
+      monitoringService?.logError(mcpError);
+      // Continue with server shutdown even if database cleanup fails
+    }
+    
     if (server) {
-      const startTime = Date.now();
-      monitoringService?.info('Stopping combined server...', {}, 'server');
       server.close((err) => {
         const shutdownTime = Date.now() - startTime;
         if (err) {

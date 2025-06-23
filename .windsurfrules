@@ -291,32 +291,6 @@ if (FEATURES.REDIS_CACHE) {
 - Validate configuration at startup
 - Document all configuration options
 
-## Phase-Specific Guidelines
-
-### Phase 1 (MVP)
-
-- Focus on core modules only (Mail, Calendar, OneDrive)
-- Use in-memory caching only
-- Implement basic NLU with minimal LLM calls
-- Create simple UI focused on conversation
-- Ensure robust error handling for common scenarios
-
-### Phase 2
-
-- Add additional modules (People, SharePoint)
-- Implement Redis caching (optional)
-- Enhance context awareness
-- Improve UI with rich formatting
-- Add more sophisticated LLM prompts
-
-### Phase 3
-
-- Add Teams integration
-- Implement proactive notifications
-- Add cross-device synchronization
-- Enhance analytics capabilities
-- Optimize for enterprise scenarios
-
 ## Remember
 
 - Keep each file focused on a single responsibility

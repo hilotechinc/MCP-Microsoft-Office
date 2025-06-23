@@ -403,8 +403,8 @@ async function uploadFile(name, content, req) {
  * @param {string} id
  * @returns {Promise<object>}
  */
-async function getFileMetadata(id) {
-  const client = await graphClientFactory.createClient();
+async function getFileMetadata(id, req) {
+  const client = await graphClientFactory.createClient(req);
   const meta = await client.api(`/me/drive/items/${id}`).get();
   return normalizeFile(meta);
 }
@@ -415,8 +415,8 @@ async function getFileMetadata(id) {
  * @param {string} type - 'view', 'edit', etc.
  * @returns {Promise<object>} Normalized sharing link
  */
-async function createSharingLink(id, type = 'view') {
-  const client = await graphClientFactory.createClient();
+async function createSharingLink(id, type = 'view', req) {
+  const client = await graphClientFactory.createClient(req);
   const body = { type, scope: 'anonymous' };
   const res = await client.api(`/me/drive/items/${id}/createLink`).post(body);
   return res.link ? { webUrl: res.link.webUrl } : {};
@@ -427,8 +427,8 @@ async function createSharingLink(id, type = 'view') {
  * @param {string} id
  * @returns {Promise<Array<object>>} Array of normalized sharing links
  */
-async function getSharingLinks(id) {
-  const client = await graphClientFactory.createClient();
+async function getSharingLinks(id, req) {
+  const client = await graphClientFactory.createClient(req);
   const res = await client.api(`/me/drive/items/${id}/permissions`).get();
   return (res.value || [])
     .filter(p => p.link && p.link.webUrl)
@@ -441,8 +441,8 @@ async function getSharingLinks(id) {
  * @param {string} permissionId
  * @returns {Promise<object>}
  */
-async function removeSharingPermission(fileId, permissionId) {
-  const client = await graphClientFactory.createClient();
+async function removeSharingPermission(fileId, permissionId, req) {
+  const client = await graphClientFactory.createClient(req);
   return await client.api(`/me/drive/items/${fileId}/permissions/${permissionId}`).delete();
 }
 
@@ -569,8 +569,8 @@ async function getFileContent(id, req) {
  * @param {Buffer} content
  * @returns {Promise<object>}
  */
-async function setFileContent(id, content) {
-  const client = await graphClientFactory.createClient();
+async function setFileContent(id, content, req) {
+  const client = await graphClientFactory.createClient(req);
   return await client.api(`/me/drive/items/${id}/content`).put(content);
 }
 
@@ -580,9 +580,9 @@ async function setFileContent(id, content) {
  * @param {Buffer} content
  * @returns {Promise<object>}
  */
-async function updateFileContent(id, content) {
+async function updateFileContent(id, content, req) {
   try {
-    const client = await graphClientFactory.createClient();
+    const client = await graphClientFactory.createClient(req);
     // Use PUT for file content updates as per Graph API documentation
     return await client.api(`/me/drive/items/${id}/content`).put(content);
   } catch (error) {

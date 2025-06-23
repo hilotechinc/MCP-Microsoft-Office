@@ -426,7 +426,7 @@ async function initialize() {
 /**
  * Create log data object compatible with original format
  */
-function createLogData(level, message, context = {}, category = '', traceId = null) {
+function createLogData(level, message, context = {}, category = '', traceId = null, userId = null, deviceId = null) {
   const logData = {
     id: uuidv4(),
     timestamp: new Date().toISOString(),
@@ -441,6 +441,15 @@ function createLogData(level, message, context = {}, category = '', traceId = nu
   
   if (traceId) {
     logData.traceId = traceId;
+  }
+  
+  // Add multi-user context for isolation and monitoring
+  if (userId) {
+    logData.userId = userId;
+  }
+  
+  if (deviceId) {
+    logData.deviceId = deviceId;
   }
   
   return logData;
@@ -494,7 +503,7 @@ function logError(error) {
 /**
  * Logs an error message - maintains same signature as original
  */
-function error(message, context = {}, category = '', traceId = null) {
+function error(message, context = {}, category = '', traceId = null, userId = null, deviceId = null) {
     if (checkMemoryForEmergency()) {
         return;
     }
@@ -513,7 +522,7 @@ function error(message, context = {}, category = '', traceId = null) {
         return;
     }
     
-    const logData = createLogData('error', message, context, category, traceId);
+    const logData = createLogData('error', message, context, category, traceId, userId, deviceId);
     
     // Add to circular buffer
     logBuffer.add(logData);
@@ -530,7 +539,9 @@ function error(message, context = {}, category = '', traceId = null) {
                 pid: logData.pid,
                 hostname: logData.hostname,
                 version: logData.version,
-                traceId: logData.traceId
+                traceId: logData.traceId,
+                userId: logData.userId,
+                deviceId: logData.deviceId
             });
         } catch (err) {
             console.error(`[MONITORING] Failed to log error: ${err.message}`);
@@ -541,7 +552,7 @@ function error(message, context = {}, category = '', traceId = null) {
 /**
  * Logs an info message - maintains same signature as original
  */
-function info(message, context = {}, category = 'general', traceId = null) {
+function info(message, context = {}, category = 'general', traceId = null, userId = null, deviceId = null) {
     if (checkMemoryForEmergency()) {
         return;
     }
@@ -552,7 +563,7 @@ function info(message, context = {}, category = 'general', traceId = null) {
         return;
     }
     
-    const logData = createLogData('info', message, context, category, traceId);
+    const logData = createLogData('info', message, context, category, traceId, userId, deviceId);
     
     // Add to circular buffer
     logBuffer.add(logData);
@@ -568,7 +579,9 @@ function info(message, context = {}, category = 'general', traceId = null) {
             pid: logData.pid,
             hostname: logData.hostname,
             version: logData.version,
-            traceId: logData.traceId
+            traceId: logData.traceId,
+            userId: logData.userId,
+            deviceId: logData.deviceId
         });
     } catch (err) {
         console.error(`[MONITORING] Failed to log info message: ${err.message}`);
@@ -578,14 +591,14 @@ function info(message, context = {}, category = 'general', traceId = null) {
 /**
  * Logs a warning message - maintains same signature as original
  */
-function warn(message, context = {}, category = 'general', traceId = null) {
+function warn(message, context = {}, category = 'general', traceId = null, userId = null, deviceId = null) {
     if (!logger) initLogger();
     
     if (shouldFilterLog('warn', message, category, context)) {
         return;
     }
     
-    const logData = createLogData('warn', message, context, category, traceId);
+    const logData = createLogData('warn', message, context, category, traceId, userId, deviceId);
     
     // Add to circular buffer
     logBuffer.add(logData);
@@ -601,7 +614,9 @@ function warn(message, context = {}, category = 'general', traceId = null) {
             pid: logData.pid,
             hostname: logData.hostname,
             version: logData.version,
-            traceId: logData.traceId
+            traceId: logData.traceId,
+            userId: logData.userId,
+            deviceId: logData.deviceId
         });
     } catch (err) {
         console.error(`[MONITORING] Failed to log warning message: ${err.message}`);
@@ -611,14 +626,14 @@ function warn(message, context = {}, category = 'general', traceId = null) {
 /**
  * Logs a debug message - maintains same signature as original
  */
-function debug(message, context = {}, category = 'general', traceId = null) {
+function debug(message, context = {}, category = 'general', traceId = null, userId = null, deviceId = null) {
     if (!logger) initLogger();
     
     if (shouldFilterLog('debug', message, category, context)) {
         return;
     }
     
-    const logData = createLogData('debug', message, context, category, traceId);
+    const logData = createLogData('debug', message, context, category, traceId, userId, deviceId);
     
     // Add to circular buffer
     logBuffer.add(logData);
@@ -634,7 +649,9 @@ function debug(message, context = {}, category = 'general', traceId = null) {
             pid: logData.pid,
             hostname: logData.hostname,
             version: logData.version,
-            traceId: logData.traceId
+            traceId: logData.traceId,
+            userId: logData.userId,
+            deviceId: logData.deviceId
         });
     } catch (err) {
         console.error(`[MONITORING] Failed to log debug message: ${err.message}`);
@@ -644,7 +661,7 @@ function debug(message, context = {}, category = 'general', traceId = null) {
 /**
  * Track a metric
  */
-function trackMetric(name, value, context = {}) {
+function trackMetric(name, value, context = {}, userId = null, deviceId = null) {
     if (checkMemoryForEmergency()) {
         return;
     }
@@ -668,6 +685,14 @@ function trackMetric(name, value, context = {}) {
         timestamp: new Date().toISOString()
     };
     
+    if (userId) {
+        logData.userId = userId;
+    }
+    
+    if (deviceId) {
+        logData.deviceId = deviceId;
+    }
+    
     // Add to circular buffer
     logBuffer.add(logData);
     
@@ -675,7 +700,9 @@ function trackMetric(name, value, context = {}) {
     logger.info(`Metric: ${name}`, {
         context: logData.context,
         category: logData.category,
-        timestamp: logData.timestamp
+        timestamp: logData.timestamp,
+        userId: logData.userId,
+        deviceId: logData.deviceId
     });
     
     // Don't emit events for metrics to prevent recursion

@@ -12,6 +12,7 @@ export class UIManager {
     constructor() {
         this.renderCallbacks = new Map();
         this.initialized = false;
+        this.currentUser = null; // Add this line to store user information
     }
 
     /**
@@ -182,7 +183,7 @@ export class UIManager {
         // Add loading styles if not present
         this.ensureLoadingStyles();
         
-        element.style.position = 'relative';
+        element.classList.add('relative');
         element.appendChild(loadingDiv);
     }
 
@@ -261,13 +262,11 @@ export class UIManager {
         if (!element) return;
         
         if (show) {
-            element.style.display = '';
             element.classList.remove('hidden');
             element.classList.add('fade-in');
         } else {
             element.classList.add('fade-out');
             setTimeout(() => {
-                element.style.display = 'none';
                 element.classList.add('hidden');
                 element.classList.remove('fade-out');
             }, 300);
@@ -374,6 +373,666 @@ export class UIManager {
     }
 
     /**
+     * Start Microsoft Graph authentication flow using existing MSAL service
+     */
+    async startMicrosoftAuth() {
+        try {
+            UINotification.show('Redirecting to Microsoft login...', 'info');
+            
+            // Direct navigation to login endpoint (supports GET)
+            window.location.href = '/api/auth/login';
+            
+        } catch (error) {
+            console.error('Microsoft authentication failed:', error);
+            UINotification.show(`Authentication failed: ${error.message}`, 'error');
+        }
+    }
+
+    /**
+     * Check authentication status using existing MSAL service
+     */
+    async refreshAuthenticationState() {
+        try {
+            // Check authentication status via existing status endpoint
+            const response = await fetch('/api/status', { credentials: 'include' });
+            
+            if (!response.ok) {
+                throw new Error('Failed to check authentication status');
+            }
+
+            const status = await response.json();
+            
+            // Check the actual response format from the API
+            if (status.details?.msGraph?.authenticated) {
+                this.showAuthenticatedState(status.details.msGraph);
+            } else {
+                this.showUnauthenticatedState();
+            }
+            
+        } catch (error) {
+            console.error('Failed to check authentication state:', error);
+            this.showUnauthenticatedState();
+        }
+    }
+
+    /**
+     * Show authenticated state in UI
+     */
+    showAuthenticatedState(authInfo) {
+        // Store user info for use in other UI elements
+        this.currentUser = {
+            name: authInfo.name || authInfo.user || 'User',
+            email: authInfo.user || authInfo.email || '',
+            sessionId: authInfo.sessionId
+        };
+
+        // Update login button to show authenticated state
+        const loginButton = document.getElementById('device-auth-button');
+        if (loginButton) {
+            loginButton.textContent = '✅ Connected to Microsoft 365';
+            loginButton.className = 'btn btn-success';
+            loginButton.disabled = true;
+        }
+
+        // Show authentication status
+        const authStatus = document.getElementById('auth-status');
+        if (authStatus) {
+            authStatus.classList.remove('hidden');
+            const statusText = authStatus.querySelector('.status-text');
+            if (statusText) {
+                const userName = authInfo.name || authInfo.user || 'User';
+                statusText.textContent = `Connected as ${userName}`;
+            }
+        }
+
+        // Show user info if available
+        if (authInfo.name || authInfo.user) {
+            const displayName = authInfo.name || authInfo.user || 'User';
+            UINotification.show(`Welcome ${displayName}!`, 'success');
+        }
+
+        // Show next step: Create session for MCP adapter
+        this.showSessionCreationOption();
+    }
+
+    /**
+     * Show session creation option after Microsoft authentication
+     */
+    showSessionCreationOption() {
+        // Show the MCP token generation section
+        const mcpTokenSection = document.getElementById('mcp-token-section');
+        if (mcpTokenSection) {
+            mcpTokenSection.classList.remove('hidden');
+            
+            // Set up event listeners for MCP token generation
+            this.setupMcpTokenListeners();
+        }
+        
+        // Hide the old adapter download section if it exists
+        const downloadSection = document.getElementById('adapter-download-section');
+        if (downloadSection) {
+            downloadSection.classList.add('hidden');
+        }
+    }
+
+    /**
+     * Set up event listeners for MCP token generation
+     */
+    setupMcpTokenListeners() {
+        // Generate MCP Token button
+        const generateButton = document.getElementById('generate-mcp-token-button');
+        if (generateButton) {
+            generateButton.onclick = () => this.generateMcpToken();
+        }
+
+        // Copy token button
+        const copyTokenButton = document.getElementById('copy-token-button');
+        if (copyTokenButton) {
+            copyTokenButton.onclick = () => this.copyToClipboard('mcp-token-text', 'Token copied to clipboard!');
+        }
+
+        // Copy config button
+        const copyConfigButton = document.getElementById('copy-config-button');
+        if (copyConfigButton) {
+            copyConfigButton.onclick = () => this.copyToClipboard('config-example', 'Config copied to clipboard!');
+        }
+    }
+
+    /**
+     * Generate MCP bearer token
+     */
+    async generateMcpToken() {
+        const generateButton = document.getElementById('generate-mcp-token-button');
+        const resultDiv = document.getElementById('mcp-token-result');
+        
+        try {
+            // Show loading state
+            if (generateButton) {
+                generateButton.disabled = true;
+                generateButton.textContent = 'Generating...';
+            }
+
+            UINotification.show('Generating MCP token...', 'info');
+
+            // Call the API to generate the token
+            const response = await fetch('/api/auth/device/generate-mcp-token', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                credentials: 'include'
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.error_description || 'Failed to generate token');
+            }
+
+            const tokenData = await response.json();
+
+            // Display the token and config
+            this.displayMcpToken(tokenData);
+
+            UINotification.show('MCP token generated successfully!', 'success');
+
+        } catch (error) {
+            console.error('Error generating MCP token:', error);
+            UINotification.show(`Failed to generate token: ${error.message}`, 'error');
+        } finally {
+            // Reset button state
+            if (generateButton) {
+                generateButton.disabled = false;
+                generateButton.textContent = 'Generate MCP Token';
+            }
+        }
+    }
+
+    /**
+     * Display the generated MCP token and configuration
+     */
+    displayMcpToken(tokenData) {
+        const resultDiv = document.getElementById('mcp-token-result');
+        const tokenText = document.getElementById('mcp-token-text');
+        const configExample = document.getElementById('config-example');
+
+        if (tokenText) {
+            tokenText.value = tokenData.access_token;
+        }
+
+        if (configExample) {
+            const configJson = {
+                mcpServers: {
+                    microsoft365: {
+                        command: "node",
+                        args: ["path/to/simple-mcp-adapter.js"],
+                        env: {
+                            MCP_SERVER_URL: tokenData.usage_instructions?.claude_desktop_config?.mcpServers?.microsoft365?.env?.MCP_SERVER_URL || window.location.origin,
+                            MCP_BEARER_TOKEN: tokenData.access_token
+                        }
+                    }
+                }
+            };
+            configExample.textContent = JSON.stringify(configJson, null, 2);
+        }
+
+        if (resultDiv) {
+            resultDiv.classList.remove('hidden');
+        }
+    }
+
+    /**
+     * Copy text to clipboard
+     */
+    async copyToClipboard(elementId, successMessage) {
+        const element = document.getElementById(elementId);
+        if (!element) return;
+
+        try {
+            const text = element.value || element.textContent;
+            await navigator.clipboard.writeText(text);
+            UINotification.show(successMessage, 'success');
+        } catch (error) {
+            console.error('Failed to copy to clipboard:', error);
+            
+            // Fallback: select the text
+            if (element.select) {
+                element.select();
+                element.setSelectionRange(0, 99999); // For mobile devices
+            } else {
+                const range = document.createRange();
+                range.selectNode(element);
+                window.getSelection().removeAllRanges();
+                window.getSelection().addRange(range);
+            }
+            
+            UINotification.show('Text selected - please copy manually (Ctrl+C)', 'warning');
+        }
+    }
+
+    /**
+     * Create MCP session for adapter generation
+     */
+    async createMCPSession() {
+        try {
+            UINotification.show('Creating MCP session...', 'info');
+            
+            // Step 1: Register device to get device code
+            const registerResponse = await fetch('/api/auth/device/register', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                credentials: 'include',
+                body: JSON.stringify({
+                    device_name: `MCP-Session-${Date.now()}`,
+                    device_type: 'mcp-adapter'
+                })
+            });
+
+            if (!registerResponse.ok) {
+                const errorData = await registerResponse.json();
+                throw new Error(errorData.error_description || 'Device registration failed');
+            }
+
+            const deviceData = await registerResponse.json();
+            UINotification.show('Device registered, authorizing...', 'info');
+            
+            // Step 2: Authorize device with current user session
+            // Since user is already authenticated, we can authorize the device directly
+            const authResponse = await fetch('/api/auth/device/authorize', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                credentials: 'include', // Include session cookies
+                body: JSON.stringify({
+                    user_code: deviceData.user_code, // Use the actual user_code from registration
+                    user_id: 'current_session' // Use current session
+                })
+            });
+
+            if (!authResponse.ok) {
+                const errorData = await authResponse.json();
+                throw new Error(errorData.error_description || 'Device authorization failed');
+            }
+
+            UINotification.show('MCP session created successfully!', 'success');
+            
+            // Show adapter download option with device data
+            this.showAdapterDownloadOption({
+                device_id: deviceData.device_code, // Use device_code as the session identifier
+                device_code: deviceData.device_code,
+                user_code: deviceData.user_code
+            });
+            
+        } catch (error) {
+            console.error('Session creation failed:', error);
+            UINotification.show(`Session creation failed: ${error.message}`, 'error');
+        }
+    }
+
+    /**
+     * Show adapter download option after session creation
+     */
+    showAdapterDownloadOption(sessionData) {
+        const downloadSection = document.getElementById('adapter-download-section');
+        if (downloadSection) {
+            // Store session data globally and in dataset for retrieval
+            window.currentSessionData = sessionData;
+            downloadSection.dataset.deviceId = sessionData.device_id;
+            
+            downloadSection.innerHTML = `
+                <div class="adapter-download">
+                    <h3>Session Ready</h3>
+                    <p><strong>Device ID:</strong> ${sessionData.device_id}</p>
+                    <p>Your session is ready! You can now test the API or generate an MCP token.</p>
+                    <div class="adapter-buttons">
+                        <button class="btn btn-info" onclick="UIManager.testAPIConnectivity('${sessionData.device_id}')">
+                            🧪 Test API Connectivity
+                        </button>
+                        <button class="btn btn-primary" onclick="UIManager.generateMcpToken()">
+                            🔑 Generate MCP Token
+                        </button>
+                        <button class="btn btn-secondary" onclick="UIManager.logout()">
+                            Logout
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+    }
+
+    /**
+     * Test API connectivity for the device session
+     */
+    async testAPIConnectivity(deviceId) {
+        try {
+            UINotification.show('Testing MCP tools connectivity...', 'info');
+            
+            // Test the actual API endpoints that MCP tools call internally
+            // These correspond to the MCP tools: getEvents, readMail, listFiles, findPeople
+            const tests = [
+                { 
+                    name: 'Calendar Events (getEvents tool)', 
+                    endpoint: '/api/v1/calendar',
+                    method: 'GET',
+                    params: '?limit=5'
+                },
+                { 
+                    name: 'Recent Emails (readMail tool)', 
+                    endpoint: '/api/v1/mail',
+                    method: 'GET', 
+                    params: '?limit=5'
+                },
+                { 
+                    name: 'OneDrive Files (listFiles tool)', 
+                    endpoint: '/api/v1/files',
+                    method: 'GET',
+                    params: '?limit=5'
+                },
+                { 
+                    name: 'People Directory (findPeople tool)', 
+                    endpoint: '/api/v1/people',
+                    method: 'GET',
+                    params: '?limit=5'
+                }
+            ];
+            
+            const results = [];
+            
+            for (const test of tests) {
+                try {
+                    const fullEndpoint = test.endpoint + (test.params || '');
+                    const response = await fetch(fullEndpoint, {
+                        method: test.method,
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        credentials: 'include'
+                    });
+                    
+                    if (response.ok) {
+                        const data = await response.json();
+                        
+                        // Extract meaningful data counts from different API responses
+                        let itemCount = 'N/A';
+                        if (Array.isArray(data.events)) {
+                            itemCount = `${data.events.length} events`;
+                        } else if (Array.isArray(data.messages)) {
+                            itemCount = `${data.messages.length} messages`;
+                        } else if (Array.isArray(data.files)) {
+                            itemCount = `${data.files.length} files`;
+                        } else if (Array.isArray(data.people)) {
+                            itemCount = `${data.people.length} people`;
+                        } else if (data.success !== undefined) {
+                            itemCount = 'Tool executed successfully';
+                        }
+                        
+                        results.push({ 
+                            name: test.name, 
+                            status: '✅ Success',
+                            data: itemCount,
+                            details: data 
+                        });
+                    } else {
+                        results.push({ 
+                            name: test.name, 
+                            status: '❌ Failed', 
+                            error: `${response.status} ${response.statusText}` 
+                        });
+                    }
+                } catch (error) {
+                    results.push({ 
+                        name: test.name, 
+                        status: '❌ Error', 
+                        error: error.message 
+                    });
+                }
+            }
+            
+            // Show results
+            this.showAPITestResults(results);
+            UINotification.show('MCP tools connectivity test completed!', 'success');
+            
+        } catch (error) {
+            console.error('MCP tools connectivity test failed:', error);
+            UINotification.show(`Test failed: ${error.message}`, 'error');
+        }
+    }
+
+    /**
+     * Show API test results
+     */
+    showAPITestResults(results) {
+        const downloadSection = document.getElementById('adapter-download-section');
+        if (downloadSection) {
+            let resultsHtml = '';
+            results.forEach((result) => {
+                let html = `
+                    <div class="test-result">
+                        <h4>${result.name}</h4>
+                        <p><strong>Status:</strong> ${result.status}</p>`;
+                
+                if (result.data) {
+                    html += `
+                        <pre><code>${result.data}</code></pre>`;
+                }
+                
+                if (result.error) {
+                    html += `
+                        <p><strong>Error:</strong> ${result.error}</p>`;
+                }
+                
+                if (result.details) {
+                    html += `
+                        <pre><code>${JSON.stringify(result.details, null, 2)}</code></pre>`;
+                }
+                
+                html += `
+                    </div>`;
+                
+                resultsHtml += html;
+            });
+            
+            downloadSection.innerHTML = `
+                <div class="adapter-download">
+                    <h3>API Connectivity Test Results</h3>
+                    <div class="test-results">
+                        ${resultsHtml}
+                    </div>
+                    <div class="adapter-buttons">
+                        <button class="btn btn-primary" onclick="UIManager.generateMcpToken()">
+                            🔑 Generate MCP Token
+                        </button>
+                        <button class="btn btn-secondary" onclick="UIManager.logout()">
+                            Logout
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+    }
+
+    /**
+     * Show unauthenticated state in UI
+     */
+    showUnauthenticatedState() {
+        const loginButton = document.getElementById('device-auth-button');
+        if (loginButton) {
+            loginButton.textContent = 'Connect to Microsoft 365';
+            loginButton.className = 'btn btn-primary';
+            loginButton.disabled = false;
+            loginButton.onclick = () => this.startMicrosoftAuth();
+        }
+    }
+
+    /**
+     * Register device using existing device auth system
+     */
+    async registerDevice() {
+        try {
+            UINotification.show('Registering device...', 'info');
+            
+            const response = await fetch('/api/auth/device/register', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                credentials: 'include',
+                body: JSON.stringify({
+                    device_name: `Browser-${Date.now()}`,
+                    device_type: 'browser'
+                })
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.error_description || 'Device registration failed');
+            }
+
+            const deviceData = await response.json();
+            
+            UINotification.show('Device registered successfully!', 'success');
+            
+            // Show device authorization flow
+            this.showDeviceAuthFlow(deviceData);
+            
+        } catch (error) {
+            console.error('Device registration failed:', error);
+            UINotification.show(`Device registration failed: ${error.message}`, 'error');
+        }
+    }
+
+    /**
+     * Show device authorization flow
+     */
+    showDeviceAuthFlow(deviceData) {
+        const downloadSection = document.getElementById('adapter-download-section');
+        if (downloadSection) {
+            downloadSection.innerHTML = `
+                <div class="adapter-download">
+                    <h3>Device Authorization</h3>
+                    <p>Your device code: <strong>${deviceData.user_code}</strong></p>
+                    <p>Visit: <a href="${deviceData.verification_uri}" target="_blank">${deviceData.verification_uri}</a></p>
+                    <p>Enter the code above to authorize this device.</p>
+                    <div class="adapter-buttons">
+                        <button class="btn btn-primary" onclick="UIManager.pollForToken('${deviceData.device_id}')">
+                            Check Authorization Status
+                        </button>
+                        <button class="btn btn-secondary" onclick="UIManager.copyUserCode('${deviceData.user_code}')">
+                            Copy Code
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+    }
+
+    /**
+     * Poll for device token
+     */
+    async pollForToken(deviceId) {
+        try {
+            UINotification.show('Checking authorization status...', 'info');
+            
+            const response = await fetch('/api/auth/device/token', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                credentials: 'include',
+                body: JSON.stringify({
+                    device_id: deviceId
+                })
+            });
+
+            const result = await response.json();
+            
+            if (response.ok && result.access_token) {
+                UINotification.show('Device authorized successfully!', 'success');
+                this.showAdapterDownload(result);
+            } else if (result.error === 'authorization_pending') {
+                UINotification.show('Authorization pending. Please complete authorization in browser.', 'warning');
+                // Continue polling
+                setTimeout(() => this.pollForToken(deviceId), 5000);
+            } else {
+                throw new Error(result.error_description || 'Authorization failed');
+            }
+            
+        } catch (error) {
+            console.error('Token polling failed:', error);
+            UINotification.show(`Authorization check failed: ${error.message}`, 'error');
+        }
+    }
+
+    /**
+     * Show token generation option after successful authorization
+     */
+    showAdapterDownload(tokenData) {
+        const downloadSection = document.getElementById('adapter-download-section');
+        if (downloadSection) {
+            downloadSection.innerHTML = `
+                <div class="adapter-download">
+                    <h3>Authorization Complete</h3>
+                    <p>Your device is authorized! You can now generate an MCP token.</p>
+                    <div class="adapter-buttons">
+                        <button class="btn btn-primary" onclick="UIManager.generateMcpToken()">
+                            🔑 Generate MCP Token
+                        </button>
+                        <button class="btn btn-secondary" onclick="UIManager.logout()">
+                            Logout
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+    }
+
+    /**
+     * Copy user code to clipboard
+     */
+    copyUserCode(userCode) {
+        navigator.clipboard.writeText(userCode).then(() => {
+            UINotification.show('User code copied to clipboard', 'success');
+        }).catch(() => {
+            UINotification.show('Failed to copy code', 'error');
+        });
+    }
+
+    /**
+     * Logout using existing MSAL service
+     */
+    async logout() {
+        try {
+            const response = await fetch('/api/auth/logout', {
+                method: 'POST',
+                credentials: 'include'
+            });
+            
+            if (response.ok) {
+                UINotification.show('Logged out successfully', 'success');
+                this.showUnauthenticatedState();
+                // Clear adapter download section
+                const downloadSection = document.getElementById('adapter-download-section');
+                if (downloadSection) {
+                    downloadSection.classList.add('hidden');
+                }
+            } else {
+                throw new Error('Logout failed');
+            }
+        } catch (error) {
+            UINotification.show(`Logout failed: ${error.message}`, 'error');
+        }
+    }
+
+    /**
+     * Get current session data from window or UI state
+     */
+    getCurrentSessionData() {
+        return window.currentSessionData || null;
+    }
+
+    /**
      * Cleanup UI Manager resources
      */
     destroy() {
@@ -387,5 +1046,21 @@ export class UIManager {
 
 // Make available globally
 if (typeof window !== 'undefined') {
-    window.UIManager = UIManager;
+    // Create a global instance
+    window.UIManagerInstance = new UIManager();
+    
+    // Make methods available as static methods for onclick handlers
+    window.UIManager = {
+        startMicrosoftAuth: () => window.UIManagerInstance.startMicrosoftAuth(),
+        showAdapterDownloadOption: (sessionId) => window.UIManagerInstance.showAdapterDownloadOption(sessionId),
+        refreshAuthenticationState: () => window.UIManagerInstance.refreshAuthenticationState(),
+        showAuthenticatedState: (session) => window.UIManagerInstance.showAuthenticatedState(session),
+        showUnauthenticatedState: () => window.UIManagerInstance.showUnauthenticatedState(),
+        registerDevice: () => window.UIManagerInstance.registerDevice(),
+        logout: () => window.UIManagerInstance.logout(),
+        pollForToken: (deviceId) => window.UIManagerInstance.pollForToken(deviceId),
+        copyUserCode: (userCode) => window.UIManagerInstance.copyUserCode(userCode),
+        createMCPSession: () => window.UIManagerInstance.createMCPSession(),
+        testAPIConnectivity: (deviceId) => window.UIManagerInstance.testAPIConnectivity(deviceId)
+    };
 }

@@ -6,7 +6,7 @@
 
 const fs = require('fs').promises;
 const path = require('path');
-const moduleRegistry = require('./module-registry');
+const moduleRegistry = require('./module-registry.cjs');
 const MonitoringService = require('../core/monitoring-service.cjs');
 const ErrorService = require('../core/error-service.cjs');
 

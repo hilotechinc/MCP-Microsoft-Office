@@ -18,6 +18,7 @@ const validateAndLog = (req, schema, endpoint, additionalContext = {}) => {
     const result = schema.validate(req.body);
     
     if (result.error) {
+        const { userId = null, deviceId = null } = additionalContext;
         const validationError = ErrorService?.createError(
             'api', 
             `${endpoint} validation error`, 
@@ -26,7 +27,10 @@ const validateAndLog = (req, schema, endpoint, additionalContext = {}) => {
                 details: result.error.details,
                 endpoint,
                 ...additionalContext
-            }
+            },
+            null,
+            userId,
+            deviceId
         );
         MonitoringService?.logError(validationError);
     }
@@ -56,10 +60,26 @@ module.exports = ({ calendarModule }) => ({
      * @param {import('express').Response} res
      */
     async getEvents(req, res) {
+        // Extract user context from Express session (for web-based auth) or auth middleware (for device auth)
+        const { userId = null, deviceId = null } = req.user || {};
+        const sessionUserId = req.session?.id ? `user:${req.session.id}` : null;
+        const actualUserId = userId || sessionUserId;
+        
         try {
             // Start timing for performance tracking
             const startTime = Date.now();
             const endpoint = '/api/calendar';
+            
+            // Log request with user context
+            MonitoringService?.info(`Processing ${req.method} ${req.path}`, {
+                method: req.method,
+                path: req.path,
+                query: req.query,
+                ip: req.ip,
+                userId: actualUserId,
+                deviceId,
+                sessionId: req.session?.id
+            }, 'calendar', null, actualUserId, deviceId);
             
             // Validate query params with Joi
             const querySchema = Joi.object({
@@ -84,8 +104,10 @@ module.exports = ({ calendarModule }) => ({
                 const validationError = ErrorService?.createError('api', 'Query parameter validation error', 'warning', { 
                     details: error.details,
                     endpoint,
-                    query: req.query
-                });
+                    query: req.query,
+                    userId: actualUserId,
+                    deviceId
+                }, null, actualUserId, deviceId);
                 MonitoringService?.logError(validationError);
                 return res.status(400).json({ 
                     error: 'Invalid query parameters', 
@@ -99,11 +121,26 @@ module.exports = ({ calendarModule }) => ({
             // For debugging, get raw events if requested
             if (debug && isModuleMethodAvailable('getEventsRaw', calendarModule)) {
                 try {
-                    MonitoringService?.info('Fetching raw events for debug', { top, filter }, 'calendar');
-                    rawEvents = await calendarModule.getEventsRaw({ top, filter });
-                    MonitoringService?.info(`Retrieved ${rawEvents.length} raw events`, { count: rawEvents.length }, 'calendar');
+                    MonitoringService?.info('Fetching raw events for debug', { 
+                        top, 
+                        filter, 
+                        userId: actualUserId, 
+                        deviceId 
+                    }, 'calendar', null, actualUserId, deviceId);
+                    // Pass req object for user-scoped token selection, but don't pass internal userId to Graph API
+                    // The internal userId is only for token storage - Graph API should use 'me' (default)
+                    rawEvents = await calendarModule.getEventsRaw({ top, filter }, req);
+                    MonitoringService?.info(`Retrieved ${rawEvents.length} raw events`, { 
+                        count: rawEvents.length, 
+                        userId: actualUserId, 
+                        deviceId 
+                    }, 'calendar', null, actualUserId, deviceId);
                 } catch (fetchError) {
-                    const error = ErrorService?.createError('api', 'Error fetching raw events', 'error', { error: fetchError.message });
+                    const error = ErrorService?.createError('api', 'Error fetching raw events', 'error', { 
+                        error: fetchError.message,
+                        userId: actualUserId,
+                        deviceId
+                    }, null, actualUserId, deviceId);
                     MonitoringService?.logError(error);
                     // Continue even if raw fetch fails
                 }
@@ -113,27 +150,50 @@ module.exports = ({ calendarModule }) => ({
             let events = [];
             let isMock = false;
             try {
-                MonitoringService?.info('Attempting to get real calendar events from module', { top, filter }, 'calendar');
+                MonitoringService?.info('Attempting to get real calendar events from module', { 
+                    top, 
+                    filter, 
+                    userId: actualUserId, 
+                    deviceId 
+                }, 'calendar', null, actualUserId, deviceId);
                 
                 if (isModuleMethodAvailable('getEvents', calendarModule)) {
-                    events = await calendarModule.getEvents({ top, filter });
-                    MonitoringService?.info(`Successfully retrieved ${events.length} real calendar events`, { count: events.length }, 'calendar');
+                    // Pass req object for user-scoped token selection, but don't pass internal userId to Graph API
+                    // The internal userId is only for token storage - Graph API should use 'me' (default)
+                    events = await calendarModule.getEvents({ top, filter }, req);
+                    MonitoringService?.info(`Successfully retrieved ${events.length} real calendar events`, { 
+                        count: events.length, 
+                        userId: actualUserId, 
+                        deviceId 
+                    }, 'calendar', null, actualUserId, deviceId);
                 } else if (isModuleMethodAvailable('handleIntent', calendarModule)) {
                     // Try using the module's handleIntent method instead
-                    MonitoringService?.info('Falling back to handleIntent method', { intent: 'readCalendar' }, 'calendar');
-                    const result = await calendarModule.handleIntent('readCalendar', { count: top, filter });
+                    MonitoringService?.info('Falling back to handleIntent method', { 
+                        intent: 'readCalendar', 
+                        userId: actualUserId, 
+                        deviceId 
+                    }, 'calendar', null, actualUserId, deviceId);
+                    const result = await calendarModule.handleIntent('readCalendar', { count: top, filter }, { req });
                     events = result && result.items ? result.items : [];
-                    MonitoringService?.info(`Retrieved ${events.length} events via handleIntent`, { count: events.length }, 'calendar');
+                    MonitoringService?.info(`Retrieved ${events.length} events via handleIntent`, { 
+                        count: events.length, 
+                        userId: actualUserId, 
+                        deviceId 
+                    }, 'calendar', null, actualUserId, deviceId);
                 } else {
                     throw new Error('No calendar module method available for getting events');
                 }
             } catch (moduleError) {
                 const moduleCallError = ErrorService?.createError('api', 'Error calling calendar module for events', 'error', { 
                     error: moduleError.message,
-                    stack: moduleError.stack
-                });
+                    userId: actualUserId,
+                    deviceId
+                }, null, actualUserId, deviceId);
                 MonitoringService?.logError(moduleCallError);
-                MonitoringService?.info('Falling back to mock calendar data', {}, 'calendar');
+                MonitoringService?.info('Falling back to mock calendar data', {
+                    userId: actualUserId,
+                    deviceId
+                }, 'calendar', null, actualUserId, deviceId);
                 
                 // Return mock data only if the real module call fails
                 const today = new Date();
@@ -157,41 +217,50 @@ module.exports = ({ calendarModule }) => ({
                     }
                 ];
                 isMock = true;
-                MonitoringService?.info(`Generated ${events.length} mock calendar events`, { count: events.length }, 'calendar');
             }
             
-            // Track get events time
+            // Track performance
             const duration = Date.now() - startTime;
-            MonitoringService?.trackMetric('calendar.getEvents.duration', duration, { 
-                count: events.length,
+            MonitoringService?.trackMetric('calendar.getEvents.duration', duration, {
+                eventCount: events.length,
+                hasFilter: !!filter,
+                debug,
+                success: true,
                 isMock,
-                hasFilter: !!filter
+                userId: actualUserId,
+                deviceId
             });
             
             if (debug) {
-                res.json({
-                    normalized: events,
-                    raw: rawEvents
-                });
+                res.json({ events, rawEvents, debug: true });
             } else {
                 res.json(events);
             }
         } catch (err) {
-            const mcpError = ErrorService?.createError('api', 'Error retrieving calendar events', 'error', { 
+            // Track error metrics
+            const duration = Date.now() - startTime;
+            MonitoringService?.trackMetric('calendar.getEvents.error', 1, {
+                errorMessage: err.message,
+                duration,
+                success: false,
+                userId: actualUserId,
+                deviceId
+            });
+            
+            const mcpError = ErrorService?.createError('api', 'Error in getEvents', 'error', { 
                 stack: err.stack,
-                endpoint: '/api/calendar',
-                method: 'getEvents',
-                error: err.message
-            });
-            MonitoringService?.logError(mcpError);
+                operation: 'getEvents',
+                endpoint: req.path,
+                error: err.message,
+                userId: actualUserId,
+                deviceId
+            }, null, actualUserId, deviceId);
             
-            // Track performance metric for failed request
-            MonitoringService?.trackMetric('calendar.getEvents.error', 1, { 
-                errorId: mcpError.id,
-                reason: err.message
+            res.status(500).json({ 
+                error: 'Internal error', 
+                message: err.message,
+                errorId: mcpError.id
             });
-            
-            res.status(500).json({ error: 'Internal error', message: err.message });
         }
     },
     /**
@@ -201,10 +270,25 @@ module.exports = ({ calendarModule }) => ({
      * @param {import('express').Response} res
      */
     async createEvent(req, res) {
+        // Extract user context from Express session (for web-based auth) or auth middleware (for device auth)
+        const { userId = null, deviceId = null } = req.user || {};
+        const sessionUserId = req.session?.id ? `user:${req.session.id}` : null;
+        const actualUserId = userId || sessionUserId;
+        
         try {
             // Start timing for performance tracking
             const startTime = Date.now();
             const endpoint = '/api/calendar/create';
+            
+            // Log request with user context
+            MonitoringService?.info(`Processing ${req.method} ${req.path}`, {
+                method: req.method,
+                path: req.path,
+                ip: req.ip,
+                userId: actualUserId,
+                deviceId,
+                sessionId: req.session?.id
+            }, 'calendar', null, actualUserId, deviceId);
             
             // Joi schema for createEvent with standardized dateTime validation
             const eventSchema = Joi.object({
@@ -242,7 +326,7 @@ module.exports = ({ calendarModule }) => ({
                 body: Joi.alternatives().try(
                     Joi.string(),
                     Joi.object({
-                        contentType: Joi.string().valid('text', 'html', 'HTML').required(),
+                        contentType: Joi.string().valid('text', 'html', 'HTML').optional(),
                         content: Joi.string().required()
                     })
                 ).optional(),
@@ -272,10 +356,12 @@ module.exports = ({ calendarModule }) => ({
                 hasAttendees: !!safeReqBody.attendees,
                 hasLocation: !!safeReqBody.location,
                 hasStartTime: !!safeReqBody.start,
-                hasEndTime: !!safeReqBody.end
-            }, 'calendar');
+                hasEndTime: !!safeReqBody.end,
+                userId: actualUserId,
+                deviceId
+            }, 'calendar', null, actualUserId, deviceId);
             
-            const { error, value } = validateAndLog(req, eventSchema, 'Create event', { endpoint });
+            const { error, value } = validateAndLog(req, eventSchema, 'Create event', { endpoint, userId: actualUserId, deviceId });
             if (error) {
                 return res.status(400).json({ error: 'Invalid request', details: error.details });
             }
@@ -283,74 +369,104 @@ module.exports = ({ calendarModule }) => ({
             // Try to create a real event using the calendar module
             let event;
             try {
-                MonitoringService?.info('Attempting to create real calendar event using module', { subject: value.subject }, 'calendar');
+                MonitoringService?.info('Attempting to create real calendar event using module', { 
+                    subject: value.subject, 
+                    userId: actualUserId, 
+                    deviceId 
+                }, 'calendar', null, actualUserId, deviceId);
                 
                 const methodName = 'createEvent';
                 
                 if (isModuleMethodAvailable(methodName, calendarModule)) {
-                    event = await calendarModule[methodName](value);
-                    MonitoringService?.info('Successfully created real calendar event', { eventId: event.id }, 'calendar');
+                    // Pass req object for user-scoped token selection, but don't pass internal userId to Graph API
+                    // The internal userId is only for token storage - Graph API should use 'me' (default)
+                    event = await calendarModule[methodName](value, req);
+                    MonitoringService?.info('Successfully created real calendar event', { 
+                        eventId: event.id, 
+                        userId: actualUserId, 
+                        deviceId 
+                    }, 'calendar', null, actualUserId, deviceId);
                 } else if (isModuleMethodAvailable('handleIntent', calendarModule)) {
                     // Try using the module's handleIntent method instead
-                    MonitoringService?.info('Falling back to handleIntent method for event creation', { intent: 'createEvent' }, 'calendar');
-                    const result = await calendarModule.handleIntent('createEvent', value);
+                    MonitoringService?.info('Falling back to handleIntent method for event creation', { 
+                        intent: 'createEvent', 
+                        userId: actualUserId, 
+                        deviceId 
+                    }, 'calendar', null, actualUserId, deviceId);
+                    const result = await calendarModule.handleIntent('createEvent', value, { req });
                     event = result;
-                    MonitoringService?.info('Created event via handleIntent', { eventId: event.id }, 'calendar');
+                    MonitoringService?.info('Created event via handleIntent', { 
+                        eventId: event.id, 
+                        userId: actualUserId, 
+                        deviceId 
+                    }, 'calendar', null, actualUserId, deviceId);
                 } else {
                     throw new Error('No calendar module method available for event creation');
                 }
             } catch (moduleError) {
                 const moduleCallError = ErrorService?.createError('api', 'Error calling calendar module for event creation', 'error', { 
                     error: moduleError.message,
-                    stack: moduleError.stack
-                });
+                    subject: value.subject,
+                    userId: actualUserId,
+                    deviceId
+                }, null, actualUserId, deviceId);
                 MonitoringService?.logError(moduleCallError);
-                MonitoringService?.info('Falling back to mock calendar event', {}, 'calendar');
+                MonitoringService?.info('Falling back to mock event creation', {
+                    userId: actualUserId,
+                    deviceId
+                }, 'calendar', null, actualUserId, deviceId);
                 
-                // Only fall back to mock data if the real module call fails
+                // Generate a mock event for testing
                 event = {
-                    id: 'mock-' + Date.now(),
+                    id: `mock-event-${Date.now()}`,
                     subject: value.subject,
                     start: value.start,
                     end: value.end,
                     attendees: value.attendees || [],
                     body: value.body || '',
                     location: value.location || '',
-                    isAllDay: value.isAllDay || false,
-                    isOnlineMeeting: value.isOnlineMeeting || false,
-                    createdDateTime: new Date().toISOString(),
-                    lastModifiedDateTime: new Date().toISOString(),
-                    isMock: true // Flag to indicate this is mock data
+                    isMock: true,
+                    created: new Date().toISOString()
                 };
-                MonitoringService?.info('Generated mock calendar event', { eventId: event.id }, 'calendar');
             }
             
-            // Track event creation time
+            // Track performance
             const duration = Date.now() - startTime;
-            MonitoringService?.trackMetric('calendar.createEvent.duration', duration, { 
+            MonitoringService?.trackMetric('calendar.createEvent.duration', duration, {
+                success: true,
+                hasAttendees: !!(value.attendees && value.attendees.length > 0),
+                hasLocation: !!value.location,
                 isMock: !!event.isMock,
-                eventId: event.id,
-                subject: event.subject
+                userId: actualUserId,
+                deviceId
             });
             
             res.json(event);
         } catch (err) {
-            const mcpError = ErrorService?.createError('api', 'Error creating calendar event', 'error', { 
+            // Track error metrics
+            const duration = Date.now() - startTime;
+            MonitoringService?.trackMetric('calendar.createEvent.error', 1, {
+                errorMessage: err.message,
+                duration,
+                success: false,
+                userId: actualUserId,
+                deviceId
+            });
+            
+            const mcpError = ErrorService?.createError('api', 'Error in createEvent', 'error', { 
                 stack: err.stack,
-                code: err.code,
-                statusCode: err.statusCode,
-                endpoint: '/api/calendar/create',
-                error: err.message
-            });
-            MonitoringService?.logError(mcpError);
+                operation: 'createEvent',
+                endpoint: req.path,
+                error: err.message,
+                userId: actualUserId,
+                deviceId
+            }, null, actualUserId, deviceId);
             
-            // Track error metric
-            MonitoringService?.trackMetric('calendar.createEvent.error', 1, { 
-                errorId: mcpError.id,
-                reason: err.message
+            res.status(500).json({ 
+                error: 'Internal error', 
+                message: err.message,
+                errorId: mcpError.id
             });
-            
-            res.status(500).json({ error: 'Internal error', message: err.message });
         }
     },
     
@@ -361,6 +477,11 @@ module.exports = ({ calendarModule }) => ({
      * @param {import('express').Response} res
      */
     async updateEvent(req, res) {
+        // Extract user context from Express session (for web-based auth) or auth middleware (for device auth)
+        const { userId = null, deviceId = null } = req.user || {};
+        const sessionUserId = req.session?.id ? `user:${req.session.id}` : null;
+        const actualUserId = userId || sessionUserId;
+        
         try {
             // Start timing for performance tracking
             const startTime = Date.now();
@@ -409,7 +530,7 @@ module.exports = ({ calendarModule }) => ({
                 body: Joi.alternatives().try(
                     Joi.string(),
                     Joi.object({
-                        contentType: Joi.string().valid('text', 'html', 'HTML').required(),
+                        contentType: Joi.string().valid('text', 'html', 'HTML').optional(),
                         content: Joi.string().required()
                     })
                 ).optional(),
@@ -432,10 +553,12 @@ module.exports = ({ calendarModule }) => ({
                 hasAttendees: !!safeReqBody.attendees,
                 hasLocation: !!safeReqBody.location,
                 hasStartTime: !!safeReqBody.start,
-                hasEndTime: !!safeReqBody.end
-            }, 'calendar');
+                hasEndTime: !!safeReqBody.end,
+                userId: actualUserId,
+                deviceId
+            }, 'calendar', null, actualUserId, deviceId);
             
-            const { error, value } = validateAndLog(req, updateSchema, 'Update event', { eventId, endpoint });
+            const { error, value } = validateAndLog(req, updateSchema, 'Update event', { eventId, endpoint, userId: actualUserId, deviceId });
             if (error) {
                 return res.status(400).json({ 
                     error: 'Invalid request', 
@@ -451,7 +574,7 @@ module.exports = ({ calendarModule }) => ({
                 const methodName = 'updateEvent';
                 
                 if (isModuleMethodAvailable(methodName, calendarModule)) {
-                    updatedEvent = await calendarModule[methodName](eventId, value);
+                    updatedEvent = await calendarModule[methodName](eventId, value, req);
                     MonitoringService?.info(`Successfully updated event ${eventId} using module`, { eventId }, 'calendar');
                 } else {
                     throw new Error(`calendarModule.${methodName} is not implemented`);
@@ -556,7 +679,7 @@ module.exports = ({ calendarModule }) => ({
                 const methodName = 'acceptEvent';
                 
                 if (isModuleMethodAvailable(methodName, calendarModule)) {
-                    result = await calendarModule[methodName](eventId, value.comment);
+                    result = await calendarModule[methodName](eventId, value.comment, req);
                     MonitoringService?.info(`Successfully accepted event ${eventId} using module`, { eventId }, 'calendar');
                 } else {
                     throw new Error(`calendarModule.${methodName} is not implemented`);
@@ -657,7 +780,7 @@ module.exports = ({ calendarModule }) => ({
                 const methodName = 'tentativelyAcceptEvent';
                 
                 if (isModuleMethodAvailable(methodName, calendarModule)) {
-                    result = await calendarModule[methodName](eventId, value.comment);
+                    result = await calendarModule[methodName](eventId, value.comment, req);
                     MonitoringService?.info(`Successfully tentatively accepted event ${eventId} using module`, { eventId }, 'calendar');
                 } else {
                     throw new Error(`calendarModule.${methodName} is not implemented`);
@@ -758,7 +881,7 @@ module.exports = ({ calendarModule }) => ({
                 const methodName = 'declineEvent';
                 
                 if (isModuleMethodAvailable(methodName, calendarModule)) {
-                    result = await calendarModule[methodName](eventId, value.comment);
+                    result = await calendarModule[methodName](eventId, value.comment, req);
                     MonitoringService?.info(`Successfully declined event ${eventId} using module`, { eventId }, 'calendar');
                 } else {
                     throw new Error(`calendarModule.${methodName} is not implemented`);
@@ -819,6 +942,11 @@ module.exports = ({ calendarModule }) => ({
      * @param {import('express').Response} res
      */
     async cancelEvent(req, res) {
+        // Extract user context from Express session (for web-based auth) or auth middleware (for device auth)
+        const { userId = null, deviceId = null } = req.user || {};
+        const sessionUserId = req.session?.id ? `user:${req.session.id}` : null;
+        const actualUserId = userId || sessionUserId;
+        
         try {
             // Start timing for performance tracking
             const startTime = Date.now();
@@ -839,7 +967,7 @@ module.exports = ({ calendarModule }) => ({
                 comment: Joi.string().optional()
             });
             
-            const { error, value } = validateAndLog(req, cancelSchema, 'Cancel event', { eventId, endpoint });
+            const { error, value } = validateAndLog(req, cancelSchema, 'Cancel event', { eventId, endpoint, userId: actualUserId, deviceId });
             if (error) {
                 return res.status(400).json({ 
                     error: 'Invalid request', 
@@ -849,18 +977,20 @@ module.exports = ({ calendarModule }) => ({
             
             MonitoringService?.info('Cancelling calendar event', { 
                 eventId,
-                hasComment: !!value.comment 
-            }, 'calendar');
+                hasComment: !!value.comment,
+                userId: actualUserId,
+                deviceId
+            }, 'calendar', null, actualUserId, deviceId);
             
             // Try to use the module's cancelEvent method if available
             let result;
             try {
-                MonitoringService?.info(`Attempting to cancel event ${eventId} using module`, { eventId }, 'calendar');
+                MonitoringService?.info(`Attempting to cancel event ${eventId} using module`, { eventId, userId: actualUserId, deviceId }, 'calendar', null, actualUserId, deviceId);
                 const methodName = 'cancelEvent';
                 
                 if (isModuleMethodAvailable(methodName, calendarModule)) {
-                    result = await calendarModule[methodName](eventId, value.comment);
-                    MonitoringService?.info(`Successfully cancelled event ${eventId} using module`, { eventId }, 'calendar');
+                    result = await calendarModule[methodName](eventId, value.comment, req);
+                    MonitoringService?.info(`Successfully cancelled event ${eventId} using module`, { eventId, userId: actualUserId, deviceId }, 'calendar', null, actualUserId, deviceId);
                 } else {
                     throw new Error(`calendarModule.${methodName} is not implemented`);
                 }
@@ -871,7 +1001,7 @@ module.exports = ({ calendarModule }) => ({
                     stack: moduleError.stack
                 });
                 MonitoringService?.logError(moduleCallError);
-                MonitoringService?.info('Falling back to mock event cancellation', { eventId }, 'calendar');
+                MonitoringService?.info('Falling back to mock event cancellation', { eventId, userId: actualUserId, deviceId }, 'calendar', null, actualUserId, deviceId);
                 
                 // If module method fails, create a mock response
                 result = {
@@ -880,7 +1010,7 @@ module.exports = ({ calendarModule }) => ({
                     timestamp: new Date().toISOString(),
                     isMock: true // Flag to indicate this is mock data
                 };
-                MonitoringService?.info('Generated mock event cancellation', { eventId }, 'calendar');
+                MonitoringService?.info('Generated mock event cancellation', { eventId, userId: actualUserId, deviceId }, 'calendar', null, actualUserId, deviceId);
             }
             
             // Track cancel time
@@ -1014,7 +1144,7 @@ module.exports = ({ calendarModule }) => ({
                     availabilityData = await calendarModule[methodName]({
                         users: value.users,
                         timeSlots: value.timeSlots
-                    });
+                    }, req);
                     
                     MonitoringService?.info(`Successfully retrieved real availability data for ${value.users.length} users`, { 
                         userCount: value.users.length,
@@ -1102,10 +1232,12 @@ module.exports = ({ calendarModule }) => ({
      * @param {import('express').Response} res
      */
     async findMeetingTimes(req, res) {
+        // Define endpoint at function scope so it's accessible in catch block
+        const endpoint = '/api/calendar/findMeetingTimes';
+        
         try {
             // Start timing for performance tracking
             const startTime = Date.now();
-            const endpoint = '/api/calendar/findMeetingTimes';
             
             // Log incoming request for debugging
             MonitoringService?.debug('findMeetingTimes request received', {
@@ -1291,7 +1423,8 @@ module.exports = ({ calendarModule }) => ({
                 const methodName = 'findMeetingTimes';
                 
                 if (isModuleMethodAvailable(methodName, calendarModule)) {
-                    suggestions = await calendarModule[methodName](normalizedValue);
+                    // Pass req object for user-scoped token selection
+                    suggestions = await calendarModule[methodName](normalizedValue, req);
                     MonitoringService?.info('Successfully found meeting times using module', {
                         suggestionCount: suggestions.meetingTimeSuggestions?.length || 0
                     }, 'calendar');
@@ -1383,7 +1516,7 @@ module.exports = ({ calendarModule }) => ({
                 const methodName = 'getRooms';
                 
                 if (isModuleMethodAvailable(methodName, calendarModule)) {
-                    result = await calendarModule[methodName](value);
+                    result = await calendarModule[methodName](value, req);
                     MonitoringService?.info('Successfully got rooms using module', { count: result.rooms?.length || 0 }, 'calendar');
                 } else {
                     throw new Error(`calendarModule.${methodName} is not implemented`);
@@ -1545,7 +1678,7 @@ module.exports = ({ calendarModule }) => ({
                 const methodName = 'getCalendars';
                 
                 if (isModuleMethodAvailable(methodName, calendarModule)) {
-                    calendars = await calendarModule[methodName](value);
+                    calendars = await calendarModule[methodName](value, req);
                     MonitoringService?.info('Successfully got calendars using module', { count: calendars.length }, 'calendar');
                 } else {
                     throw new Error(`calendarModule.${methodName} is not implemented`);
@@ -1707,7 +1840,7 @@ module.exports = ({ calendarModule }) => ({
                         contentBytes: value.contentBytes,
                         contentType: value.contentType
                     };
-                    const result = await calendarModule.handleIntent('addAttachment', entities);
+                    const result = await calendarModule.handleIntent('addAttachment', entities, { req });
                     attachment = result.attachment;
                     MonitoringService?.info(`Successfully added attachment to event ${eventId} using intent handler`, { 
                         eventId,
@@ -1777,10 +1910,12 @@ module.exports = ({ calendarModule }) => ({
      * @param {import('express').Response} res
      */
     async removeAttachment(req, res) {
+        // Define endpoint at function scope so it's accessible in catch block
+        const endpoint = '/api/calendar/events/:id/attachments/:attachmentId';
+        
         try {
             // Start timing for performance tracking
             const startTime = Date.now();
-            const endpoint = '/api/calendar/events/:id/attachments/:attachmentId';
             
             // Get event ID and attachment ID from URL parameters
             const eventId = req.params.id;
@@ -1821,7 +1956,7 @@ module.exports = ({ calendarModule }) => ({
                         eventId: eventId,
                         attachmentId: attachmentId
                     };
-                    const intentResult = await calendarModule.handleIntent('removeAttachment', entities);
+                    const intentResult = await calendarModule.handleIntent('removeAttachment', entities, { req });
                     result = intentResult.success;
                     MonitoringService?.info(`Successfully removed attachment ${attachmentId} from event ${eventId} using intent handler`, { 
                         eventId,

@@ -77,6 +77,9 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
         createEvent: { moduleName: 'calendar', methodName: 'create' },
         updateEvent: { moduleName: 'calendar', methodName: 'update' },
         cancelEvent: { moduleName: 'calendar', methodName: 'cancelEvent' },
+        acceptEvent: { moduleName: 'calendar', methodName: 'acceptEvent' },
+        tentativelyAcceptEvent: { moduleName: 'calendar', methodName: 'tentativelyAcceptEvent' },
+        declineEvent: { moduleName: 'calendar', methodName: 'declineEvent' },
         getAvailability: { moduleName: 'calendar', methodName: 'getAvailability' },
         findMeetingTimes: { moduleName: 'calendar', methodName: 'findMeetingTimes' },
         addAttachment: { moduleName: 'calendar', methodName: 'addAttachment' },
@@ -97,7 +100,6 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
         
         // People module tools
         findPeople: { moduleName: 'people', methodName: 'find' },
-        searchPeople: { moduleName: 'people', methodName: 'search' },
         getRelevantPeople: { moduleName: 'people', methodName: 'getRelevantPeople' },
         getPersonById: { moduleName: 'people', methodName: 'getPersonById' },
         
@@ -444,7 +446,7 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 break;
             case 'acceptEvent':
                 toolDef.description = 'Accept a calendar event invitation';
-                toolDef.endpoint = '/api/v1/calendar/events/:id/accept';
+                toolDef.endpoint = '/api/calendar/events/:id/accept';
                 toolDef.method = 'POST';
                 toolDef.parameters = {
                     id: { 
@@ -462,7 +464,7 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 break;
             case 'declineEvent':
                 toolDef.description = 'Decline a calendar event invitation';
-                toolDef.endpoint = '/api/v1/calendar/events/:id/decline';
+                toolDef.endpoint = '/api/calendar/events/:id/decline';
                 toolDef.method = 'POST';
                 toolDef.parameters = {
                     id: { 
@@ -480,7 +482,7 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 break;
             case 'tentativelyAcceptEvent':
                 toolDef.description = 'Tentatively accept a calendar event invitation';
-                toolDef.endpoint = '/api/v1/calendar/events/:id/tentativelyAccept';
+                toolDef.endpoint = '/api/calendar/events/:id/tentativelyAccept';
                 toolDef.method = 'POST';
                 toolDef.parameters = {
                     id: { 
@@ -947,15 +949,20 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                     limit: { inQuery: true }
                 };
                 break;
-            case 'searchPeople':
-                toolDef.description = 'Search for people by name or email address';
-                toolDef.endpoint = '/api/v1/people/search';
+            case 'findPeople':
+                toolDef.description = 'IMPORTANT: Find and resolve people by name or email before scheduling meetings or sending emails. This tool MUST be used to resolve any person references before creating calendar events or sending mail.';
+                toolDef.endpoint = '/api/v1/people/find';
                 toolDef.method = 'GET';
                 toolDef.parameters = {
                     query: { 
                         type: 'string', 
-                        description: 'Search query (name or email)',
-                        required: true
+                        description: 'Search query to find a person',
+                        optional: true
+                    },
+                    name: { 
+                        type: 'string', 
+                        description: 'Person name to search for', 
+                        optional: true 
                     },
                     limit: { 
                         type: 'number', 
@@ -966,6 +973,7 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 };
                 toolDef.parameterMapping = {
                     query: { inQuery: true },
+                    name: { inQuery: true },
                     limit: { inQuery: true }
                 };
                 break;
@@ -1115,13 +1123,15 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
     }
     
     /**
-     * Transforms parameters for a specific module and method
+     * Transforms parameters for a specific module and method with user context
      * @param {string} moduleName - Module name
      * @param {string} methodName - Method name
      * @param {object} params - Original parameters
+     * @param {string} [userId] - User ID for multi-user context
+     * @param {string} [deviceId] - Device ID for multi-user context
      * @returns {object} - Transformed parameters
      */
-    function transformParameters(moduleName, methodName, params) {
+    function transformParameters(moduleName, methodName, params, userId = null, deviceId = null) {
         const startTime = Date.now();
         
         if (process.env.NODE_ENV === 'development') {
@@ -1129,14 +1139,24 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 moduleName,
                 methodName,
                 paramKeys: Object.keys(params),
+                userId,
+                deviceId,
                 timestamp: new Date().toISOString()
-            }, 'tools');
+            }, 'tools', null, userId, deviceId);
         }
         
         try {
         
         // Create a copy of the parameters to avoid modifying the original
         const transformedParams = { ...params };
+        
+        // Add user context to all transformed parameters for isolation
+        if (userId) {
+            transformedParams._userId = userId;
+        }
+        if (deviceId) {
+            transformedParams._deviceId = deviceId;
+        }
         
         // Transform parameters based on the module and method
         switch (`${moduleName}.${methodName}`) {
@@ -1339,8 +1359,6 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
             // People module methods
             case 'people.find':
             case 'people.findPeople':
-            case 'people.search':
-            case 'people.searchPeople':
                 // Make sure query parameter is preserved
                 if (!transformedParams.query && transformedParams.q) {
                     transformedParams.query = transformedParams.q;
@@ -1701,20 +1719,24 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
         },
 
         /**
-         * Transforms parameters for a specific tool
+         * Transforms parameters for a specific tool with user context
          * @param {string} toolName - Name of the tool
          * @param {object} params - Original parameters
+         * @param {string} [userId] - User ID for multi-user context
+         * @param {string} [deviceId] - Device ID for multi-user context
          * @returns {object} - Transformed parameters and module/method mapping
          */
-        transformToolParameters(toolName, params) {
+        transformToolParameters(toolName, params, userId = null, deviceId = null) {
             const startTime = Date.now();
             
             if (process.env.NODE_ENV === 'development') {
                 MonitoringService.debug('Transforming tool parameters', {
                     toolName,
                     paramKeys: Object.keys(params),
+                    userId,
+                    deviceId,
                     timestamp: new Date().toISOString()
-                }, 'tools');
+                }, 'tools', null, userId, deviceId);
             }
             
             try {
@@ -1725,13 +1747,17 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                     const executionTime = Date.now() - startTime;
                     MonitoringService.trackMetric('tools_transform_tool_params_no_mapping', executionTime, {
                         toolName,
+                        userId,
+                        deviceId,
                         timestamp: new Date().toISOString()
-                    });
+                    }, userId, deviceId);
                     
                     MonitoringService.error(`No mapping found for tool`, {
                         toolName,
+                        userId,
+                        deviceId,
                         timestamp: new Date().toISOString()
-                    }, 'tools');
+                    }, 'tools', null, userId, deviceId);
                     
                     return { 
                         mapping: null, 
@@ -1739,8 +1765,8 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                     };
                 }
                 
-                // Then transform the parameters based on the module and method
-                const transformedParams = transformParameters(mapping.moduleName, mapping.methodName, params);
+                // Then transform the parameters based on the module and method with user context
+                const transformedParams = transformParameters(mapping.moduleName, mapping.methodName, params, userId, deviceId);
                 
                 const executionTime = Date.now() - startTime;
                 MonitoringService.trackMetric('tools_transform_tool_params_success', executionTime, {
@@ -1748,8 +1774,10 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                     moduleName: mapping.moduleName,
                     methodName: mapping.methodName,
                     paramCount: Object.keys(params).length,
+                    userId,
+                    deviceId,
                     timestamp: new Date().toISOString()
-                });
+                }, userId, deviceId);
                 
                 return {
                     mapping,
@@ -1767,16 +1795,23 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                         toolName,
                         paramKeys: Object.keys(params),
                         stack: error.stack,
+                        userId,
+                        deviceId,
                         timestamp: new Date().toISOString()
-                    }
+                    },
+                    null,
+                    userId,
+                    deviceId
                 );
                 
                 MonitoringService.logError(mcpError);
                 MonitoringService.trackMetric('tools_transform_tool_params_failure', executionTime, {
                     toolName,
                     errorType: error.code || 'unknown',
+                    userId,
+                    deviceId,
                     timestamp: new Date().toISOString()
-                });
+                }, userId, deviceId);
                 
                 throw mcpError;
             }

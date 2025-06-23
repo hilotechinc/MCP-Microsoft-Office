@@ -14,39 +14,48 @@ const monitoringService = require('./monitoring-service.cjs');
  */
 function createLogger(moduleName, componentType) {
     /**
-     * Logs the start of a method call
+     * Logs the entry into a method call with user context
      * 
      * @param {string} methodName - The name of the method being called
      * @param {Object} params - The parameters passed to the method
      * @param {string} requestId - The ID of the request for tracking
+     * @param {string} [userId] - The user ID for multi-user context
+     * @param {string} [deviceId] - The device ID for multi-user context
      */
-    function logMethodEntry(methodName, params, requestId) {
+    function logMethodEntry(methodName, params, requestId, userId = null, deviceId = null) {
         const context = {
             requestId,
             method: methodName,
             component: componentType,
             moduleName,
-            params: sanitizeParams(params)
+            params: sanitizeParams(params),
+            userId,
+            deviceId
         };
         
         monitoringService.info(
             `${componentType} ${moduleName}.${methodName} called`,
             context,
-            componentType
+            componentType,
+            null,
+            userId,
+            deviceId
         );
         
         return process.hrtime(); // Return start time for duration tracking
     }
     
     /**
-     * Logs the completion of a method call
+     * Logs the completion of a method call with user context
      * 
      * @param {string} methodName - The name of the method being called
      * @param {Object} result - The result of the method call
      * @param {Array} startTime - The start time from process.hrtime()
      * @param {string} requestId - The ID of the request for tracking
+     * @param {string} [userId] - The user ID for multi-user context
+     * @param {string} [deviceId] - The device ID for multi-user context
      */
-    function logMethodExit(methodName, result, startTime, requestId) {
+    function logMethodExit(methodName, result, startTime, requestId, userId = null, deviceId = null) {
         const hrTime = process.hrtime(startTime);
         const durationMs = hrTime[0] * 1000 + hrTime[1] / 1000000;
         
@@ -58,7 +67,9 @@ function createLogger(moduleName, componentType) {
             durationMs: durationMs.toFixed(2),
             hasResult: result !== undefined && result !== null,
             resultType: result !== undefined && result !== null ? 
-                (Array.isArray(result) ? 'array' : typeof result) : 'none'
+                (Array.isArray(result) ? 'array' : typeof result) : 'none',
+            userId,
+            deviceId
         };
         
         // If result is an array, add the length
@@ -69,23 +80,30 @@ function createLogger(moduleName, componentType) {
         monitoringService.info(
             `${componentType} ${moduleName}.${methodName} completed in ${durationMs.toFixed(2)}ms`,
             context,
-            componentType
+            componentType,
+            null,
+            userId,
+            deviceId
         );
     }
     
     /**
-     * Logs an error during a method call
+     * Logs an error during a method call with user context
      * 
      * @param {string} methodName - The name of the method being called
      * @param {Error} error - The error that occurred
      * @param {string} requestId - The ID of the request for tracking
+     * @param {string} [userId] - The user ID for multi-user context
+     * @param {string} [deviceId] - The device ID for multi-user context
      */
-    function logMethodError(methodName, error, requestId) {
+    function logMethodError(methodName, error, requestId, userId = null, deviceId = null) {
         const context = {
             requestId,
             method: methodName,
             component: componentType,
             moduleName,
+            userId,
+            deviceId,
             error: {
                 message: error.message,
                 name: error.name,
@@ -96,7 +114,10 @@ function createLogger(moduleName, componentType) {
         monitoringService.error(
             `Error in ${componentType} ${moduleName}.${methodName}: ${error.message}`,
             context,
-            componentType
+            componentType,
+            null,
+            userId,
+            deviceId
         );
     }
     

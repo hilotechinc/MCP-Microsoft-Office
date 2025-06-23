@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://localhost:* ws://localhost:*;">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://alcdn.msauth.net; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://localhost:* ws://localhost:* https://login.microsoftonline.com https://graph.microsoft.com https://alcdn.msauth.net; form-action 'self';">
     <title>MCP Desktop</title>
     <link rel="stylesheet" href="./modern-ui.css">
 </head>
@@ -19,18 +19,44 @@
     <div class="app-container">
         <!-- Sidebar with Microsoft 365 Integration Status -->
         <aside class="sidebar" id="app-sidebar">
-            <div id="integration-status" class="card">
-                <div class="card-header">
-                    <h3 class="card-title">Microsoft 365 Integration</h3>
+            <div class="sidebar-section">
+                <h3>Microsoft 365 Authentication</h3>
+                <p>Connect to your Microsoft 365 account to access your data.</p>
+                <button id="device-auth-button" class="btn btn-primary">
+                    Connect to Microsoft 365
+                </button>
+                <div id="auth-status" class="auth-status mt-2 hidden">
+                    <div class="status-indicator"></div>
+                    <span class="status-text">Not connected</span>
                 </div>
-                <div class="card-body">
-                    <div class="connection-buttons">
-                        <button id="debug-mail-btn" class="btn btn-primary">Test Mail API</button>
-                        <button id="debug-calendar-btn" class="btn btn-secondary">Test Calendar API</button>
-                        <button id="debug-files-btn" class="btn btn-accent">Test Files API</button>
+            </div>
+
+            <div id="mcp-token-section" class="sidebar-section hidden">
+                <h3>🔑 MCP Token Generation</h3>
+                <p>Generate a bearer token for Claude Desktop MCP integration.</p>
+                <button id="generate-mcp-token-button" class="btn btn-secondary">
+                    Generate MCP Token
+                </button>
+                <div id="mcp-token-result" class="mt-2 hidden">
+                    <div class="token-display">
+                        <label for="mcp-token-text">Bearer Token (expires in 24h):</label>
+                        <textarea id="mcp-token-text" class="form-control" rows="3" readonly></textarea>
+                        <button id="copy-token-button" class="btn btn-sm btn-outline-primary mt-1">
+                            📋 Copy Token
+                        </button>
                     </div>
-                    <div id="test-results" class="test-results mt-4 hidden"></div>
+                    <div class="config-example mt-2">
+                        <label>Claude Desktop Config Example:</label>
+                        <pre id="config-example" class="config-code"></pre>
+                        <button id="copy-config-button" class="btn btn-sm btn-outline-secondary mt-1">
+                            📋 Copy Config
+                        </button>
+                    </div>
                 </div>
+            </div>
+
+            <div id="adapter-download-section" class="sidebar-section hidden">
+                <!-- Device registration and adapter download will be populated here -->
             </div>
             
             <div class="card">
@@ -56,6 +82,9 @@
     
     <!-- Global services (load first) -->
     <script src="./services/global-services.js"></script>
+    
+    <!-- MSAL library for Microsoft authentication -->
+    <script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
     
     <!-- Import DOM security utilities -->
     <script src="./dom-safe.js" type="module"></script>

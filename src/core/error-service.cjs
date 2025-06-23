@@ -76,9 +76,11 @@ function setLoggingService(service) {
  * @param {string} severity - One of SEVERITIES
  * @param {Object} [context] - Additional error context (sanitized)
  * @param {string} [traceId] - Optional trace ID for request correlation
+ * @param {string} [userId] - User ID for multi-user context
+ * @param {string} [deviceId] - Device ID for multi-user context
  * @returns {Object} Standardized error object
  */
-function createError(category, message, severity, context = {}, traceId = null) {
+function createError(category, message, severity, context = {}, traceId = null, userId = null, deviceId = null) {
   // Copy recursion protection from original
   if (!createError.recursionCount) createError.recursionCount = 0;
   createError.recursionCount++;
@@ -94,7 +96,9 @@ function createError(category, message, severity, context = {}, traceId = null) 
       severity: 'error',
       context: { originalCategory: category, originalMessage: message },
       timestamp: new Date().toISOString(),
-      isRecursionLimitError: true
+      isRecursionLimitError: true,
+      userId: userId || null,
+      deviceId: deviceId || null
     };
   }
   
@@ -113,6 +117,15 @@ function createError(category, message, severity, context = {}, traceId = null) 
     errorObj.traceId = traceId;
   }
   
+  // Add multi-user context for isolation and monitoring
+  if (userId) {
+    errorObj.userId = userId;
+  }
+  
+  if (deviceId) {
+    errorObj.deviceId = deviceId;
+  }
+  
   // NEW: Emit events through event service instead of calling monitoring directly
   setImmediate(async () => {
     try {
@@ -129,7 +142,9 @@ function createError(category, message, severity, context = {}, traceId = null) 
         timestamp: errorObj.timestamp,
         traceId: errorObj.traceId,
         severity: errorObj.severity,
-        source: 'error-service'
+        source: 'error-service',
+        userId: errorObj.userId,
+        deviceId: errorObj.deviceId
       });
     } catch (e) {
       // Fail silently if event emission fails

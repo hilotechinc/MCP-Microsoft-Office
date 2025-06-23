@@ -3,7 +3,7 @@
  * Follows async, modular, and testable design. Aligned with phase1_architecture.md and MCP rules.
  */
 
-const moduleRegistry = require('./module-registry');
+const moduleRegistry = require('./module-registry.cjs');
 const MonitoringService = require('../core/monitoring-service.cjs');
 const ErrorService = require('../core/error-service.cjs');
 
@@ -230,30 +230,48 @@ function getModulesForIntent(intent) {
 /**
  * Helper function to redact sensitive information from objects
  * @param {Object} data - The data object to redact
+ * @param {WeakSet} visited - Set of visited objects to detect circular references
  * @returns {Object} Copy of the object with sensitive fields redacted
  */
-function redactSensitiveData(data) {
-    if (!data || typeof data !== 'object') return data;
+function redactSensitiveData(data, visited = new WeakSet()) {
+    if (!data || typeof data !== 'object') {
+        return data;
+    }
     
-    // Create a shallow copy to avoid modifying the original
+    // Check for circular references
+    if (visited.has(data)) {
+        return '[Circular Reference]';
+    }
+    
+    // Add current object to visited set
+    visited.add(data);
+    
+    // Create a deep copy to avoid modifying the original
     const result = Array.isArray(data) ? [...data] : {...data};
     
-    // List of sensitive field names (case-insensitive)
+    // Fields that should be redacted
     const sensitiveFields = [
-        'password', 'token', 'secret', 'key', 'auth', 'credentials',
-        'accessToken', 'refreshToken', 'clientSecret', 'apiKey',
-        'private', 'confidential', 'personal'
+        'user', 'email', 'mail', 'address', 'emailAddress', 'password', 'token', 'accessToken',
+        'refreshToken', 'content', 'body', 'contentBytes'
     ];
     
-    // Redact sensitive fields
+    // Recursively process the object
     for (const key in result) {
-        // Check if this key contains any sensitive terms
-        if (sensitiveFields.some(term => key.toLowerCase().includes(term))) {
-            result[key] = '[REDACTED]';
-        } 
-        // Recursively redact nested objects
-        else if (result[key] && typeof result[key] === 'object') {
-            result[key] = redactSensitiveData(result[key]);
+        if (Object.prototype.hasOwnProperty.call(result, key)) {
+            // Check if this is a sensitive field
+            if (sensitiveFields.includes(key.toLowerCase())) {
+                if (typeof result[key] === 'string') {
+                    result[key] = 'REDACTED';
+                } else if (Array.isArray(result[key])) {
+                    result[key] = `[${result[key].length} items]`;
+                } else if (typeof result[key] === 'object' && result[key] !== null) {
+                    result[key] = '{REDACTED}';
+                }
+            } 
+            // Recursively process nested objects
+            else if (typeof result[key] === 'object' && result[key] !== null) {
+                result[key] = redactSensitiveData(result[key], visited);
+            }
         }
     }
     

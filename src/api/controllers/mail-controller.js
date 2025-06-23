@@ -18,6 +18,7 @@ const validateAndLog = (req, schema, endpoint, additionalContext = {}) => {
     const result = schema.validate(req.body);
     
     if (result.error) {
+        const { userId = null, deviceId = null } = additionalContext;
         const validationError = ErrorService.createError(
             ErrorService.CATEGORIES.API,
             `${endpoint} validation error`,
@@ -26,7 +27,10 @@ const validateAndLog = (req, schema, endpoint, additionalContext = {}) => {
                 details: result.error.details,
                 endpoint,
                 ...additionalContext
-            }
+            },
+            null,
+            userId,
+            deviceId
         );
         // Note: Error service automatically handles logging via events
     }
@@ -103,14 +107,20 @@ module.exports = ({ mailModule }) => ({
      */
     async getMail(req, res) {
         const startTime = Date.now();
+        
+        // Extract user context from auth middleware
+        const { userId = null, deviceId = null } = req.user || {};
+        
         try {
-            // Log request
+            // Log request with user context
             MonitoringService.info(`Processing ${req.method} ${req.path}`, {
                 method: req.method,
                 path: req.path,
                 query: req.query,
-                ip: req.ip
-            }, 'mail');
+                ip: req.ip,
+                userId,
+                deviceId
+            }, 'mail', null, userId, deviceId);
             
             // Ensure content type is set explicitly to prevent any HTML rendering
             res.setHeader('Content-Type', 'application/json');
@@ -124,8 +134,13 @@ module.exports = ({ mailModule }) => ({
                     ErrorService.SEVERITIES.WARNING,
                     { 
                         details: queryError.details,
-                        endpoint: 'getMail'
-                    }
+                        endpoint: 'getMail',
+                        userId,
+                        deviceId
+                    },
+                    null,
+                    userId,
+                    deviceId
                 );
                 return res.status(400).json({ error: 'Invalid request', details: queryError.details });
             }
@@ -138,7 +153,7 @@ module.exports = ({ mailModule }) => ({
             // For development/testing, return mock data if module methods aren't fully implemented
             if (typeof mailModule.getInboxRaw === 'function' && debug) {
                 try {
-                    // If raw fetch is exposed, use it for debug
+                    // If raw fetch is exposed, use it for debug - pass userId for token selection
                     rawMessages = await mailModule.getInboxRaw({ top, filter }, req);
                 } catch (fetchError) {
                     const error = ErrorService.createError(
@@ -148,8 +163,13 @@ module.exports = ({ mailModule }) => ({
                         { 
                             error: fetchError.message, 
                             stack: fetchError.stack,
-                            operation: 'getInboxRaw'
-                        }
+                            operation: 'getInboxRaw',
+                            userId,
+                            deviceId
+                        },
+                        null,
+                        userId,
+                        deviceId
                     );
                     // Continue even if raw fetch fails
                 }
@@ -161,8 +181,10 @@ module.exports = ({ mailModule }) => ({
                 MonitoringService.info('Attempting to get messages from module', {
                     top,
                     filter,
-                    isInternalMcpCall: !!req.isInternalMcpCall
-                }, 'mail');
+                    isInternalMcpCall: !!req.isInternalMcpCall,
+                    userId,
+                    deviceId
+                }, 'mail', null, userId, deviceId);
                 
                 // Check if this request is coming from Claude (this is an optional check, but can help isolate Claude's requests)
                 const isClaude = req.headers && (
@@ -175,15 +197,20 @@ module.exports = ({ mailModule }) => ({
                     MonitoringService.info('Request from Claude detected, using extra safeguards', {
                         userAgent: req.headers['user-agent'],
                         claudeCall: req.headers['x-claude-call'],
-                        fromParam: req.query.from
-                    }, 'mail');
+                        fromParam: req.query.from,
+                        userId,
+                        deviceId
+                    }, 'mail', null, userId, deviceId);
                 }
                 
                 if (typeof mailModule.getInbox === 'function') {
                     MonitoringService.info('Using mailModule.getInbox', {
-                        method: 'getInbox'
-                    }, 'mail');
+                        method: 'getInbox',
+                        userId,
+                        deviceId
+                    }, 'mail', null, userId, deviceId);
                     try {
+                        // Pass userId for user-scoped token selection
                         messages = await mailModule.getInbox({ top, filter }, req);
                     } catch (inboxError) {
                         const error = ErrorService.createError(
@@ -193,15 +220,22 @@ module.exports = ({ mailModule }) => ({
                             { 
                                 error: inboxError.message, 
                                 stack: inboxError.stack,
-                                operation: 'getInbox'
-                            }
+                                operation: 'getInbox',
+                                userId,
+                                deviceId
+                            },
+                            null,
+                            userId,
+                            deviceId
                         );
                         // Try a second approach before giving up
                         if (typeof mailModule.handleIntent === 'function') {
                             MonitoringService.info('Falling back to mailModule.handleIntent', {
                                 reason: 'getInbox method failed',
-                                method: 'handleIntent'
-                            }, 'mail');
+                                method: 'handleIntent',
+                                userId,
+                                deviceId
+                            }, 'mail', null, userId, deviceId);
                             const result = await mailModule.handleIntent('readMail', { count: top, filter }, { req });
                             messages = result && result.items ? result.items : [];
                         } else {
@@ -211,8 +245,10 @@ module.exports = ({ mailModule }) => ({
                 } else if (typeof mailModule.handleIntent === 'function') {
                     MonitoringService.info('Using mailModule.handleIntent', {
                         method: 'handleIntent',
-                        reason: 'getInbox not available'
-                    }, 'mail');
+                        reason: 'getInbox not available',
+                        userId,
+                        deviceId
+                    }, 'mail', null, userId, deviceId);
                     // Try using the module's handleIntent method instead
                     const result = await mailModule.handleIntent('readMail', { count: top, filter }, { req });
                     messages = result && result.items ? result.items : [];
@@ -220,8 +256,10 @@ module.exports = ({ mailModule }) => ({
                 
                 MonitoringService.info('Successfully got messages from module', {
                     messageCount: messages.length,
-                    hasFilter: !!filter
-                }, 'mail');
+                    hasFilter: !!filter,
+                    userId,
+                    deviceId
+                }, 'mail', null, userId, deviceId);
             } catch (moduleError) {
                 const error = ErrorService.createError(
                     ErrorService.CATEGORIES.API,
@@ -230,15 +268,22 @@ module.exports = ({ mailModule }) => ({
                     { 
                         error: moduleError.message, 
                         stack: moduleError.stack,
-                        operation: 'getMail'
-                    }
+                        operation: 'getMail',
+                        userId,
+                        deviceId
+                    },
+                    null,
+                    userId,
+                    deviceId
                 );
                 
                 // For internal MCP calls with our mock token, return real-looking data
                 if (req.isInternalMcpCall) {
                     MonitoringService.info('Using real-looking data for internal MCP call', {
-                        requestType: 'internal MCP call'
-                    }, 'mail');
+                        requestType: 'internal MCP call',
+                        userId,
+                        deviceId
+                    }, 'mail', null, userId, deviceId);
                     messages = [
                         { 
                             id: 'real-looking-1', 
@@ -264,8 +309,10 @@ module.exports = ({ mailModule }) => ({
                 } else {
                     // Return simple mock data for regular requests that fail
                     MonitoringService.info('Using simple mock data for failed request', {
-                        requestType: 'regular failed request'
-                    }, 'mail');
+                        requestType: 'regular failed request',
+                        userId,
+                        deviceId
+                    }, 'mail', null, userId, deviceId);
                     messages = [
                         { id: 'mock1', subject: 'Mock Email 1', from: { name: 'Test User', email: 'test@example.com' }, received: new Date().toISOString() },
                         { id: 'mock2', subject: 'Mock Email 2', from: { name: 'Test User', email: 'test@example.com' }, received: new Date().toISOString() }
@@ -281,8 +328,13 @@ module.exports = ({ mailModule }) => ({
                     ErrorService.SEVERITIES.WARNING,
                     { 
                         actualType: typeof messages,
-                        operation: 'getMail'
-                    }
+                        operation: 'getMail',
+                        userId,
+                        deviceId
+                    },
+                    null,
+                    userId,
+                    deviceId
                 );
                 messages = []; // Ensure we're sending a valid array
             }
@@ -293,7 +345,9 @@ module.exports = ({ mailModule }) => ({
                 messageCount: messages.length,
                 hasFilter: !!filter,
                 debug,
-                success: true
+                success: true,
+                userId,
+                deviceId
             });
             
             if (debug) {
@@ -310,7 +364,9 @@ module.exports = ({ mailModule }) => ({
             MonitoringService.trackMetric('mail.getMail.error', 1, {
                 errorMessage: err.message,
                 duration,
-                success: false
+                success: false,
+                userId,
+                deviceId
             });
             
             const mcpError = ErrorService.createError(
@@ -320,8 +376,14 @@ module.exports = ({ mailModule }) => ({
                 { 
                     stack: err.stack,
                     operation: 'getMail',
-                    endpoint: req.path
-                }
+                    endpoint: req.path,
+                    error: err.message,
+                    userId,
+                    deviceId
+                },
+                null,
+                userId,
+                deviceId
             );
             res.status(500).json({ error: 'Internal error', message: err.message });
         }
@@ -332,64 +394,83 @@ module.exports = ({ mailModule }) => ({
     async sendMail(req, res) {
         const startTime = Date.now();
         
+        // Extract user context from auth middleware
+        const { userId = null, deviceId = null } = req.user || {};
+        
         // Log request
         MonitoringService.info(`Processing ${req.method} ${req.path}`, {
             method: req.method,
             path: req.path,
             query: req.query,
-            ip: req.ip
-        }, 'mail');
+            ip: req.ip,
+            userId,
+            deviceId
+        }, 'mail', null, userId, deviceId);
         
         // Ensure content type is set explicitly to prevent any HTML rendering
         res.setHeader('Content-Type', 'application/json');
         
         MonitoringService.info('Received send mail request', {
-            requestBody: req.body
-        }, 'mail');
+            requestBody: req.body,
+            userId,
+            deviceId
+        }, 'mail', null, userId, deviceId);
         
         try {
             // Validate request using helper function
-            const { error, value } = validateAndLog(req, schemas.sendMail, 'sendMail');
+            const { error, value } = validateAndLog(req, schemas.sendMail, 'sendMail', { userId, deviceId });
             if (error) {
                 return res.status(400).json({ error: 'Invalid request', details: error.details });
             }
             
             MonitoringService.info('Validated mail data', {
-                validatedData: value
-            }, 'mail');
+                validatedData: value,
+                userId,
+                deviceId
+            }, 'mail', null, userId, deviceId);
             
             let result;
             try {
                 if (typeof mailModule.sendEmail === 'function') {
                     MonitoringService.info('Using mailModule.sendEmail', {
-                        method: 'sendEmail'
-                    }, 'mail');
+                        method: 'sendEmail',
+                        userId,
+                        deviceId
+                    }, 'mail', null, userId, deviceId);
                     result = await mailModule.sendEmail(value, req);
                 } else if (typeof mailModule.handleIntent === 'function') {
                     MonitoringService.info('Using mailModule.handleIntent', {
-                        method: 'handleIntent'
-                    }, 'mail');
+                        method: 'handleIntent',
+                        userId,
+                        deviceId
+                    }, 'mail', null, userId, deviceId);
                     // Try using the module's handleIntent method instead
                     result = await mailModule.handleIntent('sendMail', value, { req });
                 } else if (typeof mailModule.sendMail === 'function') {
                     MonitoringService.info('Using mailModule.sendMail', {
-                        method: 'sendMail'
-                    }, 'mail');
+                        method: 'sendMail',
+                        userId,
+                        deviceId
+                    }, 'mail', null, userId, deviceId);
                     result = await mailModule.sendMail(value, req);
                 } else {
                     throw new Error('No suitable method found to send email');
                 }
                 
                 MonitoringService.info('Email sent result', {
-                    result
-                }, 'mail');
+                    result,
+                    userId,
+                    deviceId
+                }, 'mail', null, userId, deviceId);
                 
                 // Track performance
                 const duration = Date.now() - startTime;
                 MonitoringService.trackMetric('mail.sendMail.duration', duration, {
                     success: true,
                     recipientCount: Array.isArray(value.to) ? value.to.length : 1,
-                    hasAttachments: !!value.attachments
+                    hasAttachments: !!value.attachments,
+                    userId,
+                    deviceId
                 });
                 
                 res.json({ success: true, result });
@@ -401,8 +482,13 @@ module.exports = ({ mailModule }) => ({
                     { 
                         error: moduleError.message, 
                         stack: moduleError.stack,
-                        operation: 'sendMail'
-                    }
+                        operation: 'sendMail',
+                        userId,
+                        deviceId
+                    },
+                    null,
+                    userId,
+                    deviceId
                 );
                 throw moduleError;
             }
@@ -412,7 +498,9 @@ module.exports = ({ mailModule }) => ({
             MonitoringService.trackMetric('mail.sendMail.error', 1, {
                 errorMessage: err.message,
                 duration,
-                success: false
+                success: false,
+                userId,
+                deviceId
             });
             
             const mcpError = ErrorService.createError(
@@ -423,8 +511,13 @@ module.exports = ({ mailModule }) => ({
                     stack: err.stack,
                     operation: 'sendMail',
                     endpoint: req.path,
-                    error: err.message
-                }
+                    error: err.message,
+                    userId,
+                    deviceId
+                },
+                null,
+                userId,
+                deviceId
             );
             res.status(500).json({ error: 'Internal error', message: err.message });
         }
@@ -436,6 +529,10 @@ module.exports = ({ mailModule }) => ({
      */
     async flagMail(req, res) {
         const startTime = Date.now();
+        
+        // Extract user context from auth middleware
+        const { userId = null, deviceId = null } = req.user || {};
+        
         try {
             // Log request
             MonitoringService.info(`Processing ${req.method} ${req.path}`, {
@@ -443,14 +540,16 @@ module.exports = ({ mailModule }) => ({
                 path: req.path,
                 query: req.query,
                 body: req.body,
-                ip: req.ip
-            }, 'mail');
+                ip: req.ip,
+                userId,
+                deviceId
+            }, 'mail', null, userId, deviceId);
             
             // Ensure content type is set explicitly to prevent any HTML rendering
             res.setHeader('Content-Type', 'application/json');
             
             // Validate request using helper function
-            const { error, value } = validateAndLog(req, schemas.flagMail, 'flagMail');
+            const { error, value } = validateAndLog(req, schemas.flagMail, 'flagMail', { userId, deviceId });
             if (error) {
                 return res.status(400).json({ error: 'Invalid request', details: error.details });
             }
@@ -460,8 +559,10 @@ module.exports = ({ mailModule }) => ({
             MonitoringService.info('Flagging email', {
                 emailId: id,
                 flag,
-                action: flag ? 'flagged' : 'unflagged'
-            }, 'mail');
+                action: flag ? 'flagged' : 'unflagged',
+                userId,
+                deviceId
+            }, 'mail', null, userId, deviceId);
             
             let success = false;
             try {
@@ -471,16 +572,20 @@ module.exports = ({ mailModule }) => ({
                         emailId: id,
                         flag,
                         action: flag ? 'flagged' : 'unflagged',
-                        method: 'flagEmail'
-                    }, 'mail');
+                        method: 'flagEmail',
+                        userId,
+                        deviceId
+                    }, 'mail', null, userId, deviceId);
                 } else if (typeof mailModule.handleIntent === 'function') {
                     // Try using the module's handleIntent method instead
                     const result = await mailModule.handleIntent('flagMail', { mailId: id, flag }, { req });
                     success = result && result.flagged === true;
                     MonitoringService.info('Email flagged via handleIntent', {
                         method: 'handleIntent',
-                        action: 'flagMail'
-                    }, 'mail');
+                        action: 'flagMail',
+                        userId,
+                        deviceId
+                    }, 'mail', null, userId, deviceId);
                 } else {
                     throw new Error('flagEmail method not implemented');
                 }
@@ -493,8 +598,13 @@ module.exports = ({ mailModule }) => ({
                         error: moduleError.message, 
                         stack: moduleError.stack,
                         operation: 'flagMail',
-                        emailId: id
-                    }
+                        emailId: id,
+                        userId,
+                        deviceId
+                    },
+                    null,
+                    userId,
+                    deviceId
                 );
                 throw moduleError;
             }
@@ -504,7 +614,9 @@ module.exports = ({ mailModule }) => ({
             MonitoringService.trackMetric('mail.flagMail.duration', duration, {
                 success,
                 emailId: id,
-                flag
+                flag,
+                userId,
+                deviceId
             });
             
             res.json({ success, id, flag });
@@ -514,7 +626,9 @@ module.exports = ({ mailModule }) => ({
             MonitoringService.trackMetric('mail.flagMail.error', 1, {
                 errorMessage: err.message,
                 duration,
-                success: false
+                success: false,
+                userId,
+                deviceId
             });
             
             const mcpError = ErrorService.createError(
@@ -525,8 +639,13 @@ module.exports = ({ mailModule }) => ({
                     stack: err.stack,
                     operation: 'flagMail',
                     endpoint: req.path,
-                    error: err.message
-                }
+                    error: err.message,
+                    userId,
+                    deviceId
+                },
+                null,
+                userId,
+                deviceId
             );
             res.status(500).json({ error: 'Internal error', message: err.message });
         }
@@ -538,14 +657,20 @@ module.exports = ({ mailModule }) => ({
      */
     async searchMail(req, res) {
         const startTime = Date.now();
+        
+        // Extract user context from auth middleware
+        const { userId = null, deviceId = null } = req.user || {};
+        
         try {
             // Log request
             MonitoringService.info(`Processing ${req.method} ${req.path}`, {
                 method: req.method,
                 path: req.path,
                 query: req.query,
-                ip: req.ip
-            }, 'mail');
+                ip: req.ip,
+                userId,
+                deviceId
+            }, 'mail', null, userId, deviceId);
             
             // Ensure content type is set explicitly to prevent any HTML rendering
             res.setHeader('Content-Type', 'application/json');
@@ -559,8 +684,13 @@ module.exports = ({ mailModule }) => ({
                     ErrorService.SEVERITIES.WARNING,
                     { 
                         details: queryError.details,
-                        endpoint: 'searchMail'
-                    }
+                        endpoint: 'searchMail',
+                        userId,
+                        deviceId
+                    },
+                    null,
+                    userId,
+                    deviceId
                 );
                 return res.status(400).json({ error: 'Invalid request', details: queryError.details });
             }
@@ -570,8 +700,10 @@ module.exports = ({ mailModule }) => ({
             
             MonitoringService.info('Searching emails', {
                 searchQuery,
-                limit
-            }, 'mail');
+                limit,
+                userId,
+                deviceId
+            }, 'mail', null, userId, deviceId);
             
             // Try to get search results from the module
             let messages = [];
@@ -580,17 +712,20 @@ module.exports = ({ mailModule }) => ({
                     messages = await mailModule.searchEmails(searchQuery, { limit }, req);
                     MonitoringService.info('Found emails matching query', {
                         messageCount: messages.length,
-                        method: 'searchEmails'
-                    }, 'mail');
+                        method: 'searchEmails',
+                        userId,
+                        deviceId
+                    }, 'mail', null, userId, deviceId);
                 } else if (typeof mailModule.handleIntent === 'function') {
                     // Try using the module's handleIntent method instead
                     const result = await mailModule.handleIntent('searchMail', { query: searchQuery, limit }, { req });
                     messages = result && result.items ? result.items : [];
                     MonitoringService.info('Found emails via handleIntent', {
-                        messageCount: messages.length,
                         method: 'handleIntent',
-                        action: 'searchMail'
-                    }, 'mail');
+                        action: 'searchMail',
+                        userId,
+                        deviceId
+                    }, 'mail', null, userId, deviceId);
                 } else {
                     throw new Error('Search method not implemented');
                 }
@@ -603,12 +738,19 @@ module.exports = ({ mailModule }) => ({
                         error: moduleError.message, 
                         stack: moduleError.stack,
                         operation: 'searchMail',
-                        searchQuery
-                    }
+                        searchQuery,
+                        userId,
+                        deviceId
+                    },
+                    null,
+                    userId,
+                    deviceId
                 );
                 MonitoringService.info('Falling back to mock search results', {
-                    reason: 'search method failed'
-                }, 'mail');
+                    reason: 'search method failed',
+                    userId,
+                    deviceId
+                }, 'mail', null, userId, deviceId);
                 
                 // Generate mock search results
                 const mockMessages = [
@@ -636,8 +778,10 @@ module.exports = ({ mailModule }) => ({
                 
                 messages = mockMessages;
                 MonitoringService.info('Generated mock search results', {
-                    resultCount: mockMessages.length
-                }, 'mail');
+                    resultCount: mockMessages.length,
+                    userId,
+                    deviceId
+                }, 'mail', null, userId, deviceId);
             }
             
             // Double-check that messages is an array before sending the response
@@ -648,8 +792,13 @@ module.exports = ({ mailModule }) => ({
                     ErrorService.SEVERITIES.WARNING,
                     { 
                         actualType: typeof messages,
-                        operation: 'searchMail'
-                    }
+                        operation: 'searchMail',
+                        userId,
+                        deviceId
+                    },
+                    null,
+                    userId,
+                    deviceId
                 );
                 messages = []; // Ensure we're sending a valid array
             }
@@ -660,7 +809,9 @@ module.exports = ({ mailModule }) => ({
                 messageCount: messages.length,
                 searchQuery,
                 limit,
-                success: true
+                success: true,
+                userId,
+                deviceId
             });
             
             res.json(messages);
@@ -670,7 +821,9 @@ module.exports = ({ mailModule }) => ({
             MonitoringService.trackMetric('mail.searchMail.error', 1, {
                 errorMessage: err.message,
                 duration,
-                success: false
+                success: false,
+                userId,
+                deviceId
             });
             
             const mcpError = ErrorService.createError(
@@ -681,8 +834,13 @@ module.exports = ({ mailModule }) => ({
                     stack: err.stack,
                     operation: 'searchMail',
                     endpoint: req.path,
-                    error: err.message
-                }
+                    error: err.message,
+                    userId,
+                    deviceId
+                },
+                null,
+                userId,
+                deviceId
             );
             res.status(500).json({ error: 'Internal error', message: err.message });
         }
@@ -694,14 +852,20 @@ module.exports = ({ mailModule }) => ({
      */
     async getEmailDetails(req, res) {
         const startTime = Date.now();
+        
+        // Extract user context from auth middleware
+        const { userId = null, deviceId = null } = req.user || {};
+        
         try {
             // Log request
             MonitoringService.info(`Processing ${req.method} ${req.path}`, {
                 method: req.method,
                 path: req.path,
                 params: req.params,
-                ip: req.ip
-            }, 'mail');
+                ip: req.ip,
+                userId,
+                deviceId
+            }, 'mail', null, userId, deviceId);
             
             // Ensure content type is set explicitly to prevent any HTML rendering
             res.setHeader('Content-Type', 'application/json');
@@ -712,8 +876,10 @@ module.exports = ({ mailModule }) => ({
             }
             
             MonitoringService.info('Getting details for email', {
-                emailId
-            }, 'mail');
+                emailId,
+                userId,
+                deviceId
+            }, 'mail', null, userId, deviceId);
             
             let emailDetails = null;
             try {
@@ -721,16 +887,20 @@ module.exports = ({ mailModule }) => ({
                     emailDetails = await mailModule.getEmailDetails(emailId, req);
                     MonitoringService.info('Retrieved email details', {
                         emailId,
-                        method: 'getEmailDetails'
-                    }, 'mail');
+                        method: 'getEmailDetails',
+                        userId,
+                        deviceId
+                    }, 'mail', null, userId, deviceId);
                 } else if (typeof mailModule.handleIntent === 'function') {
                     // Try using the module's handleIntent method instead
                     const result = await mailModule.handleIntent('readMailDetails', { id: emailId }, { req });
                     emailDetails = result && result.email ? result.email : null;
                     MonitoringService.info('Retrieved email details via handleIntent', {
                         method: 'handleIntent',
-                        action: 'readMailDetails'
-                    }, 'mail');
+                        action: 'readMailDetails',
+                        userId,
+                        deviceId
+                    }, 'mail', null, userId, deviceId);
                 } else {
                     throw new Error('getEmailDetails method not implemented');
                 }
@@ -743,12 +913,19 @@ module.exports = ({ mailModule }) => ({
                         error: moduleError.message, 
                         stack: moduleError.stack,
                         operation: 'getEmailDetails',
-                        emailId
-                    }
+                        emailId,
+                        userId,
+                        deviceId
+                    },
+                    null,
+                    userId,
+                    deviceId
                 );
                 MonitoringService.info('Falling back to mock email details', {
-                    reason: 'getEmailDetails method failed'
-                }, 'mail');
+                    reason: 'getEmailDetails method failed',
+                    userId,
+                    deviceId
+                }, 'mail', null, userId, deviceId);
                 
                 // Generate mock email details
                 emailDetails = {
@@ -778,7 +955,9 @@ module.exports = ({ mailModule }) => ({
             MonitoringService.trackMetric('mail.getEmailDetails.duration', duration, {
                 emailId,
                 hasDetails: !!emailDetails,
-                success: true
+                success: true,
+                userId,
+                deviceId
             });
             
             res.json(emailDetails);
@@ -788,7 +967,9 @@ module.exports = ({ mailModule }) => ({
             MonitoringService.trackMetric('mail.getEmailDetails.error', 1, {
                 errorMessage: err.message,
                 duration,
-                success: false
+                success: false,
+                userId,
+                deviceId
             });
             
             const mcpError = ErrorService.createError(
@@ -799,8 +980,13 @@ module.exports = ({ mailModule }) => ({
                     stack: err.stack,
                     operation: 'getEmailDetails',
                     endpoint: req.path,
-                    error: err.message
-                }
+                    error: err.message,
+                    userId,
+                    deviceId
+                },
+                null,
+                userId,
+                deviceId
             );
             res.status(500).json({ error: 'Internal error', message: err.message });
         }
@@ -812,6 +998,10 @@ module.exports = ({ mailModule }) => ({
      */
     async markAsRead(req, res) {
         const startTime = Date.now();
+        
+        // Extract user context from auth middleware
+        const { userId = null, deviceId = null } = req.user || {};
+        
         try {
             // Log request
             MonitoringService.info(`Processing ${req.method} ${req.path}`, {
@@ -819,8 +1009,10 @@ module.exports = ({ mailModule }) => ({
                 path: req.path,
                 params: req.params,
                 body: req.body,
-                ip: req.ip
-            }, 'mail');
+                ip: req.ip,
+                userId,
+                deviceId
+            }, 'mail', null, userId, deviceId);
             
             // Ensure content type is set explicitly to prevent any HTML rendering
             res.setHeader('Content-Type', 'application/json');
@@ -831,7 +1023,7 @@ module.exports = ({ mailModule }) => ({
             }
             
             // Validate request body using helper function
-            const { error, value } = validateAndLog(req, schemas.markAsRead, 'markAsRead');
+            const { error, value } = validateAndLog(req, schemas.markAsRead, 'markAsRead', { userId, deviceId });
             if (error) {
                 return res.status(400).json({ error: 'Invalid request', details: error.details });
             }
@@ -841,8 +1033,10 @@ module.exports = ({ mailModule }) => ({
             MonitoringService.info('Marking email read status', {
                 emailId,
                 isRead,
-                action: isRead ? 'read' : 'unread'
-            }, 'mail');
+                action: isRead ? 'read' : 'unread',
+                userId,
+                deviceId
+            }, 'mail', null, userId, deviceId);
             
             let success = false;
             try {
@@ -852,16 +1046,20 @@ module.exports = ({ mailModule }) => ({
                         emailId,
                         isRead,
                         action: isRead ? 'read' : 'unread',
-                        method: 'markAsRead'
-                    }, 'mail');
+                        method: 'markAsRead',
+                        userId,
+                        deviceId
+                    }, 'mail', null, userId, deviceId);
                 } else if (typeof mailModule.handleIntent === 'function') {
                     // Try using the module's handleIntent method instead
                     const result = await mailModule.handleIntent('markEmailRead', { id: emailId, isRead }, { req });
                     success = result && result.success === true;
                     MonitoringService.info('Marked email via handleIntent', {
                         method: 'handleIntent',
-                        action: 'markEmailRead'
-                    }, 'mail');
+                        action: 'markEmailRead',
+                        userId,
+                        deviceId
+                    }, 'mail', null, userId, deviceId);
                 } else {
                     throw new Error('markAsRead method not implemented');
                 }
@@ -874,12 +1072,19 @@ module.exports = ({ mailModule }) => ({
                         error: moduleError.message, 
                         stack: moduleError.stack,
                         operation: 'markAsRead',
-                        emailId
-                    }
+                        emailId,
+                        userId,
+                        deviceId
+                    },
+                    null,
+                    userId,
+                    deviceId
                 );
                 MonitoringService.info('Returning mock success response', {
-                    reason: 'markAsRead method failed'
-                }, 'mail');
+                    reason: 'markAsRead method failed',
+                    userId,
+                    deviceId
+                }, 'mail', null, userId, deviceId);
                 
                 // For testing, pretend it succeeded
                 success = true;
@@ -894,7 +1099,9 @@ module.exports = ({ mailModule }) => ({
             MonitoringService.trackMetric('mail.markAsRead.duration', duration, {
                 emailId,
                 isRead,
-                success: true
+                success: true,
+                userId,
+                deviceId
             });
             
             res.json({ success: true, isRead });
@@ -904,7 +1111,9 @@ module.exports = ({ mailModule }) => ({
             MonitoringService.trackMetric('mail.markAsRead.error', 1, {
                 errorMessage: err.message,
                 duration,
-                success: false
+                success: false,
+                userId,
+                deviceId
             });
             
             const mcpError = ErrorService.createError(
@@ -915,8 +1124,13 @@ module.exports = ({ mailModule }) => ({
                     stack: err.stack,
                     operation: 'markAsRead',
                     endpoint: req.path,
-                    error: err.message
-                }
+                    error: err.message,
+                    userId,
+                    deviceId
+                },
+                null,
+                userId,
+                deviceId
             );
             res.status(500).json({ error: 'Internal error', message: err.message });
         }
@@ -928,14 +1142,20 @@ module.exports = ({ mailModule }) => ({
      */
     async getMailAttachments(req, res) {
         const startTime = Date.now();
+        
+        // Extract user context from auth middleware
+        const { userId = null, deviceId = null } = req.user || {};
+        
         try {
             // Log request
             MonitoringService.info(`Processing ${req.method} ${req.path}`, {
                 method: req.method,
                 path: req.path,
                 query: req.query,
-                ip: req.ip
-            }, 'mail');
+                ip: req.ip,
+                userId,
+                deviceId
+            }, 'mail', null, userId, deviceId);
             
             // Ensure content type is set explicitly to prevent any HTML rendering
             res.setHeader('Content-Type', 'application/json');
@@ -949,8 +1169,13 @@ module.exports = ({ mailModule }) => ({
                     ErrorService.SEVERITIES.WARNING,
                     { 
                         details: queryError.details,
-                        endpoint: 'getMailAttachments'
-                    }
+                        endpoint: 'getMailAttachments',
+                        userId,
+                        deviceId
+                    },
+                    null,
+                    userId,
+                    deviceId
                 );
                 return res.status(400).json({ error: 'Invalid request', details: queryError.details });
             }
@@ -961,18 +1186,24 @@ module.exports = ({ mailModule }) => ({
             if (id.includes('?id=') || id.includes('&id=')) {
                 MonitoringService.info('Fixing malformed email ID', {
                     originalId: id,
-                    issue: 'contains parameter name'
-                }, 'mail');
+                    issue: 'contains parameter name',
+                    userId,
+                    deviceId
+                }, 'mail', null, userId, deviceId);
                 // Extract just the first part before any ? or & character
                 id = id.split(/[?&]/)[0];
                 MonitoringService.info('Fixed email ID', {
-                    fixedId: id
-                }, 'mail');
+                    fixedId: id,
+                    userId,
+                    deviceId
+                }, 'mail', null, userId, deviceId);
             }
             
             MonitoringService.info('Getting attachments for email', {
-                emailId: id
-            }, 'mail');
+                emailId: id,
+                userId,
+                deviceId
+            }, 'mail', null, userId, deviceId);
             
             let attachments = [];
             try {
@@ -981,16 +1212,20 @@ module.exports = ({ mailModule }) => ({
                     MonitoringService.info('Retrieved attachments', {
                         emailId: id,
                         attachmentCount: attachments.length,
-                        method: 'getAttachments'
-                    }, 'mail');
+                        method: 'getAttachments',
+                        userId,
+                        deviceId
+                    }, 'mail', null, userId, deviceId);
                 } else if (typeof mailModule.handleIntent === 'function') {
                     // Try using the module's handleIntent method instead
                     const result = await mailModule.handleIntent('getMailAttachments', { mailId: id }, { req });
                     attachments = result && result.attachments ? result.attachments : [];
                     MonitoringService.info('Retrieved attachments via handleIntent', {
                         method: 'handleIntent',
-                        action: 'getMailAttachments'
-                    }, 'mail');
+                        action: 'getMailAttachments',
+                        userId,
+                        deviceId
+                    }, 'mail', null, userId, deviceId);
                 } else {
                     throw new Error('getAttachments method not implemented');
                 }
@@ -1003,8 +1238,13 @@ module.exports = ({ mailModule }) => ({
                         error: moduleError.message, 
                         stack: moduleError.stack,
                         operation: 'getMailAttachments',
-                        emailId: id
-                    }
+                        emailId: id,
+                        userId,
+                        deviceId
+                    },
+                    null,
+                    userId,
+                    deviceId
                 );
                 
                 // Check if we're in development mode
@@ -1013,8 +1253,10 @@ module.exports = ({ mailModule }) => ({
                 if (isDevelopment && process.env.USE_MOCK_DATA === 'true') {
                     MonitoringService.info('Falling back to mock attachments list', {
                         mode: 'development',
-                        reason: 'getAttachments method failed'
-                    }, 'mail');
+                        reason: 'getAttachments method failed',
+                        userId,
+                        deviceId
+                    }, 'mail', null, userId, deviceId);
                     
                     // Generate mock attachments for testing purposes
                     attachments = [
@@ -1042,8 +1284,13 @@ module.exports = ({ mailModule }) => ({
                         { 
                             operation: 'getMailAttachments',
                             emailId: id,
-                            mode: 'production'
-                        }
+                            mode: 'production',
+                            userId,
+                            deviceId
+                        },
+                        null,
+                        userId,
+                        deviceId
                     );
                     
                     // Create a standardized error using the error service
@@ -1055,7 +1302,9 @@ module.exports = ({ mailModule }) => ({
                             emailId: id,
                             graphErrorCode: moduleError.code || 'unknown',
                             stack: moduleError.stack,
-                            timestamp: new Date().toISOString()
+                            timestamp: new Date().toISOString(),
+                            userId,
+                            deviceId
                         }
                     );
                     
@@ -1068,8 +1317,10 @@ module.exports = ({ mailModule }) => ({
                     });
                 }
                 MonitoringService.info('Generated mock attachments', {
-                    attachmentCount: attachments.length
-                }, 'mail');
+                    attachmentCount: attachments.length,
+                    userId,
+                    deviceId
+                }, 'mail', null, userId, deviceId);
             }
             
             // Double-check that attachments is an array before sending the response
@@ -1080,8 +1331,13 @@ module.exports = ({ mailModule }) => ({
                     ErrorService.SEVERITIES.WARNING,
                     { 
                         actualType: typeof attachments,
-                        operation: 'getMailAttachments'
-                    }
+                        operation: 'getMailAttachments',
+                        userId,
+                        deviceId
+                    },
+                    null,
+                    userId,
+                    deviceId
                 );
                 attachments = []; // Ensure we're sending a valid array
             }
@@ -1091,7 +1347,9 @@ module.exports = ({ mailModule }) => ({
             MonitoringService.trackMetric('mail.getMailAttachments.duration', duration, {
                 emailId: id,
                 attachmentCount: attachments.length,
-                success: true
+                success: true,
+                userId,
+                deviceId
             });
             
             res.json(attachments);
@@ -1101,7 +1359,9 @@ module.exports = ({ mailModule }) => ({
             MonitoringService.trackMetric('mail.getMailAttachments.error', 1, {
                 errorMessage: err.message,
                 duration,
-                success: false
+                success: false,
+                userId,
+                deviceId
             });
             
             const mcpError = ErrorService.createError(
@@ -1112,8 +1372,13 @@ module.exports = ({ mailModule }) => ({
                     stack: err.stack,
                     operation: 'getMailAttachments',
                     endpoint: req.path,
-                    error: err.message
-                }
+                    error: err.message,
+                    userId,
+                    deviceId
+                },
+                null,
+                userId,
+                deviceId
             );
             res.status(500).json({ error: 'Internal error', message: err.message });
         }
@@ -1125,14 +1390,20 @@ module.exports = ({ mailModule }) => ({
      */
     async addMailAttachment(req, res) {
         const startTime = Date.now();
+        
+        // Extract user context from auth middleware
+        const { userId = null, deviceId = null } = req.user || {};
+        
         try {
             // Log request
             MonitoringService.info(`Processing ${req.method} ${req.path}`, {
                 method: req.method,
                 path: req.path,
                 params: req.params,
-                ip: req.ip
-            }, 'mail');
+                ip: req.ip,
+                userId,
+                deviceId
+            }, 'mail', null, userId, deviceId);
             
             // Ensure content type is set explicitly
             res.setHeader('Content-Type', 'application/json');
@@ -1146,8 +1417,13 @@ module.exports = ({ mailModule }) => ({
                     ErrorService.SEVERITIES.WARNING,
                     { 
                         details: bodyError.details,
-                        endpoint: 'addMailAttachment'
-                    }
+                        endpoint: 'addMailAttachment',
+                        userId,
+                        deviceId
+                    },
+                    null,
+                    userId,
+                    deviceId
                 );
                 return res.status(400).json({ error: 'Invalid request', details: bodyError.details });
             }
@@ -1171,8 +1447,10 @@ module.exports = ({ mailModule }) => ({
                 attachmentName: attachment.name,
                 contentType: attachment.contentType,
                 isInline: attachment.isInline,
-                timestamp: new Date().toISOString()
-            }, 'mail');
+                timestamp: new Date().toISOString(),
+                userId,
+                deviceId
+            }, 'mail', null, userId, deviceId);
             
             // Call the mail module to add the attachment
             const result = await mailModule.addMailAttachment(emailId, attachment, req);
@@ -1182,7 +1460,9 @@ module.exports = ({ mailModule }) => ({
             MonitoringService.trackMetric('mail.addMailAttachment.duration', duration, {
                 emailId: emailId,
                 attachmentName: attachment.name,
-                success: true
+                success: true,
+                userId,
+                deviceId
             });
             
             MonitoringService.info('Successfully added attachment to email', {
@@ -1190,8 +1470,10 @@ module.exports = ({ mailModule }) => ({
                 attachmentId: result.id,
                 attachmentName: result.name,
                 duration: duration,
-                timestamp: new Date().toISOString()
-            }, 'mail');
+                timestamp: new Date().toISOString(),
+                userId,
+                deviceId
+            }, 'mail', null, userId, deviceId);
             
             res.status(201).json(result);
             
@@ -1201,7 +1483,9 @@ module.exports = ({ mailModule }) => ({
             MonitoringService.trackMetric('mail.addMailAttachment.error', 1, {
                 errorMessage: err.message,
                 duration,
-                success: false
+                success: false,
+                userId,
+                deviceId
             });
             
             const mcpError = ErrorService.createError(
@@ -1213,8 +1497,13 @@ module.exports = ({ mailModule }) => ({
                     operation: 'addMailAttachment',
                     endpoint: req.path,
                     error: err.message,
-                    emailId: req.params.id
-                }
+                    emailId: req.params.id,
+                    userId,
+                    deviceId
+                },
+                null,
+                userId,
+                deviceId
             );
             
             res.status(500).json({ 
@@ -1231,14 +1520,20 @@ module.exports = ({ mailModule }) => ({
      */
     async removeMailAttachment(req, res) {
         const startTime = Date.now();
+        
+        // Extract user context from auth middleware
+        const { userId = null, deviceId = null } = req.user || {};
+        
         try {
             // Log request
             MonitoringService.info(`Processing ${req.method} ${req.path}`, {
                 method: req.method,
                 path: req.path,
                 params: req.params,
-                ip: req.ip
-            }, 'mail');
+                ip: req.ip,
+                userId,
+                deviceId
+            }, 'mail', null, userId, deviceId);
             
             // Ensure content type is set explicitly
             res.setHeader('Content-Type', 'application/json');
@@ -1258,8 +1553,10 @@ module.exports = ({ mailModule }) => ({
             MonitoringService.debug('Removing attachment from email', {
                 emailId: emailId,
                 attachmentId: attachmentId,
-                timestamp: new Date().toISOString()
-            }, 'mail');
+                timestamp: new Date().toISOString(),
+                userId,
+                deviceId
+            }, 'mail', null, userId, deviceId);
             
             // Call the mail module to remove the attachment
             const result = await mailModule.removeMailAttachment(emailId, attachmentId, req);
@@ -1269,15 +1566,19 @@ module.exports = ({ mailModule }) => ({
             MonitoringService.trackMetric('mail.removeMailAttachment.duration', duration, {
                 emailId: emailId,
                 attachmentId: attachmentId,
-                success: true
+                success: true,
+                userId,
+                deviceId
             });
             
             MonitoringService.info('Successfully removed attachment from email', {
                 emailId: emailId,
                 attachmentId: attachmentId,
                 duration: duration,
-                timestamp: new Date().toISOString()
-            }, 'mail');
+                timestamp: new Date().toISOString(),
+                userId,
+                deviceId
+            }, 'mail', null, userId, deviceId);
             
             res.json(result);
             
@@ -1287,7 +1588,9 @@ module.exports = ({ mailModule }) => ({
             MonitoringService.trackMetric('mail.removeMailAttachment.error', 1, {
                 errorMessage: err.message,
                 duration,
-                success: false
+                success: false,
+                userId,
+                deviceId
             });
             
             const mcpError = ErrorService.createError(
@@ -1300,8 +1603,13 @@ module.exports = ({ mailModule }) => ({
                     endpoint: req.path,
                     error: err.message,
                     emailId: req.params.id,
-                    attachmentId: req.params.attachmentId
-                }
+                    attachmentId: req.params.attachmentId,
+                    userId,
+                    deviceId
+                },
+                null,
+                userId,
+                deviceId
             );
             
             res.status(500).json({ 

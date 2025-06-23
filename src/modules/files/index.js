@@ -37,10 +37,18 @@ const FilesModule = {
      * @returns {object} Redacted copy of the data
      * @private
      */
-    redactSensitiveData(data) {
+    redactSensitiveData(data, visited = new WeakSet()) {
         if (!data || typeof data !== 'object') {
             return data;
         }
+        
+        // Check for circular references
+        if (visited.has(data)) {
+            return '[Circular Reference]';
+        }
+        
+        // Add current object to visited set
+        visited.add(data);
         
         // Create a deep copy to avoid modifying the original
         const result = Array.isArray(data) ? [...data] : {...data};
@@ -66,7 +74,7 @@ const FilesModule = {
                 } 
                 // Recursively process nested objects
                 else if (typeof result[key] === 'object' && result[key] !== null) {
-                    result[key] = this.redactSensitiveData(result[key]);
+                    result[key] = this.redactSensitiveData(result[key], visited);
                 }
             }
         }
@@ -1257,55 +1265,55 @@ async handleIntent(intent, entities = {}, context = {}) {
             }
             case 'downloadFile': {
                 const { fileId } = entities;
-                const file = await graphService.downloadFile(fileId);
+                const file = await graphService.downloadFile(fileId, context.req);
                 result = { type: 'fileDownload', fileId, content: file };
                 break;
             }
             case 'uploadFile': {
                 const { name, content } = entities;
-                const uploadResult = await graphService.uploadFile(name, content);
+                const uploadResult = await graphService.uploadFile(name, content, context.req);
                 result = { type: 'fileUploadResult', file: normalizeFile(uploadResult) };
                 break;
             }
             case 'getFileMetadata': {
                 const { fileId } = entities;
-                const meta = await graphService.getFileMetadata(fileId);
+                const meta = await graphService.getFileMetadata(fileId, context.req);
                 result = { type: 'fileMetadata', file: normalizeFile(meta) };
                 break;
             }
             case 'createSharingLink': {
                 const { fileId, type } = entities;
-                const link = await graphService.createSharingLink(fileId, type);
+                const link = await graphService.createSharingLink(fileId, type, context.req);
                 result = { type: 'sharingLink', link };
                 break;
             }
             case 'getSharingLinks': {
                 const { fileId } = entities;
-                const links = await graphService.getSharingLinks(fileId);
+                const links = await graphService.getSharingLinks(fileId, context.req);
                 result = { type: 'sharingLinks', links };
                 break;
             }
             case 'removeSharingPermission': {
                 const { fileId, permissionId } = entities;
-                const permResult = await graphService.removeSharingPermission(fileId, permissionId);
+                const permResult = await graphService.removeSharingPermission(fileId, permissionId, context.req);
                 result = { type: 'removeSharingPermissionResult', result: permResult };
                 break;
             }
             case 'getFileContent': {
                 const { fileId } = entities;
-                const content = await graphService.getFileContent(fileId);
+                const content = await graphService.getFileContent(fileId, context.req);
                 result = { type: 'fileContent', fileId, content };
                 break;
             }
             case 'setFileContent': {
                 const { fileId, content } = entities;
-                const setResult = await graphService.setFileContent(fileId, content);
+                const setResult = await graphService.setFileContent(fileId, content, context.req);
                 result = { type: 'setFileContentResult', file: normalizeFile(setResult) };
                 break;
             }
             case 'updateFileContent': {
                 const { fileId, content } = entities;
-                const updateResult = await graphService.updateFileContent(fileId, content);
+                const updateResult = await graphService.updateFileContent(fileId, content, context.req);
                 result = { type: 'updateFileContentResult', file: normalizeFile(updateResult) };
                 break;
             }

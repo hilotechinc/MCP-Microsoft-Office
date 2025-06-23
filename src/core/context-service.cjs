@@ -15,11 +15,13 @@ MonitoringService.info('Context service initialized', {
 
 class ContextService {
     /**
+     * @param {string} userId - Optional user ID for multi-user context isolation
      * @param {object} storageService - Optional persistent storage
      */
-    constructor(storageService) {
+    constructor(userId = null, storageService) {
         const storageService = require('./storage-service.cjs');
         this.storageService = storageService;
+        this.userId = userId; // Store user ID for multi-user context isolation
         this._context = {
             conversationHistory: [],
             currentIntent: null,
@@ -27,10 +29,12 @@ class ContextService {
             userProfile: null,
             currentTopic: null,
             recentEntities: {},
+            userId: userId, // Include userId in context state
         };
         
         MonitoringService.info('Context service instance created', {
             hasStorageService: !!this.storageService,
+            userId: userId,
             timestamp: new Date().toISOString()
         }, 'context');
     }
@@ -243,6 +247,7 @@ class ContextService {
                 role,
                 text,
                 ...meta,
+                userId: this.userId, // Include userId for multi-user isolation
                 ts: new Date().toISOString()
             };
             
@@ -250,7 +255,8 @@ class ContextService {
             this._context.conversationHistory.push(entry);
             
             if (this.storageService && typeof this.storageService.addHistory === 'function') {
-                await this.storageService.addHistory(role, entry);
+                // Pass userId to storage service for user-specific history
+                await this.storageService.addHistory(role, entry, this.userId);
             }
             
             await this._persistContext();
@@ -392,6 +398,7 @@ class ContextService {
                 userProfile: null,
                 currentTopic: null,
                 recentEntities: {},
+                userId: this.userId, // Preserve userId on reset
             };
             
             if (this.storageService && typeof this.storageService.clearConversationHistory === 'function') {
@@ -481,17 +488,22 @@ class ContextService {
             if (this.storageService && typeof this.storageService.setSetting === 'function') {
                 const contextSize = JSON.stringify(this._context).length;
                 
-                await this.storageService.setSetting('context', this._context);
+                // Use user-specific context key for multi-user isolation
+                const contextKey = this.userId ? `user:${this.userId}:context` : 'context';
+                await this.storageService.setSetting(contextKey, this._context, this.userId);
                 
                 const executionTime = Date.now() - startTime;
                 MonitoringService.trackMetric('context_persist_success', executionTime, {
                     contextSize,
+                    userId: this.userId,
                     timestamp: new Date().toISOString()
                 });
                 
                 if (process.env.NODE_ENV === 'development') {
                     MonitoringService.debug('Context persisted to storage', {
                         contextSize,
+                        userId: this.userId,
+                        contextKey,
                         executionTimeMs: executionTime,
                         timestamp: new Date().toISOString()
                     }, 'context');
@@ -506,6 +518,7 @@ class ContextService {
                 `Context persistence failed: ${error.message}`,
                 ErrorService.SEVERITIES.WARNING,
                 {
+                    userId: this.userId,
                     stack: error.stack,
                     timestamp: new Date().toISOString()
                 }
@@ -513,6 +526,7 @@ class ContextService {
             
             MonitoringService.logError(mcpError);
             MonitoringService.trackMetric('context_persist_failure', executionTime, {
+                userId: this.userId,
                 errorType: error.code || 'unknown',
                 timestamp: new Date().toISOString()
             });

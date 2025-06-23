@@ -13,7 +13,7 @@ console.log('[MCP EVENTS] Event service initialized');
 
 class EventService {
     constructor() {
-        this._listeners = new Map(); // event -> [{id, handler, once, filter}]
+        this._listeners = new Map(); // event -> [{id, handler, once, filter, userId, deviceId}]
         this._nextId = 1;
         
         // Lazy load MonitoringService to avoid circular dependency
@@ -43,20 +43,23 @@ class EventService {
     }
 
     /**
-     * Subscribe to an event.
+     * Subscribe to an event with optional filtering and user context.
      * @param {string} event
-     * @param {function} handler
-     * @param {object} [options] - { once: boolean, filter: function }
-     * @returns {Promise<number>} Subscription id
+     * @param {Function} handler
+     * @param {Object} [options] - { filter, once, userId, deviceId }
+     * @returns {Promise<number>} listener ID
      */
     async subscribe(event, handler, options = {}) {
         const startTime = Date.now();
+        const { userId = null, deviceId = null } = options;
         
         if (process.env.NODE_ENV === 'development') {
             this._ensureMonitoringService().debug('Event subscription started', {
                 event,
                 hasFilter: !!options.filter,
                 once: !!options.once,
+                userId,
+                deviceId,
                 timestamp: new Date().toISOString()
             }, 'events');
         }
@@ -70,8 +73,13 @@ class EventService {
                     {
                         event,
                         eventType: typeof event,
+                        userId,
+                        deviceId,
                         timestamp: new Date().toISOString()
-                    }
+                    },
+                    null,
+                    userId,
+                    deviceId
                 );
                 this._ensureMonitoringService().logError(mcpError);
                 throw mcpError;
@@ -85,8 +93,13 @@ class EventService {
                     {
                         event,
                         handlerType: typeof handler,
+                        userId,
+                        deviceId,
                         timestamp: new Date().toISOString()
-                    }
+                    },
+                    null,
+                    userId,
+                    deviceId
                 );
                 this._ensureMonitoringService().logError(mcpError);
                 throw mcpError;
@@ -94,21 +107,34 @@ class EventService {
             
             if (!this._listeners.has(event)) this._listeners.set(event, []);
             const id = this._nextId++;
-            this._listeners.get(event).push({ id, handler, once: !!options.once, filter: options.filter });
+            
+            // Store listener with user context for isolation
+            this._listeners.get(event).push({ 
+                id, 
+                handler, 
+                once: !!options.once, 
+                filter: options.filter,
+                userId,
+                deviceId
+            });
             
             const executionTime = Date.now() - startTime;
             this._ensureMonitoringService().trackMetric('event_subscribe_success', executionTime, {
                 event,
                 listenerId: id,
                 totalListeners: this._listeners.get(event).length,
+                userId,
+                deviceId,
                 timestamp: new Date().toISOString()
-            });
+            }, userId, deviceId);
             
             // Track memory usage
             this._ensureMonitoringService().trackMetric('event_listeners_count', this._getTotalListenerCount(), {
                 event,
+                userId,
+                deviceId,
                 timestamp: new Date().toISOString()
-            });
+            }, userId, deviceId);
             
             return id;
             
@@ -120,8 +146,10 @@ class EventService {
                 this._ensureMonitoringService().trackMetric('event_subscribe_failure', executionTime, {
                     event,
                     errorType: error.code || 'validation_error',
+                    userId,
+                    deviceId,
                     timestamp: new Date().toISOString()
-                });
+                }, userId, deviceId);
                 throw error;
             }
             
@@ -133,34 +161,45 @@ class EventService {
                 {
                     event,
                     stack: error.stack,
+                    userId,
+                    deviceId,
                     timestamp: new Date().toISOString()
-                }
+                },
+                null,
+                userId,
+                deviceId
             );
             
             this._ensureMonitoringService().logError(mcpError);
             this._ensureMonitoringService().trackMetric('event_subscribe_failure', executionTime, {
                 event,
                 errorType: error.code || 'unknown',
+                userId,
+                deviceId,
                 timestamp: new Date().toISOString()
-            });
+            }, userId, deviceId);
             
             throw mcpError;
         }
     }
 
     /**
-     * Emit an event (async, all handlers).
+     * Emit an event (async, all handlers) with optional user context for filtering.
      * @param {string} event
      * @param {any} payload
+     * @param {Object} [options] - { userId, deviceId }
      * @returns {Promise<void>}
      */
-    async emit(event, payload) {
+    async emit(event, payload, options = {}) {
         const startTime = Date.now();
+        const { userId = null, deviceId = null } = options;
         
         if (process.env.NODE_ENV === 'development') {
             this._ensureMonitoringService().debug('Event emission started', {
                 event,
                 payloadType: typeof payload,
+                userId,
+                deviceId,
                 timestamp: new Date().toISOString()
             }, 'events');
         }
@@ -170,8 +209,10 @@ class EventService {
                 const executionTime = Date.now() - startTime;
                 this._ensureMonitoringService().trackMetric('event_emit_no_listeners', executionTime, {
                     event,
+                    userId,
+                    deviceId,
                     timestamp: new Date().toISOString()
-                });
+                }, userId, deviceId);
                 return;
             }
             
@@ -179,10 +220,25 @@ class EventService {
             let successCount = 0;
             let failureCount = 0;
             let filteredCount = 0;
+            let userFilteredCount = 0;
             
             // Copy for safe iteration
             for (const listener of [...listeners]) {
                 try {
+                    // User-scoped filtering: only emit to listeners with matching user context
+                    // If userId is provided, only emit to listeners with same userId or no userId (global)
+                    if (userId && listener.userId && listener.userId !== userId) {
+                        userFilteredCount++;
+                        continue;
+                    }
+                    
+                    // Device-scoped filtering: only emit to listeners with matching device context
+                    // If deviceId is provided, only emit to listeners with same deviceId or no deviceId (global)
+                    if (deviceId && listener.deviceId && listener.deviceId !== deviceId) {
+                        userFilteredCount++;
+                        continue;
+                    }
+                    
                     if (listener.filter && !listener.filter(payload)) {
                         filteredCount++;
                         continue;
@@ -207,6 +263,8 @@ class EventService {
                             listenerId: listener.id,
                             handlerError: handlerError.message,
                             stack: handlerError.stack,
+                            userId: listener.userId,
+                            deviceId: listener.deviceId,
                             timestamp: new Date().toISOString()
                         }
                     );
@@ -222,8 +280,11 @@ class EventService {
                 successCount,
                 failureCount,
                 filteredCount,
+                userFilteredCount,
+                userId,
+                deviceId,
                 timestamp: new Date().toISOString()
-            });
+            }, userId, deviceId);
             
             if (process.env.NODE_ENV === 'development') {
                 this._ensureMonitoringService().debug('Event emission completed', {
@@ -232,6 +293,7 @@ class EventService {
                     successCount,
                     failureCount,
                     filteredCount,
+                    userFilteredCount,
                     executionTimeMs: executionTime,
                     timestamp: new Date().toISOString()
                 }, 'events');
@@ -247,6 +309,8 @@ class EventService {
                 {
                     event,
                     stack: error.stack,
+                    userId,
+                    deviceId,
                     timestamp: new Date().toISOString()
                 }
             );
@@ -255,8 +319,10 @@ class EventService {
             this._ensureMonitoringService().trackMetric('event_emit_failure', executionTime, {
                 event,
                 errorType: error.code || 'unknown',
+                userId,
+                deviceId,
                 timestamp: new Date().toISOString()
-            });
+            }, userId, deviceId);
             
             throw mcpError;
         }

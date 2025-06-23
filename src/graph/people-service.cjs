@@ -5,7 +5,7 @@
  */
 
 const graphClientFactory = require('./graph-client.cjs');
-const { normalizePerson } = require('./normalizers.cjs');
+const { normalizePerson, normalizeUser } = require('./normalizers.cjs');
 
 /**
  * Gets a list of people relevant to the current user.
@@ -110,7 +110,7 @@ async function getPersonById(personId, req) {
     console.log(`[People Service] Getting person with ID: ${personId}`);
     const client = await graphClientFactory.createClient(req);
     
-    // Try first with /me/people endpoint
+    // Try first with /me/people endpoint (returns person format)
     try {
       const res = await client.api(`/me/people/${personId}`).get();
       console.log(`[People Service] Successfully retrieved person from /me/people endpoint`);
@@ -118,11 +118,21 @@ async function getPersonById(personId, req) {
     } catch (peopleError) {
       console.log(`[People Service] Failed to get person from /me/people endpoint: ${peopleError.message}`);
       
-      // If the first attempt fails, try with /users endpoint
+      // If the first attempt fails, try with /users endpoint (returns user format)
       try {
-        const res = await client.api(`/users/${personId}`).get();
-        console.log(`[People Service] Successfully retrieved person from /users endpoint`);
-        return normalizePerson(res);
+        // Add $select to get comprehensive user details
+        const selectFields = [
+          'id', 'displayName', 'givenName', 'surname', 'mail', 'userPrincipalName',
+          'jobTitle', 'department', 'companyName', 'businessPhones', 'mobilePhone',
+          'officeLocation', 'streetAddress', 'city', 'state', 'postalCode', 'country',
+          'preferredLanguage', 'photo'
+        ].join(',');
+        
+        const res = await client.api(`/users/${personId}?$select=${selectFields}`).get();
+        console.log(`[People Service] Successfully retrieved user from /users endpoint`);
+        
+        // Use normalizeUser since this is user format, not person format
+        return normalizeUser(res);
       } catch (usersError) {
         console.log(`[People Service] Failed to get person from /users endpoint: ${usersError.message}`);
         

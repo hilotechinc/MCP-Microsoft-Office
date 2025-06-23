@@ -346,6 +346,79 @@ class CacheService {
             throw mcpError;
         }
     }
+
+    /**
+     * Generate user-scoped cache key for multi-user isolation
+     * @param {string} userId - User ID
+     * @param {string} key - Base cache key
+     * @returns {string} User-scoped cache key
+     */
+    _getUserScopedKey(userId, key) {
+        return userId ? `user:${userId}:${key}` : key;
+    }
+
+    /**
+     * Get from cache with user scope for multi-user isolation
+     * @param {string} userId - User ID for scoping
+     * @param {string} key - Cache key
+     * @returns {Promise<any|null>}
+     */
+    async getUserScoped(userId, key) {
+        const scopedKey = this._getUserScopedKey(userId, key);
+        return this.get(scopedKey);
+    }
+
+    /**
+     * Set in cache with user scope for multi-user isolation
+     * @param {string} userId - User ID for scoping
+     * @param {string} key - Cache key
+     * @param {any} value - Value to cache
+     * @param {number} [ttl=DEFAULT_TTL] - Time to live in seconds
+     * @returns {Promise<void>}
+     */
+    async setUserScoped(userId, key, value, ttl = DEFAULT_TTL) {
+        const scopedKey = this._getUserScopedKey(userId, key);
+        return this.set(scopedKey, value, ttl);
+    }
+
+    /**
+     * Invalidate cache entry with user scope for multi-user isolation
+     * @param {string} userId - User ID for scoping
+     * @param {string} key - Cache key
+     * @returns {Promise<void>}
+     */
+    async invalidateUserScoped(userId, key) {
+        const scopedKey = this._getUserScopedKey(userId, key);
+        return this.invalidate(scopedKey);
+    }
+
+    /**
+     * Clear all cache entries for a specific user
+     * @param {string} userId - User ID to clear cache for
+     * @returns {Promise<void>}
+     */
+    async clearUserScoped(userId) {
+        if (!userId) return;
+        
+        const userPrefix = `user:${userId}:`;
+        const keysToDelete = [];
+        
+        for (const key of this._cache.keys()) {
+            if (key.startsWith(userPrefix)) {
+                keysToDelete.push(key);
+            }
+        }
+        
+        for (const key of keysToDelete) {
+            await this.invalidate(key);
+        }
+        
+        MonitoringService.info('User-scoped cache cleared', {
+            userId,
+            keysCleared: keysToDelete.length,
+            timestamp: new Date().toISOString()
+        }, 'cache');
+    }
 }
 
 module.exports = new CacheService();

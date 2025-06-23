@@ -287,13 +287,22 @@ const ISO_DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 /**
  * Helper method to redact sensitive data from objects before logging
  * @param {object} data - The data object to redact
+ * @param {WeakSet} visited - Set to track visited objects for circular reference detection
  * @returns {object} Redacted copy of the data
  * @private
  */
-function redactSensitiveData(data) {
+function redactSensitiveData(data, visited = new WeakSet()) {
   if (!data || typeof data !== 'object') {
     return data;
   }
+  
+  // Check for circular references
+  if (visited.has(data)) {
+    return '[Circular Reference]';
+  }
+  
+  // Add current object to visited set
+  visited.add(data);
   
   // Create a deep copy to avoid modifying the original
   const result = Array.isArray(data) ? [...data] : {...data};
@@ -320,7 +329,7 @@ function redactSensitiveData(data) {
       } 
       // Recursively process nested objects
       else if (typeof result[key] === 'object' && result[key] !== null) {
-        result[key] = redactSensitiveData(result[key]);
+        result[key] = redactSensitiveData(result[key], visited);
       }
     }
   }
@@ -346,15 +355,16 @@ function isValidISODate(dateString) {
  * @param {number} [options.top=50] - Maximum number of events to return
  * @param {string} [options.orderby='start/dateTime'] - Property to sort by
  * @param {string} [options.userId='me'] - User ID to get events for
+ * @param {object} [options.req] - Request object
  * @returns {Promise<Array<object>>} Normalized calendar events
  */
 async function getEvents(options = {}) {
   // Extract userId from options at the beginning to ensure it's available in catch block
-  const { start, end, top = 50, orderby = 'start/dateTime', userId = 'me' } = options;
+  const { start, end, top = 50, orderby = 'start/dateTime', userId = 'me', req } = options;
   let endpoint;
   
   try {
-    const client = await graphClientFactory.createClient();
+    const client = await graphClientFactory.createClient(req);
     
     // Validate date formats if provided
     if (start && !isValidISODate(start)) {
@@ -445,53 +455,7 @@ async function getEvents(options = {}) {
       console.error('[CALENDAR] Error fetching calendar events:', error.message || 'Unknown error');
     }
     
-    // Only return mock data if explicitly set to development or test environment
-    // In production, we want to throw the error to be handled by the caller
-    if (process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test') {
-      MonitoringService?.info('Using mock data for calendar events in test environment', {
-        environment: process.env.NODE_ENV,
-        timestamp: new Date().toISOString()
-      }, 'calendar');
-      
-      // Return mock calendar events for testing purposes
-      const mockEvents = [
-        {
-          id: 'mock1',
-          subject: 'Team Meeting',
-          start: {
-            dateTime: '2025-05-01T09:00:00',
-            timeZone: 'UTC'
-          },
-          end: {
-            dateTime: '2025-05-01T10:00:00',
-            timeZone: 'UTC'
-          },
-          attendees: [
-            {
-              emailAddress: {
-                address: 'test@example.com',
-                name: 'Test User'
-              }
-            }
-          ],
-          isOnlineMeeting: true
-        },
-        {
-          id: 'mock2',
-          subject: 'Project Review',
-          start: {
-            dateTime: '2025-05-01T14:00:00',
-            timeZone: 'UTC'
-          },
-          end: {
-            dateTime: '2025-05-01T15:00:00',
-            timeZone: 'UTC'
-          }
-        }
-      ];
-      
-      return mockEvents.map(normalizeEvent);
-    }
+    // Don't return mock data - always throw the error to be handled by the caller
     
     // In production, throw the error to be handled by the caller
     const graphError = new Error(`Failed to fetch calendar events: ${error.message}`);
@@ -506,9 +470,10 @@ async function getEvents(options = {}) {
  * Creates a calendar event using Microsoft Graph API.
  * @param {object} eventData - Event data including attendees, time, and other event properties
  * @param {string} [userId='me'] - User ID to create event for
+ * @param {object} [options.req] - Request object
  * @returns {Promise<object>} Normalized created event
  */
-async function createEvent(eventData, userId = 'me') {
+async function createEvent(eventData, userId = 'me', options = {}) {
   MonitoringService?.debug('Creating calendar event', {
     userId: redactSensitiveData({ userId }),
     eventData: redactSensitiveData(eventData),
@@ -550,7 +515,7 @@ async function createEvent(eventData, userId = 'me') {
   //   throw new Error(`Invalid event data: ${error.message}`);
   // }
   
-  const client = await graphClientFactory.createClient();
+  const client = await graphClientFactory.createClient(options.req);
   
   if (process.env.NODE_ENV !== 'production') {
     MonitoringService?.debug('Attempting to create event in development environment', {
@@ -1051,7 +1016,9 @@ async function getAvailability(emails, start, end, options = {}) {
   }
   
   // All validation passed, proceed with getting the client
-  const client = await graphClientFactory.createClient();
+  // Extract req from options for authentication
+  const { req, ...otherOptions } = options;
+  const client = await graphClientFactory.createClient(req);
   
   // Get the user's preferred time zone if not specified
   let timeZone;
@@ -1259,8 +1226,9 @@ async function getEventsRaw(options = {}, userId = 'me') {
     return getEvents(options, userId);
   }
   
-  const client = await graphClientFactory.createClient();
-  const { start, end, top, select, orderby } = options;
+  // Extract req from options
+  const { req, start, end, top, select, orderby } = options;
+  const client = await graphClientFactory.createClient(req);
   
   // Build query parameters
   const queryParams = [];
@@ -1330,8 +1298,8 @@ async function respondToEvent(eventId, responseType, options = {}) {
     throw new Error('Invalid response type. Must be one of: accept, tentativelyAccept, decline');
   }
   
-  const { comment = '', userId = 'me' } = options;
-  const client = await graphClientFactory.createClient();
+  const { comment = '', userId = 'me', req } = options;
+  const client = await graphClientFactory.createClient(req);
   
   // Set up retry logic for handling 409 conflicts
   const maxRetries = 3;
@@ -1346,10 +1314,6 @@ async function respondToEvent(eventId, responseType, options = {}) {
         comment: comment
       });
       
-      // After successful response, get the updated event to return
-      // This ensures we have the most current version with response status
-      const updatedEvent = await client.api(userId === 'me' ? `/me/events/${eventId}` : `/users/${userId}/events/${eventId}`).get();
-      
       if (process.env.NODE_ENV !== 'production') {
         MonitoringService?.info(`Successfully responded to event`, {
           eventId: redactSensitiveData({ eventId }),
@@ -1357,20 +1321,23 @@ async function respondToEvent(eventId, responseType, options = {}) {
           timestamp: new Date().toISOString()
         }, 'calendar');
       }
-      
-      // Normalize event for consistent response format
-      const normalizedEvent = normalizeEvent(updatedEvent);
 
       // Emit event for UI updates with redacted data
       EventService?.emit('calendar:event:response', {
         eventId: redactSensitiveData({ eventId }),
         responseType,
-        subject: redactSensitiveData({ subject: normalizedEvent.subject }),
         timestamp: new Date().toISOString()
       });
       
-      // Return normalized event
-      return normalizedEvent;
+      // Return confirmation response instead of full event
+      return {
+        success: true,
+        eventId,
+        responseType,
+        comment,
+        message: `Successfully ${responseType === 'tentativelyAccept' ? 'tentatively accepted' : responseType + 'ed'} the event${comment ? ' with comment' : ''}`,
+        timestamp: new Date().toISOString()
+      };
     } catch (error) {
       lastError = error;
       
@@ -1469,11 +1436,19 @@ async function respondToEvent(eventId, responseType, options = {}) {
  * @param {string} [commentOrOptions.userId='me'] - User ID to respond as
  * @returns {Promise<object>} Updated event with response status
  */
-async function acceptEvent(eventId, commentOrOptions = '') {
+async function acceptEvent(eventId, commentOrOptions = '', req) {
   // Handle both string comment and options object for backward compatibility
-  const options = typeof commentOrOptions === 'string' 
-    ? { comment: commentOrOptions } 
-    : commentOrOptions;
+  let options;
+  if (typeof commentOrOptions === 'string') {
+    options = { comment: commentOrOptions };
+  } else {
+    options = commentOrOptions || {};
+  }
+  
+  // Add req to options for authentication
+  if (req) {
+    options.req = req;
+  }
   
   return respondToEvent(eventId, 'accept', options);
 }
@@ -1486,11 +1461,19 @@ async function acceptEvent(eventId, commentOrOptions = '') {
  * @param {string} [commentOrOptions.userId='me'] - User ID to respond as
  * @returns {Promise<object>} Updated event with response status
  */
-async function tentativelyAcceptEvent(eventId, commentOrOptions = '') {
+async function tentativelyAcceptEvent(eventId, commentOrOptions = '', req) {
   // Handle both string comment and options object for backward compatibility
-  const options = typeof commentOrOptions === 'string' 
-    ? { comment: commentOrOptions } 
-    : commentOrOptions;
+  let options;
+  if (typeof commentOrOptions === 'string') {
+    options = { comment: commentOrOptions };
+  } else {
+    options = commentOrOptions || {};
+  }
+  
+  // Add req to options for authentication
+  if (req) {
+    options.req = req;
+  }
   
   return respondToEvent(eventId, 'tentativelyAccept', options);
 }
@@ -1503,11 +1486,19 @@ async function tentativelyAcceptEvent(eventId, commentOrOptions = '') {
  * @param {string} [commentOrOptions.userId='me'] - User ID to respond as
  * @returns {Promise<object>} Updated event with response status
  */
-async function declineEvent(eventId, commentOrOptions = '') {
+async function declineEvent(eventId, commentOrOptions = '', req) {
   // Handle both string comment and options object for backward compatibility
-  const options = typeof commentOrOptions === 'string' 
-    ? { comment: commentOrOptions } 
-    : commentOrOptions;
+  let options;
+  if (typeof commentOrOptions === 'string') {
+    options = { comment: commentOrOptions };
+  } else {
+    options = commentOrOptions || {};
+  }
+  
+  // Add req to options for authentication
+  if (req) {
+    options.req = req;
+  }
   
   return respondToEvent(eventId, 'decline', options);
 }
@@ -1516,12 +1507,13 @@ async function declineEvent(eventId, commentOrOptions = '') {
  * Cancel a calendar event with option to send cancellation messages to attendees.
  * @param {string} eventId - ID of the event to cancel
  * @param {Object|string} options - Options object or comment string (for backward compatibility)
+ * @param {Object} req - Request object for authentication (3rd parameter for module compatibility)
  * @param {string} [options.comment=''] - Optional comment to include with the cancellation
  * @param {boolean} [options.sendCancellation=true] - Whether to send cancellation notices to attendees
  * @param {string} [options.userId='me'] - User ID for the calendar
  * @returns {Promise<object>} Response status with confirmation of success
  */
-async function cancelEvent(eventId, options = {}) {
+async function cancelEvent(eventId, options = {}, req) {
   if (!eventId) {
     throw new Error('Event ID is required for cancellation');
   }
@@ -1539,7 +1531,7 @@ async function cancelEvent(eventId, options = {}) {
     userId = options.userId || 'me';
   }
   
-  const client = await graphClientFactory.createClient();
+  const client = await graphClientFactory.createClient(req);
   
   // Set up retry logic for transient errors
   const maxRetries = 3;
@@ -1679,8 +1671,9 @@ async function findMeetingTimes(options = {}) {
   }
 
   // Get an authenticated client
-  const client = await graphClientFactory.createClient();
-  const userId = options.userId || 'me';
+  // Extract req from options for authentication
+  const { req, userId = 'me', ...otherOptions } = options;
+  const client = await graphClientFactory.createClient(req);
 
   // Process attendees if provided
   let attendees = [];
@@ -1926,9 +1919,9 @@ async function getRooms(options = {}) {
     timestamp: new Date().toISOString()
   }, 'calendar');
   
-  const client = await graphClientFactory.createClient();
-  const skipCache = options.skipCache === true;
-  const cacheTTL = options.cacheTTL || ROOMS_CACHE_TTL;
+  // Extract req from options
+  const { req, skipCache = false, cacheTTL = ROOMS_CACHE_TTL, ...filterOptions } = options;
+  const client = await graphClientFactory.createClient(req);
   const includeCapacity = options.includeCapacity !== false; // Default to true
   
   // Check if we have a valid cache and should use it
@@ -2329,13 +2322,15 @@ function normalizeCalendar(calendar) {
  * @returns {Promise<Array>} List of calendars, normalized if specified
  */
 async function getCalendars(options = {}) {
-  const client = await graphClientFactory.createClient();
-  
-  // Set default options
-  const includeDelegated = options.includeDelegated !== false; // Default to true
-  const includeShared = options.includeShared !== false; // Default to true
-  const normalize = options.normalize !== false; // Default to true
-  const userId = options.userId || 'me';
+  const {
+    req,
+    userId = 'me',
+    includeDelegated = true,
+    includeShared = true,
+    normalize = true
+  } = options;
+
+  const client = await graphClientFactory.createClient(req);
   
   try {
     // Get the user's own calendars - use correct endpoint
@@ -2432,7 +2427,17 @@ const LARGE_ATTACHMENT_THRESHOLD = 1 * 1024 * 1024; // 1MB - Threshold for strea
  * @param {string} [options.userId='me'] - User ID to add attachment for
  * @returns {Promise<object>} Created attachment with success status
  */
-async function addEventAttachment(eventId, attachment, options = {}) {
+async function addEventAttachment(eventId, attachment, req, options = {}) {
+  // Handle parameter compatibility - module passes req as 3rd parameter
+  if (req && typeof req === 'object' && !req.userId) {
+    // req is the request object
+    options = options || {};
+  } else if (req && typeof req === 'object' && req.userId) {
+    // req is actually options
+    options = req;
+    req = undefined;
+  }
+  
   if (!eventId) {
     throw new Error('Event ID is required');
   }
@@ -2450,7 +2455,7 @@ async function addEventAttachment(eventId, attachment, options = {}) {
   }
   
   const userId = options.userId || 'me';
-  const client = await graphClientFactory.createClient();
+  const client = await graphClientFactory.createClient(req);
   
   // Check attachment size
   let contentSize = 0;
@@ -2570,7 +2575,17 @@ async function addEventAttachment(eventId, attachment, options = {}) {
  * @param {string} [options.userId='me'] - User ID to remove attachment for
  * @returns {Promise<object>} Success status and metadata
  */
-async function removeEventAttachment(eventId, attachmentId, options = {}) {
+async function removeEventAttachment(eventId, attachmentId, req, options = {}) {
+  // Handle parameter compatibility - module passes req as 3rd parameter
+  if (req && typeof req === 'object' && !req.userId) {
+    // req is the request object
+    options = options || {};
+  } else if (req && typeof req === 'object' && req.userId) {
+    // req is actually options
+    options = req;
+    req = undefined;
+  }
+  
   if (!eventId) {
     throw new Error('Event ID is required');
   }
@@ -2580,7 +2595,7 @@ async function removeEventAttachment(eventId, attachmentId, options = {}) {
   }
   
   const userId = options.userId || 'me';
-  const client = await graphClientFactory.createClient();
+  const client = await graphClientFactory.createClient(req);
   
   try {
     // Get attachment details before deletion for confirmation
@@ -2894,9 +2909,10 @@ async function resolveAttendeeNames(attendees, client) {
  * @param {string} id - ID of the event to update
  * @param {object} eventData - Updated event data
  * @param {string} [userId='me'] - User ID to update event for
+ * @param {object} [options.req] - Request object
  * @returns {Promise<object>} Normalized updated event
  */
-async function updateEvent(id, eventData, userId = 'me') {
+async function updateEvent(id, eventData, userId = 'me', options = {}) {
   if (!id) {
     throw new Error('Event ID is required for updating an event');
   }
@@ -2906,7 +2922,7 @@ async function updateEvent(id, eventData, userId = 'me') {
     throw new Error('Event data is required for updating an event');
   }
   
-  const client = await graphClientFactory.createClient();
+  const client = await graphClientFactory.createClient(options.req);
   
   // Start timer for performance tracking
   const startTime = Date.now();
@@ -3023,7 +3039,7 @@ async function updateEvent(id, eventData, userId = 'me') {
   }
   
   // Update body content if provided
-  if (eventData.body) {
+  if (eventData.body && eventData.body !== null) {
     patch.body = typeof eventData.body === 'string' ? {
       contentType: 'HTML',
       content: eventData.body
@@ -3134,9 +3150,11 @@ async function updateEvent(id, eventData, userId = 'me') {
       
       // Update the event with PATCH to only send changed fields
       // Use sendUpdates=all to ensure attendees are notified of changes
+      const endpoint = userId === 'me' ? `/me/events/${id}` : `/users/${userId}/events/${id}`;
       const updatedEvent = await client
-        .api(userId === 'me' ? `/me/events/${id}?sendUpdates=all` : `/users/${userId}/events/${id}?sendUpdates=all`)
-        .patch(patch, options);
+        .api(`${endpoint}?sendUpdates=all`)
+        .headers(options.headers)
+        .patch(patch);
       
       // Calculate execution time and track performance
       const executionTime = Date.now() - startTime;

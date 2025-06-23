@@ -3,7 +3,6 @@
  * Orchestrates UI, API, and Connection management
  */
 
-import { UIManager } from './UIManager.js';
 import { APIService } from './APIService.js';
 import { ConnectionManager } from './ConnectionManager.js';
 
@@ -13,7 +12,7 @@ export class AppController {
         this.initialized = false;
         
         // Initialize managers
-        this.uiManager = new UIManager();
+        this.uiManager = window.UIManagerInstance; // Use global instance
         this.apiService = new APIService();
         this.connectionManager = new ConnectionManager(this.apiService);
         
@@ -46,6 +45,9 @@ export class AppController {
             await this.uiManager.init();
             await this.apiService.init();
             await this.connectionManager.init();
+            
+            // Initialize authentication state
+            await this.initializeAuthState();
             
             // Setup connection listeners
             this.setupConnectionListeners();
@@ -108,6 +110,27 @@ export class AppController {
             }, 'renderer');
             throw error;
         }
+    }
+
+    /**
+     * Initialize authentication state
+     */
+    async initializeAuthState() {
+        try {
+            // Check authentication status on app load
+            await this.uiManager.refreshAuthenticationState();
+            
+        } catch (error) {
+            console.error('Failed to initialize auth state:', error);
+            this.uiManager.showUnauthenticatedState();
+        }
+    }
+
+    /**
+     * Update session status in UI
+     */
+    async updateSessionStatus() {
+        // Removed session status update logic
     }
 
     /**
@@ -358,9 +381,6 @@ export class AppController {
                             <span>System Online</span>
                         </span>
                     </div>
-                    <div class="login-section mt-4">
-                        <button id="login-button" class="btn btn-primary">Login with Microsoft</button>
-                    </div>
                 </div>
             </div>
 
@@ -410,15 +430,6 @@ export class AppController {
      */
     async initializeDashboardComponents() {
         try {
-            // Setup login button
-            const loginButton = document.getElementById('login-button');
-            if (loginButton) {
-                loginButton.addEventListener('click', () => {
-                    // Redirect to login page using GET
-                    window.location.href = '/api/auth/login';
-                });
-            }
-            
             // Setup auto-refresh toggle
             const autoRefreshToggle = document.getElementById('auto-refresh-toggle');
             if (autoRefreshToggle) {
@@ -475,7 +486,7 @@ export class AppController {
         }
         
         this.logRefreshInterval = setInterval(() => {
-            this.fetchRecentLogs(false); // Don't clear existing logs
+            this.fetchRecentLogs(false); // Don't clear existing logs during auto-refresh
         }, 10000); // Refresh every 10 seconds
     }
 
@@ -561,19 +572,55 @@ export class AppController {
         if (!logsContainer) return;
 
         if (!logs || logs.length === 0) {
-            logsContainer.innerHTML = '<p>No recent activity to display</p>';
+            if (clearExisting) {
+                logsContainer.innerHTML = '<p>No recent activity to display</p>';
+            }
             return;
         }
 
-        // Sort logs by timestamp (newest first)
-        const sortedLogs = logs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+        // Get existing logs if not clearing
+        let allLogs = [];
+        if (!clearExisting) {
+            // Extract existing logs from the current display
+            const existingEntries = logsContainer.querySelectorAll('.simple-log-entry');
+            existingEntries.forEach(entry => {
+                const timestamp = entry.querySelector('.log-timestamp')?.textContent;
+                const level = entry.getAttribute('data-level');
+                const category = entry.getAttribute('data-category');
+                const message = entry.querySelector('.log-message')?.textContent;
+                
+                if (timestamp && level && message) {
+                    allLogs.push({
+                        timestamp: new Date(timestamp).toISOString(),
+                        level,
+                        category: category || 'general',
+                        message,
+                        id: `existing-${timestamp}-${level}`
+                    });
+                }
+            });
+        }
+
+        // Add new logs and deduplicate by timestamp + message
+        const newLogs = logs.filter(log => {
+            const logKey = `${log.timestamp}-${log.message}`;
+            return !allLogs.some(existing => `${existing.timestamp}-${existing.message}` === logKey);
+        });
+        
+        allLogs = [...allLogs, ...newLogs];
+
+        // Sort all logs by timestamp (newest first)
+        const sortedLogs = allLogs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+        
+        // Limit to last 100 logs to prevent memory issues
+        const limitedLogs = sortedLogs.slice(0, 100);
         
         // Count logs by level for stats
         const stats = {
-            error: sortedLogs.filter(log => log.level === 'error').length,
-            warn: sortedLogs.filter(log => log.level === 'warn').length,
-            info: sortedLogs.filter(log => log.level === 'info').length,
-            debug: sortedLogs.filter(log => log.level === 'debug').length
+            error: limitedLogs.filter(log => log.level === 'error').length,
+            warn: limitedLogs.filter(log => log.level === 'warn').length,
+            info: limitedLogs.filter(log => log.level === 'info').length,
+            debug: limitedLogs.filter(log => log.level === 'debug').length
         };
         
         // Build simple log interface with search
@@ -584,7 +631,7 @@ export class AppController {
                     <span class="stat-badge warn">${stats.warn} Warnings</span>
                     <span class="stat-badge info">${stats.info} Info</span>
                     <span class="stat-badge debug">${stats.debug} Debug</span>
-                    <span class="stat-badge total">${sortedLogs.length} Total</span>
+                    <span class="stat-badge total">${limitedLogs.length} Total</span>
                 </div>
                 <div class="log-search">
                     <input type="text" id="log-search-input" placeholder="Search logs (e.g., 'tentativelyAccepted', 'error', 'calendar')..." class="search-input">
@@ -595,7 +642,7 @@ export class AppController {
         `;
 
         // Display all logs in simple chronological order
-        sortedLogs.forEach((log, index) => {
+        limitedLogs.forEach((log, index) => {
             const timestamp = new Date(log.timestamp).toLocaleString();
             const level = log.level || 'info';
             const category = log.category || 'general';

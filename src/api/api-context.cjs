@@ -4,9 +4,9 @@
  */
 
 const moduleRegistry = require('../modules/module-registry.cjs');
-const MailModule = require('../modules/mail/index.cjs');
+const MailModule = require('../modules/mail/index.js');
 const CalendarModule = require('../modules/calendar/index.cjs');
-const FilesModule = require('../modules/files/index.cjs');
+const FilesModule = require('../modules/files/index.js');
 const PeopleModule = require('../modules/people/index.cjs');
 const cacheService = require('../core/cache-service.cjs');
 const eventService = require('../core/event-service.cjs');
@@ -23,8 +23,8 @@ const MonitoringService = require('../core/monitoring-service.cjs');
 // Initialize modules with their dependencies
 const mailModule = MailModule.init({ graphService: mailService, cacheService, eventService, errorService: ErrorService, monitoringService: MonitoringService });
 const calendarModule = CalendarModule.init({ graphService: calendarService, cacheService, eventService, errorService: ErrorService, monitoringService: MonitoringService });
-const filesModule = FilesModule.init({ graphService: filesService, cacheService, errorService: ErrorService, monitoringService: MonitoringService });
-const peopleModule = PeopleModule.init({ graphService: peopleService, cacheService });
+const filesModule = FilesModule.init({ graphService: filesService, cacheService, eventService, errorService: ErrorService, monitoringService: MonitoringService });
+const peopleModule = PeopleModule.init({ graphService: peopleService, cacheService, eventService, errorService: ErrorService, monitoringService: MonitoringService });
 
 // Register modules
 moduleRegistry.registerModule(mailModule);

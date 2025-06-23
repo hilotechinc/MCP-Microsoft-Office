@@ -4,10 +4,11 @@
  * Implements proper dependency injection to avoid circular dependencies.
  */
 
-const moduleRegistry = require('./module-registry');
+const moduleRegistry = require('./module-registry.cjs');
 const MonitoringService = require('../core/monitoring-service.cjs');
 const ErrorService = require('../core/error-service.cjs');
 const StorageService = require('../core/storage-service.cjs');
+const { databaseFactory } = require('../core/database-factory.cjs');
 
 /**
  * Initializes all registered modules with provided dependencies/services.
@@ -21,6 +22,55 @@ const StorageService = require('../core/storage-service.cjs');
 async function initializeModules(services = {}) {
     const startTime = Date.now();
     
+    // Initialize database factory first
+    try {
+        MonitoringService?.info('Initializing database factory...', {}, 'database');
+        const config = {
+            DB_TYPE: 'sqlite',
+            DB_PATH: './data/mcp.sqlite'
+        };
+        await databaseFactory.init(config);
+        MonitoringService?.info('Database factory initialized successfully', {
+            databaseType: config.DB_TYPE,
+            timestamp: new Date().toISOString()
+        }, 'database');
+    } catch (error) {
+        const mcpError = ErrorService.createError(
+            ErrorService.CATEGORIES.STORAGE,
+            `Failed to initialize database factory: ${error.message}`,
+            ErrorService.SEVERITIES.CRITICAL,
+            {
+                error: error.message,
+                stack: error.stack,
+                timestamp: new Date().toISOString()
+            }
+        );
+        MonitoringService?.logError(mcpError);
+        throw mcpError;
+    }
+    
+    // Initialize storage service after database factory
+    try {
+        MonitoringService?.info('Initializing storage service...', {}, 'storage');
+        await StorageService.init();
+        MonitoringService?.info('Storage service initialized successfully', {
+            timestamp: new Date().toISOString()
+        }, 'storage');
+    } catch (error) {
+        const mcpError = ErrorService.createError(
+            ErrorService.CATEGORIES.STORAGE,
+            `Failed to initialize storage service: ${error.message}`,
+            ErrorService.SEVERITIES.CRITICAL,
+            {
+                error: error.message,
+                stack: error.stack,
+                timestamp: new Date().toISOString()
+            }
+        );
+        MonitoringService?.logError(mcpError);
+        throw mcpError;
+    }
+    
     // Set up dependency injection between core services to avoid circular references
     // This is critical to prevent infinite error loops
     if (ErrorService && MonitoringService) {
@@ -33,7 +83,8 @@ async function initializeModules(services = {}) {
         ...services,
         errorService: ErrorService,
         monitoringService: MonitoringService,
-        storageService: StorageService
+        storageService: StorageService,
+        databaseFactory: databaseFactory
     };
     
     // Log initialization start

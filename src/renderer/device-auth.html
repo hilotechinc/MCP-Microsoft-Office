@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://localhost:* ws://localhost:*;">
+    <title>Device Authorization - MCP Desktop</title>
+    <link rel="stylesheet" href="./modern-ui.css">
+    <style>
+        .device-auth-container {
+            max-width: 600px;
+            margin: 2rem auto;
+            padding: 2rem;
+            background: var(--card-background);
+            border-radius: 12px;
+            box-shadow: var(--shadow-medium);
+        }
+        
+        .auth-step {
+            margin-bottom: 2rem;
+            padding: 1.5rem;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            background: var(--background-secondary);
+        }
+        
+        .auth-step.active {
+            border-color: var(--primary-color);
+            background: var(--primary-color-light);
+        }
+        
+        .auth-step.completed {
+            border-color: var(--success-color);
+            background: var(--success-color-light);
+        }
+        
+        .step-number {
+            display: inline-block;
+            width: 30px;
+            height: 30px;
+            background: var(--primary-color);
+            color: white;
+            border-radius: 50%;
+            text-align: center;
+            line-height: 30px;
+            font-weight: bold;
+            margin-right: 1rem;
+        }
+        
+        .user-code-display {
+            font-family: 'Courier New', monospace;
+            font-size: 2rem;
+            font-weight: bold;
+            text-align: center;
+            padding: 1rem;
+            background: var(--background-primary);
+            border: 2px solid var(--primary-color);
+            border-radius: 8px;
+            margin: 1rem 0;
+            letter-spacing: 0.2em;
+        }
+        
+        .qr-code-container {
+            text-align: center;
+            margin: 1.5rem 0;
+        }
+        
+        .qr-code {
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1rem;
+            background: white;
+        }
+        
+        .qr-placeholder {
+            padding: 2rem;
+            background: #f0f0f0;
+            border: 1px solid #ccc;
+        }
+        
+        .qr-placeholder p {
+            word-break: break-all;
+            font-size: 0.8rem;
+        }
+        
+        .qr-placeholder .qr-code-url {
+            word-break: break-all;
+            font-size: 0.8rem;
+        }
+        
+        .verification-url {
+            font-family: 'Courier New', monospace;
+            background: var(--background-secondary);
+            padding: 0.5rem;
+            border-radius: 4px;
+            word-break: break-all;
+            margin: 0.5rem 0;
+        }
+        
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin: 1rem 0;
+        }
+        
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--warning-color);
+        }
+        
+        .status-dot.connected {
+            background: var(--success-color);
+        }
+        
+        .status-dot.error {
+            background: var(--error-color);
+        }
+        
+        .copy-button {
+            background: var(--primary-color);
+            color: white;
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-left: 0.5rem;
+        }
+        
+        .copy-button:hover {
+            background: var(--primary-color-dark);
+        }
+        
+        .device-info {
+            background: var(--background-secondary);
+            padding: 1rem;
+            border-radius: 8px;
+            margin: 1rem 0;
+        }
+        
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: var(--background-secondary);
+            border-radius: 4px;
+            overflow: hidden;
+            margin: 1rem 0;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: var(--primary-color);
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+        
+        .auth-actions {
+            text-align: center;
+            margin-top: 2rem;
+        }
+        
+        .auth-actions .copy-button {
+            margin-right: 1rem;
+        }
+        
+        .hidden {
+            display: none;
+        }
+        
+        .retry-button {
+            background: var(--warning-color);
+        }
+        
+        .error-step {
+            border-color: var(--error-color);
+            background: var(--error-color-light);
+        }
+        
+        .service-status-success {
+            color: var(--success-color);
+        }
+        
+        .service-status-error {
+            color: var(--error-color);
+        }
+        
+        .show {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <header class="app-header">
+        <div class="container header-content">
+            <div class="app-logo">MCP Desktop - Device Authorization</div>
+            <div id="status-indicators"></div>
+        </div>
+    </header>
+    
+    <div class="app-container">
+        <main class="main-content">
+            <div class="device-auth-container">
+                <h1>Authorize New Device</h1>
+                <p>Follow these steps to authorize a new device to access your Microsoft 365 account through MCP.</p>
+                
+                <!-- Step 1: Device Registration -->
+                <div class="auth-step active" id="step-registration">
+                    <h3><span class="step-number">1</span>Device Registration</h3>
+                    <p>Your device has been registered with the authorization server.</p>
+                    
+                    <div class="device-info" id="device-info">
+                        <strong>Device ID:</strong> <span id="device-id">Loading...</span><br>
+                        <strong>Registration Time:</strong> <span id="registration-time">Loading...</span>
+                    </div>
+                    
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progress-fill"></div>
+                    </div>
+                </div>
+                
+                <!-- Step 2: User Code Verification -->
+                <div class="auth-step" id="step-verification">
+                    <h3><span class="step-number">2</span>Enter User Code</h3>
+                    <p>Go to the verification URL below and enter this user code:</p>
+                    
+                    <div class="user-code-display" id="user-code">
+                        Loading...
+                    </div>
+                    
+                    <div class="verification-url">
+                        <strong>Verification URL:</strong> 
+                        <span id="verification-url">Loading...</span>
+                        <button class="copy-button" onclick="copyVerificationUrl()">Copy</button>
+                    </div>
+                    
+                    <div class="qr-code-container">
+                        <div id="qr-code" class="qr-code qr-placeholder">
+                            <p><strong>QR Code for:</strong></p>
+                            <p id="qr-code-url" class="qr-code-url"></p>
+                            <p><small>(QR code generation requires additional library)</small></p>
+                        </div>
+                        <p><small>Scan with your mobile device for quick access</small></p>
+                    </div>
+                </div>
+                
+                <!-- Step 3: Authorization Status -->
+                <div class="auth-step" id="step-authorization">
+                    <h3><span class="step-number">3</span>Authorization Status</h3>
+                    <p>Waiting for you to complete authorization...</p>
+                    
+                    <div class="status-indicator">
+                        <div class="status-dot" id="auth-status-dot"></div>
+                        <span id="auth-status-text">Waiting for authorization...</span>
+                    </div>
+                    
+                    <div id="auth-details" class="hidden">
+                        <div class="device-info">
+                            <strong>Authorized User:</strong> <span id="authorized-user">-</span><br>
+                            <strong>Authorization Time:</strong> <span id="authorization-time">-</span><br>
+                            <strong>Access Token Expires:</strong> <span id="token-expiry">-</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Step 4: Connection Test -->
+                <div class="auth-step" id="step-connection">
+                    <h3><span class="step-number">4</span>Connection Test</h3>
+                    <p>Testing connection to Microsoft 365 services...</p>
+                    
+                    <div class="status-indicator">
+                        <div class="status-dot" id="connection-status-dot"></div>
+                        <span id="connection-status-text">Not started</span>
+                    </div>
+                    
+                    <div id="connection-details" class="hidden">
+                        <div class="device-info">
+                            <strong>Services Available:</strong>
+                            <ul id="available-services">
+                                <li>Mail: <span id="mail-status" class="service-status-error">Testing...</span></li>
+                                <li>Calendar: <span id="calendar-status" class="service-status-error">Testing...</span></li>
+                                <li>Files: <span id="files-status" class="service-status-error">Testing...</span></li>
+                                <li>People: <span id="people-status" class="service-status-error">Testing...</span></li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Action Buttons -->
+                <div class="auth-actions">
+                    <button id="refresh-button" class="copy-button" onclick="refreshStatus()">Refresh Status</button>
+                    <button id="close-button" class="copy-button hidden" onclick="closeWindow()">Close</button>
+                    <button id="retry-button" class="copy-button retry-button hidden" onclick="retryAuthorization()">Retry Authorization</button>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        // Device authorization state
+        let authState = {
+            deviceId: null,
+            userCode: null,
+            verificationUri: null,
+            interval: 5000,
+            expiresIn: 900,
+            isAuthorized: false,
+            isConnected: false,
+            pollInterval: null
+        };
+
+        // Initialize device authorization
+        async function initializeDeviceAuth() {
+            try {
+                updateProgress(10);
+                
+                // Start device authorization flow
+                const response = await fetch('/api/v1/auth/device/authorize', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Authorization failed: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                authState = { ...authState, ...data };
+                
+                // Update UI with device information
+                updateDeviceInfo();
+                updateProgress(25);
+                
+                // Start polling for authorization
+                startAuthorizationPolling();
+                
+            } catch (error) {
+                console.error('Device authorization initialization failed:', error);
+                showError('Failed to initialize device authorization: ' + error.message);
+            }
+        }
+
+        // Update device information in UI
+        function updateDeviceInfo() {
+            document.getElementById('device-id').textContent = authState.deviceId || 'Unknown';
+            document.getElementById('registration-time').textContent = new Date().toLocaleString();
+            document.getElementById('user-code').textContent = authState.userCode || 'Loading...';
+            document.getElementById('verification-url').textContent = authState.verificationUri || 'Loading...';
+            document.getElementById('qr-code-url').textContent = authState.verificationUri || 'Loading...';
+            
+            // Activate verification step
+            document.getElementById('step-verification').classList.add('active');
+            
+            // Generate QR code for verification URL
+            // generateQRCode();
+        }
+
+        // Generate QR code for verification URL
+        function generateQRCode() {
+            const qrContainer = document.getElementById('qr-code');
+            const url = authState.verificationUri;
+            
+            if (url) {
+                // Simple QR code placeholder - in production, use a QR code library
+                // qrContainer.innerHTML = `
+                //     <div class="qr-placeholder">
+                //         <p><strong>QR Code for:</strong></p>
+                //         <p style="word-break: break-all; font-size: 0.8rem;">${url}</p>
+                //         <p><small>(QR code generation requires additional library)</small></p>
+                //     </div>
+                // `;
+            }
+        }
+
+        // Start polling for authorization status
+        function startAuthorizationPolling() {
+            authState.pollInterval = setInterval(async () => {
+                try {
+                    const response = await fetch(`/api/v1/auth/device/status/${authState.deviceId}`);
+                    
+                    if (response.ok) {
+                        const status = await response.json();
+                        
+                        if (status.isAuthorized && !authState.isAuthorized) {
+                            authState.isAuthorized = true;
+                            onAuthorizationComplete(status);
+                        }
+                    }
+                } catch (error) {
+                    console.error('Authorization polling error:', error);
+                }
+            }, authState.interval);
+            
+            // Stop polling after expiration time
+            setTimeout(() => {
+                if (authState.pollInterval) {
+                    clearInterval(authState.pollInterval);
+                    if (!authState.isAuthorized) {
+                        showError('Authorization timeout. Please try again.');
+                    }
+                }
+            }, authState.expiresIn * 1000);
+        }
+
+        // Handle authorization completion
+        function onAuthorizationComplete(status) {
+            clearInterval(authState.pollInterval);
+            
+            // Update authorization step
+            document.getElementById('step-authorization').classList.add('completed');
+            document.getElementById('step-authorization').classList.remove('active');
+            document.getElementById('step-connection').classList.add('active');
+            
+            document.getElementById('auth-status-dot').classList.add('connected');
+            document.getElementById('auth-status-text').textContent = 'Authorization successful!';
+            
+            // Show authorization details
+            document.getElementById('auth-details').classList.remove('hidden');
+            document.getElementById('authorized-user').textContent = status.userId || 'Unknown';
+            document.getElementById('authorization-time').textContent = new Date().toLocaleString();
+            document.getElementById('token-expiry').textContent = status.tokenExpiry || 'Unknown';
+            
+            updateProgress(75);
+            
+            // Start connection testing
+            testConnection();
+        }
+
+        // Test connection to Microsoft 365 services
+        async function testConnection() {
+            document.getElementById('connection-details').classList.remove('hidden');
+            
+            const services = ['mail', 'calendar', 'files', 'people'];
+            let successCount = 0;
+            
+            for (const service of services) {
+                try {
+                    const response = await fetch(`/api/v1/${service}/health`);
+                    const statusElement = document.getElementById(`${service}-status`);
+                    
+                    if (response.ok) {
+                        statusElement.textContent = '✅ Available';
+                        statusElement.classList.add('service-status-success');
+                        statusElement.classList.remove('service-status-error');
+                        successCount++;
+                    } else {
+                        statusElement.textContent = '❌ Unavailable';
+                        statusElement.classList.add('service-status-error');
+                        statusElement.classList.remove('service-status-success');
+                    }
+                } catch (error) {
+                    const statusElement = document.getElementById(`${service}-status`);
+                    statusElement.textContent = '❌ Error';
+                    statusElement.classList.add('service-status-error');
+                    statusElement.classList.remove('service-status-success');
+                }
+            }
+            
+            // Update connection status
+            if (successCount === services.length) {
+                document.getElementById('connection-status-dot').classList.add('connected');
+                document.getElementById('connection-status-text').textContent = 'All services connected!';
+                document.getElementById('step-connection').classList.add('completed');
+                authState.isConnected = true;
+                updateProgress(100);
+                document.getElementById('close-button').classList.add('show');
+            } else if (successCount > 0) {
+                document.getElementById('connection-status-dot').classList.add('connected');
+                document.getElementById('connection-status-text').textContent = `${successCount}/${services.length} services connected`;
+                updateProgress(90);
+                document.getElementById('retry-button').classList.add('show');
+            } else {
+                document.getElementById('connection-status-dot').classList.add('error');
+                document.getElementById('connection-status-text').textContent = 'Connection failed';
+                document.getElementById('retry-button').classList.add('show');
+            }
+        }
+
+        // Update progress bar
+        function updateProgress(percentage) {
+            document.getElementById('progress-fill').style.width = percentage + '%';
+        }
+
+        // Copy verification URL to clipboard
+        function copyVerificationUrl() {
+            const url = authState.verificationUri;
+            if (url) {
+                navigator.clipboard.writeText(url).then(() => {
+                    // Show temporary feedback
+                    const button = event.target;
+                    const originalText = button.textContent;
+                    button.textContent = 'Copied!';
+                    setTimeout(() => {
+                        button.textContent = originalText;
+                    }, 2000);
+                });
+            }
+        }
+
+        // Refresh authorization status
+        function refreshStatus() {
+            if (authState.deviceId) {
+                fetch(`/api/v1/auth/device/status/${authState.deviceId}`)
+                    .then(response => response.json())
+                    .then(status => {
+                        if (status.isAuthorized && !authState.isAuthorized) {
+                            onAuthorizationComplete(status);
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Status refresh failed:', error);
+                    });
+            }
+        }
+
+        // Retry authorization
+        function retryAuthorization() {
+            location.reload();
+        }
+
+        // Close window
+        function closeWindow() {
+            if (window.electronAPI) {
+                window.electronAPI.closeWindow();
+            } else {
+                window.close();
+            }
+        }
+
+        // Show error message
+        function showError(message) {
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'auth-step error-step';
+            errorDiv.innerHTML = `
+                <h3>❌ Error</h3>
+                <p>${message}</p>
+                <button class="copy-button" onclick="retryAuthorization()">Try Again</button>
+            `;
+            
+            document.querySelector('.device-auth-container').appendChild(errorDiv);
+        }
+
+        // Initialize when page loads
+        document.addEventListener('DOMContentLoaded', initializeDeviceAuth);
+    </script>
+</body>
+</html>
