@@ -214,6 +214,8 @@ async function callApi(method, path, data = null, _retryCount = 0) {
                     timeout: API_TIMEOUT
                 };
 
+                console.error(`[DEBUG] callApi - method: ${method}, input path: ${path}, API_BASE_PATH: ${API_BASE_PATH}, final path: ${options.path}`);
+
                 // Add authorization header if we have an access token
                 if (deviceCredentials.accessToken) {
                     options.headers['Authorization'] = `Bearer ${deviceCredentials.accessToken}`;
@@ -1094,7 +1096,10 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                         updateData.isOnlineMeeting = transformedParams.isOnlineMeeting;
                     }
                     
-                    apiData = updateData;
+                    // Filter out any null or undefined values from the final apiData object
+                    apiData = Object.fromEntries(
+                        Object.entries(updateData).filter(([_, value]) => value !== null && value !== undefined)
+                    );
                 } catch (error) {
                     
                     throw new Error(`Failed to transform updateEvent parameters: ${error.message}`);
@@ -1132,41 +1137,83 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 break;
             case 'calendar.acceptEvent':
                 const acceptEventId = params.eventId || params.id;
+                console.error(`[DEBUG] acceptEvent - params:`, JSON.stringify(params, null, 2));
+                console.error(`[DEBUG] acceptEvent - acceptEventId:`, acceptEventId);
                 if (!acceptEventId) {
-                    throw new Error('Event ID is required for acceptEvent (either eventId or id parameter)');
+                    throw new Error('Event ID is required for accepting an event');
                 }
-                apiPath = `/v1/calendar/events/${acceptEventId}/accept`;
+                
+                apiPath = `/api/v1/calendar/events/${acceptEventId}/accept`;
                 apiMethod = 'POST';
-                apiData = params.comment ? { comment: params.comment } : {};
+                console.error(`[DEBUG] acceptEvent - apiPath:`, apiPath);
+                
+                // Optional comment for the response
+                if (params.comment) {
+                    apiData = { comment: params.comment };
+                } else {
+                    apiData = {};
+                }
+                
+                // Log the API call for debugging
+                
                 break;
             case 'calendar.tentativelyAcceptEvent':
                 const tentativeEventId = params.eventId || params.id;
+                console.error(`[DEBUG] tentativelyAcceptEvent - params:`, JSON.stringify(params, null, 2));
+                console.error(`[DEBUG] tentativelyAcceptEvent - tentativeEventId:`, tentativeEventId);
                 if (!tentativeEventId) {
-                    throw new Error('Event ID is required for tentativelyAcceptEvent (either eventId or id parameter)');
+                    throw new Error('Event ID is required for tentatively accepting an event')
                 }
-                apiPath = `/v1/calendar/events/${tentativeEventId}/tentativelyAccept`;
+                
+                apiPath = `/api/v1/calendar/events/${tentativeEventId}/tentativelyAccept`;
                 apiMethod = 'POST';
-                apiData = params.comment ? { comment: params.comment } : {};
+                console.error(`[DEBUG] tentativelyAcceptEvent - apiPath:`, apiPath);
+                
+                // Optional comment for the response
+                if (params.comment) {
+                    apiData = { comment: params.comment };
+                } else {
+                    apiData = {};
+                }
+                
+                // Log the API call for debugging
+                
                 break;
             case 'calendar.declineEvent':
                 const declineEventId = params.eventId || params.id;
                 if (!declineEventId) {
-                    throw new Error('Event ID is required for declineEvent (either eventId or id parameter)');
+                    throw new Error('Event ID is required for declining an event')
                 }
-                apiPath = `/v1/calendar/events/${declineEventId}/decline`;
+                
+                apiPath = `/api/v1/calendar/events/${declineEventId}/decline`;
                 apiMethod = 'POST';
-                apiData = params.comment ? { comment: params.comment } : {};
+                
+                // Optional comment for the response
+                if (params.comment) {
+                    apiData = { comment: params.comment };
+                } else {
+                    apiData = {};
+                }
+                
+                // Log the API call for debugging
+                
                 break;
             case 'calendar.cancelEvent':
                 // Handle both eventId and id parameter names
                 if (!transformedParams.eventId && !transformedParams.id) {
-                    throw new Error('Event ID is required for cancelEvent (either eventId or id parameter)');
+                    throw new Error('Event ID is required for canceling an event')
                 }
                 
                 const cancelEventId = transformedParams.eventId || transformedParams.id;
                 apiPath = `/v1/calendar/events/${cancelEventId}/cancel`;
                 apiMethod = 'POST';
-                apiData = transformedParams.comment ? { comment: transformedParams.comment } : {};
+                
+                // Optional comment for the cancellation
+                if (transformedParams.comment) {
+                    apiData = { comment: transformedParams.comment };
+                } else {
+                    apiData = {};
+                }
                 
                 // Log the cancel request
                 
@@ -1356,54 +1403,6 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 
                 break;
                 
-            case 'calendar.acceptEvent':
-            case 'microsoft calendar.acceptEvent':
-                if (!transformedParams.id) {
-                    const errorMessage = 'Event ID is required for accepting an event. Please provide an ID parameter with the event ID.';
-                    
-                    throw new Error(errorMessage);
-                }
-                apiPath = `/v1/calendar/events/${transformedParams.id}/accept`;
-                apiMethod = 'POST';
-                
-                // Add optional comment if provided
-                if (transformedParams.comment) {
-                    apiData = { comment: transformedParams.comment };
-                }
-                break;
-                
-            case 'calendar.declineEvent':
-            case 'microsoft calendar.declineEvent':
-                if (!transformedParams.id) {
-                    const errorMessage = 'Event ID is required for declining an event. Please provide an ID parameter with the event ID.';
-                    
-                    throw new Error(errorMessage);
-                }
-                apiPath = `/v1/calendar/events/${transformedParams.id}/decline`;
-                apiMethod = 'POST';
-                
-                // Add optional comment if provided
-                if (transformedParams.comment) {
-                    apiData = { comment: transformedParams.comment };
-                }
-                break;
-                
-            case 'calendar.tentativelyAcceptEvent':
-            case 'microsoft calendar.tentativelyAcceptEvent':
-                if (!transformedParams.id) {
-                    const errorMessage = 'Event ID is required for tentatively accepting an event. Please provide an ID parameter with the event ID.';
-                    
-                    throw new Error(errorMessage);
-                }
-                apiPath = `/v1/calendar/events/${transformedParams.id}/tentativelyAccept`;
-                apiMethod = 'POST';
-                
-                // Add optional comment if provided
-                if (transformedParams.comment) {
-                    apiData = { comment: transformedParams.comment };
-                }
-                break;
-                
             case 'calendar.getCalendars':
             case 'calendar.calendars':
             case 'microsoft calendar.getCalendars':
@@ -1432,86 +1431,6 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 // Log the API call for debugging
                 
                 break;
-            case 'calendar.acceptEvent':
-            case 'calendar.accept':
-                if (!transformedParams.eventId) {
-                    throw new Error('Event ID is required for accepting an event');
-                }
-                
-                apiPath = `/v1/calendar/events/${transformedParams.eventId}/accept`;
-                apiMethod = 'POST';
-                
-                // Optional comment for the response
-                if (transformedParams.comment) {
-                    apiData = { comment: transformedParams.comment };
-                } else {
-                    apiData = {};
-                }
-                
-                // Log the API call for debugging
-                
-                break;
-                
-            case 'calendar.tentativelyAcceptEvent':
-            case 'calendar.tentative':
-                if (!transformedParams.eventId) {
-                    throw new Error('Event ID is required for tentatively accepting an event')
-                }
-                
-                apiPath = `/v1/calendar/events/${transformedParams.eventId}/tentativelyAccept`;
-                apiMethod = 'POST';
-                
-                // Optional comment for the response
-                if (transformedParams.comment) {
-                    apiData = { comment: transformedParams.comment };
-                } else {
-                    apiData = {};
-                }
-                
-                // Log the API call for debugging
-                
-                break;
-                
-            case 'calendar.declineEvent':
-            case 'calendar.decline':
-                if (!transformedParams.eventId) {
-                    throw new Error('Event ID is required for declining an event')
-                }
-                
-                apiPath = `/v1/calendar/events/${transformedParams.eventId}/decline`;
-                apiMethod = 'POST';
-                
-                // Optional comment for the response
-                if (transformedParams.comment) {
-                    apiData = { comment: transformedParams.comment };
-                } else {
-                    apiData = {};
-                }
-                
-                // Log the API call for debugging
-                
-                break;
-                
-            case 'calendar.cancelEvent':
-            case 'calendar.cancel':
-                if (!transformedParams.eventId) {
-                    throw new Error('Event ID is required for canceling an event')
-                }
-                
-                apiPath = `/v1/calendar/events/${transformedParams.eventId}/cancel`;
-                apiMethod = 'POST';
-                
-                // Optional comment for the cancellation
-                if (transformedParams.comment) {
-                    apiData = { comment: transformedParams.comment };
-                } else {
-                    apiData = {};
-                }
-                
-                // Log the API call for debugging
-                
-                break;
-                
             case 'calendar.addAttachment':
                 if (!transformedParams.id) {
                     throw new Error('Event ID is required for adding attachment')
@@ -2254,7 +2173,7 @@ async function registerDevice() {
             }
             
             // Wait before retrying (exponential backoff)
-            const backoffDelay = 1000 * Math.pow(2, attempt - 1); // 1s, 2s, 4s
+            const backoffDelay = 1000 * Math.pow(2, attempt - 1); // 1s, 2s
             await new Promise(resolve => setTimeout(resolve, backoffDelay));
         }
     }
@@ -2627,6 +2546,7 @@ function startTokenRefreshScheduler() {
             // Only attempt refresh if we have tokens and they need refreshing
             if (tokenStatus.hasAccessToken && tokenStatus.needsRefresh && !tokenStatus.isExpired) {
                 process.stderr.write('🔄 Scheduled token refresh triggered\n');
+                
                 await ensureValidToken();
             }
             

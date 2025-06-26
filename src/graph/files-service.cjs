@@ -298,7 +298,22 @@ async function downloadFile(id, req) {
       timestamp: new Date().toISOString()
     }, 'files');
     
+    // Get the raw content from the Graph API
     const content = await client.api(`/me/drive/items/${id}/content`).get();
+    
+    // Ensure content is always returned as a Buffer
+    let bufferContent;
+    if (Buffer.isBuffer(content)) {
+      bufferContent = content;
+    } else if (typeof content === 'string') {
+      bufferContent = Buffer.from(content);
+    } else if (content && typeof content === 'object') {
+      // If it's an object (like a response object), stringify it
+      bufferContent = Buffer.from(JSON.stringify(content));
+    } else {
+      // Fallback for null/undefined
+      bufferContent = Buffer.from('');
+    }
     
     // Calculate execution time
     const executionTime = Date.now() - startTime;
@@ -306,19 +321,19 @@ async function downloadFile(id, req) {
     // Log success metrics
     monitoringService.trackMetric('file_download_success', executionTime, {
       fileId: id,
-      contentSize: content ? content.length : 0,
+      contentSize: bufferContent.length,
       timestamp: new Date().toISOString()
     });
     
     // Log success with result summary
     monitoringService.info('File download completed successfully', {
       fileId: id,
-      contentSize: content ? content.length : 0,
+      contentSize: bufferContent.length,
       executionTimeMs: executionTime,
       timestamp: new Date().toISOString()
     }, 'files');
     
-    return content;
+    return bufferContent;
   } catch (error) {
     // Calculate execution time even for failures
     const executionTime = Date.now() - startTime;
@@ -563,50 +578,81 @@ async function getFileContent(id, req) {
   }
 }
 
-/**
- * Overwrites file content by ID.
- * @param {string} id
- * @param {Buffer} content
- * @returns {Promise<object>}
- */
-async function setFileContent(id, content, req) {
-  const client = await graphClientFactory.createClient(req);
-  return await client.api(`/me/drive/items/${id}/content`).put(content);
-}
+// setFileContent functionality has been consolidated into updateFileContent with options.setContent=true
 
 /**
  * Updates file content by ID using PUT method as required by Microsoft Graph API.
- * @param {string} id
- * @param {Buffer} content
- * @returns {Promise<object>}
+ * This function handles both update and set operations (they use the same Graph API endpoint).
+ * 
+ * @param {string} id - File ID
+ * @param {Buffer} content - File content
+ * @param {object} req - Express request object
+ * @param {object} [options] - Additional options
+ * @param {boolean} [options.setContent=false] - If true, operation is considered a 'set' operation (for metrics/logging)
+ * @returns {Promise<object>} - Updated file metadata
  */
-async function updateFileContent(id, content, req) {
+async function updateFileContent(id, content, req, options = {}) {
+  const startTime = Date.now();
+  const operationType = options.setContent ? 'set' : 'update';
+  
   try {
+    // Validate input
+    if (!id) {
+      throw new Error('File ID is required');
+    }
+    
+    if (!content) {
+      throw new Error('File content is required');
+    }
+    
+    // Track API request
+    MonitoringService.debug(`${operationType} file content requested`, {
+      fileId: id,
+      contentSize: content?.length || 0,
+      timestamp: new Date().toISOString()
+    }, 'graph');
+    
     const client = await graphClientFactory.createClient(req);
+    
     // Use PUT for file content updates as per Graph API documentation
-    return await client.api(`/me/drive/items/${id}/content`).put(content);
+    const result = await client.api(`/me/drive/items/${id}/content`).put(content);
+    
+    // Track success metrics
+    const executionTime = Date.now() - startTime;
+    MonitoringService.trackMetric(`graph_${operationType}_file_content_success`, executionTime, {
+      fileId: id,
+      contentSize: content?.length || 0,
+      timestamp: new Date().toISOString()
+    });
+    
+    return result;
   } catch (error) {
+    // Calculate execution time even for failures
+    const executionTime = Date.now() - startTime;
+    
+    // Track failure metrics
+    MonitoringService.trackMetric(`graph_${operationType}_file_content_failure`, executionTime, {
+      fileId: id,
+      errorCode: error.statusCode || error.code || 'unknown',
+      timestamp: new Date().toISOString()
+    });
+    
     // Add specific error handling for file content updates
-    MonitoringService.error(`Failed to update file content: ${error.message}`, {
+    MonitoringService.error(`Failed to ${operationType} file content: ${error.message}`, {
       fileId: id,
       errorCode: error.statusCode || error.code,
       errorMessage: error.message,
+      contentSize: content?.length || 0,
       timestamp: new Date().toISOString()
     }, 'graph');
+    
     throw error;
   }
 }
 
+// Export only the three essential file tools as per consolidation requirements
 module.exports = {
-  listFiles,
-  searchFiles,
-  downloadFile,
-  uploadFile,
-  getFileMetadata,
-  createSharingLink,
-  getSharingLinks,
-  removeSharingPermission,
-  getFileContent,
-  setFileContent,
-  updateFileContent
+  downloadFile,   // Handles both file content download and metadata retrieval with options.metadataOnly
+  uploadFile,     // Handles file uploads
+  updateFileContent // Handles both update and set operations with options.setContent
 };

@@ -103,43 +103,73 @@ async function searchPeople(searchQuery, options = {}, req) {
  * Gets a specific person by ID.
  * @param {string} personId - Person ID
  * @param {object} req - Express request object
- * @returns {Promise<object>} Normalized person object
+ * @returns {Promise<object>} Raw Graph API person object
  */
 async function getPersonById(personId, req) {
   try {
     console.log(`[People Service] Getting person with ID: ${personId}`);
     const client = await graphClientFactory.createClient(req);
     
-    // Try first with /me/people endpoint (returns person format)
-    try {
-      const res = await client.api(`/me/people/${personId}`).get();
-      console.log(`[People Service] Successfully retrieved person from /me/people endpoint`);
-      return normalizePerson(res);
-    } catch (peopleError) {
-      console.log(`[People Service] Failed to get person from /me/people endpoint: ${peopleError.message}`);
-      
-      // If the first attempt fails, try with /users endpoint (returns user format)
+    // Define fields to retrieve for comprehensive user details
+    const selectFields = [
+      'id', 'displayName', 'givenName', 'surname', 'mail', 'userPrincipalName',
+      'jobTitle', 'department', 'companyName', 'businessPhones', 'mobilePhone',
+      'officeLocation', 'streetAddress', 'city', 'state', 'postalCode', 'country',
+      'preferredLanguage', 'photo', 'aboutMe', 'birthday', 'hireDate', 'interests',
+      'mySite', 'pastProjects', 'preferredName', 'responsibilities', 'schools',
+      'skills', 'manager', 'directReports'
+    ].join(',');
+    
+    // Try multiple endpoints in order of most likely to return complete data
+    const endpoints = [
+      { name: 'beta users', url: `https://graph.microsoft.com/beta/users/${personId}?$select=${selectFields}` },
+      { name: 'beta people', url: `https://graph.microsoft.com/beta/me/people/${personId}` },
+      { name: 'v1.0 users', url: `/users/${personId}?$select=${selectFields}` },
+      { name: 'v1.0 people', url: `/me/people/${personId}` }
+    ];
+    
+    let lastError = null;
+    
+    // Try each endpoint in sequence until we get valid data
+    for (const endpoint of endpoints) {
       try {
-        // Add $select to get comprehensive user details
-        const selectFields = [
-          'id', 'displayName', 'givenName', 'surname', 'mail', 'userPrincipalName',
-          'jobTitle', 'department', 'companyName', 'businessPhones', 'mobilePhone',
-          'officeLocation', 'streetAddress', 'city', 'state', 'postalCode', 'country',
-          'preferredLanguage', 'photo'
-        ].join(',');
+        console.log(`[People Service] Trying ${endpoint.name} endpoint: ${endpoint.url}`);
+        const res = await client.api(endpoint.url).get();
+        console.log(`[People Service] Response from ${endpoint.name} endpoint:`, 
+          typeof res === 'object' ? 
+            (res.success && res.status ? 
+              `wrapper response with status ${res.status}` : 
+              `object with ${Object.keys(res).length} keys`) : 
+            typeof res);
         
-        const res = await client.api(`/users/${personId}?$select=${selectFields}`).get();
-        console.log(`[People Service] Successfully retrieved user from /users endpoint`);
+        // Check if we got a wrapper response instead of actual data
+        if (res && typeof res === 'object' && res.success === true && res.status === 200) {
+          console.warn(`[People Service] Received wrapper response from ${endpoint.name} endpoint: ${JSON.stringify(res)}`);
+          // Continue to next endpoint
+          continue;
+        }
         
-        // Use normalizeUser since this is user format, not person format
-        return normalizeUser(res);
-      } catch (usersError) {
-        console.log(`[People Service] Failed to get person from /users endpoint: ${usersError.message}`);
+        // Check if we got a valid person/user object
+        if (res && typeof res === 'object' && (res.id || res.displayName)) {
+          console.log(`[People Service] Successfully retrieved person data from ${endpoint.name} endpoint with fields: ${Object.keys(res).join(', ')}`);
+          return res;
+        }
         
-        // If both attempts fail, throw the original error
-        throw peopleError;
+        console.warn(`[People Service] Response from ${endpoint.name} endpoint doesn't appear to be valid person data`);
+      } catch (error) {
+        console.log(`[People Service] Failed to get person from ${endpoint.name} endpoint: ${error.message}`);
+        lastError = error;
       }
     }
+    
+    // If all endpoints failed, throw the last error
+    if (lastError) {
+      console.error(`[People Service] All endpoints failed for person ID: ${personId}`);
+      throw lastError;
+    }
+    
+    // If we somehow got here without valid data or an error, throw a generic error
+    throw new Error(`Failed to retrieve person data for ID: ${personId} from any endpoint`);
   } catch (error) {
     console.error(`[People Service] Error getting person by ID:`, error);
     throw error;

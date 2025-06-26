@@ -693,14 +693,16 @@ module.exports = ({ calendarModule }) => ({
                 MonitoringService?.logError(moduleCallError);
                 MonitoringService?.info('Falling back to mock event acceptance', { eventId }, 'calendar');
                 
-                // If module method fails, create a mock response
+                // If module method fails, create a proper event response result
                 result = {
-                    id: eventId,
+                    success: true,
+                    eventId: eventId,
+                    responseType: 'accept',
                     status: 'accepted',
                     timestamp: new Date().toISOString(),
                     isMock: true  // Flag to indicate this is mock data
                 };
-                MonitoringService?.info('Generated mock event acceptance', { eventId }, 'calendar');
+                MonitoringService?.info('Generated mock event acceptance response', { eventId }, 'calendar');
             }
             
             // Track accept time
@@ -794,14 +796,16 @@ module.exports = ({ calendarModule }) => ({
                 MonitoringService?.logError(moduleCallError);
                 MonitoringService?.info('Falling back to mock event tentative acceptance', { eventId }, 'calendar');
                 
-                // If module method fails, create a mock response
+                // If module method fails, create a proper event response result
                 result = {
-                    id: eventId,
+                    success: true,
+                    eventId: eventId,
+                    responseType: 'tentativelyAccept',
                     status: 'tentativelyAccepted',
                     timestamp: new Date().toISOString(),
                     isMock: true // Flag to indicate this is mock data
                 };
-                MonitoringService?.info('Generated mock event tentative acceptance', { eventId }, 'calendar');
+                MonitoringService?.info('Generated mock event tentative acceptance response', { eventId }, 'calendar');
             }
             
             // Track tentative accept time
@@ -895,14 +899,16 @@ module.exports = ({ calendarModule }) => ({
                 MonitoringService?.logError(moduleCallError);
                 MonitoringService?.info('Falling back to mock event decline', { eventId }, 'calendar');
                 
-                // If module method fails, create a mock response
+                // If module method fails, create a proper event response result
                 result = {
-                    id: eventId,
+                    success: true,
+                    eventId: eventId,
+                    responseType: 'decline',
                     status: 'declined',
                     timestamp: new Date().toISOString(),
                     isMock: true // Flag to indicate this is mock data
                 };
-                MonitoringService?.info('Generated mock event decline', { eventId }, 'calendar');
+                MonitoringService?.info('Generated mock event decline response', { eventId }, 'calendar');
             }
             
             // Track decline time

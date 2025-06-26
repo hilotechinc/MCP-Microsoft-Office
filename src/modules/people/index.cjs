@@ -222,23 +222,25 @@ const PeopleModule = {
             // Track performance
             const startTime = Date.now();
             
-            // Call the Graph API
-            const person = await graphService.getPersonById(personId, req);
+            // Call the Graph API - now returns raw Graph API response
+            const rawPerson = await graphService.getPersonById(personId, req);
             
             // Calculate elapsed time and track metric
             const elapsedTime = Date.now() - startTime;
             monitoringService?.trackMetric('people_get_by_id_duration', elapsedTime, {
-                found: !!person,
+                found: !!rawPerson,
                 timestamp: new Date().toISOString()
             });
             
-            monitoringService?.info('Successfully retrieved person by ID', {
-                found: !!person,
+            monitoringService?.info('Successfully retrieved person by ID (raw format)', {
+                found: !!rawPerson,
                 elapsedTime,
+                hasData: rawPerson && Object.keys(rawPerson).length > 0,
                 timestamp: new Date().toISOString()
             }, 'people');
                 
-            return person;
+            // Return the raw person data from Graph API
+            return rawPerson;
         } catch (error) {
             // Extract Graph API details if available
             const graphDetails = {

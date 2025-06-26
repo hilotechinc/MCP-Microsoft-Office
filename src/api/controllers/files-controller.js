@@ -5,6 +5,7 @@
 const Joi = require('joi');
 const ErrorService = require('../../core/error-service.cjs');
 const MonitoringService = require('../../core/monitoring-service.cjs');
+const filesModule = require('../../modules/files');
 
 /**
  * Helper function to call module methods with fallback support
@@ -412,13 +413,42 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                 deviceId
             }, 'files', null, userId, deviceId);
             
+            // Check if metadata only is requested
+            const metadataOnly = req.query.metadataOnly === 'true';
+            
+            // Log if metadata only is requested
+            if (metadataOnly) {
+                monitoringService.debug('File metadata only requested', { 
+                    fileId,
+                    timestamp: new Date().toISOString(),
+                    source: 'files-controller.downloadFile',
+                    requestId: req.id,
+                    userId,
+                    deviceId
+                }, 'files', null, userId, deviceId);
+            }
+            
+            // Create options object for downloadFile
+            const options = { metadataOnly };
+            
             // Try to download the file from the module, or return mock data if it fails
-            const fileContent = await callModuleWithFallback(
+            const result = await callModuleWithFallback(
                 'downloadFile',
-                [fileId, req],
+                [fileId, options, req],
                 () => {
                     // Return mock data for development/testing
-                    return Buffer.from(`This is mock content for file ${fileId}`);
+                    if (metadataOnly) {
+                        return {
+                            id: fileId,
+                            name: `Mock File ${fileId}`,
+                            size: 12345,
+                            createdDateTime: new Date().toISOString(),
+                            lastModifiedDateTime: new Date().toISOString(),
+                            webUrl: `https://example.com/files/${fileId}`
+                        };
+                    } else {
+                        return Buffer.from(`This is mock content for file ${fileId}`);
+                    }
                 },
                 req
             );
@@ -426,33 +456,76 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
             // Calculate execution time
             const executionTime = Date.now() - startTime;
             
-            // Log success metrics with user context
-            monitoringService.trackMetric('files_download_api_success', executionTime, {
-                fileId: fileId,
-                contentLength: fileContent?.length || 0,
-                timestamp: new Date().toISOString(),
-                userId,
-                deviceId
-            });
+            // Prepare response based on whether we got metadata or file content
+            let response;
             
-            // Log success with result summary and user context
-            monitoringService.info('Files download API completed successfully', {
-                fileId: fileId,
-                contentLength: fileContent?.length || 0,
-                executionTimeMs: executionTime,
-                timestamp: new Date().toISOString(),
-                userId,
-                deviceId
-            }, 'files', null, userId, deviceId);
-            
-            // For MCP adapter compatibility, return a JSON response with base64-encoded file content
-            // instead of sending the raw binary data directly
-            const response = {
-                id: fileId,
-                content: fileContent.toString('base64'),
-                contentType: 'application/octet-stream',
-                filename: `file-${fileId}.bin`
-            };
+            if (metadataOnly) {
+                // For metadata request, return the metadata directly
+                response = result;
+                
+                // Log success metrics with user context for metadata
+                monitoringService.trackMetric('files_metadata_api_success', executionTime, {
+                    fileId: fileId,
+                    timestamp: new Date().toISOString(),
+                    userId,
+                    deviceId
+                });
+                
+                // Log success with result summary and user context
+                monitoringService.info('Files metadata API completed successfully', {
+                    fileId: fileId,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString(),
+                    userId,
+                    deviceId
+                }, 'files', null, userId, deviceId);
+            } else {
+                // For file content request, handle as before
+                // Log success metrics with user context
+                monitoringService.trackMetric('files_download_api_success', executionTime, {
+                    fileId: fileId,
+                    contentLength: result?.length || 0,
+                    timestamp: new Date().toISOString(),
+                    userId,
+                    deviceId
+                });
+                
+                // Log success with result summary and user context
+                monitoringService.info('Files download API completed successfully', {
+                    fileId: fileId,
+                    contentLength: result?.length || 0,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString(),
+                    userId,
+                    deviceId
+                }, 'files', null, userId, deviceId);
+                
+                // For MCP adapter compatibility, return a JSON response with base64-encoded file content
+                // instead of sending the raw binary data directly
+                let base64Content;
+                
+                // Handle different content types properly
+                if (Buffer.isBuffer(result)) {
+                    // If it's already a buffer, convert to base64
+                    base64Content = result.toString('base64');
+                } else if (typeof result === 'string') {
+                    // If it's a string, convert to buffer then to base64
+                    base64Content = Buffer.from(result).toString('base64');
+                } else if (result && typeof result === 'object') {
+                    // If it's an object (like a response object), stringify it first
+                    base64Content = Buffer.from(JSON.stringify(result)).toString('base64');
+                } else {
+                    // Fallback for null/undefined
+                    base64Content = Buffer.from('').toString('base64');
+                }
+                
+                response = {
+                    id: fileId,
+                    content: base64Content,
+                    contentType: 'application/octet-stream',
+                    filename: `file-${fileId}.bin`
+                };
+            }
             
             res.json(response);
         } catch (err) {

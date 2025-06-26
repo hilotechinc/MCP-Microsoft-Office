@@ -196,9 +196,10 @@ function createPeopleController({ peopleModule }) {
                 
                 // Pass req object to module for user-scoped token selection, but don't pass internal userId
                 // The internal userId is only for token storage - Graph API should use 'me' (default)
-                const person = await peopleModule.getPersonById(personId, req);
+                // Now returns raw Graph API response without normalization
+                const rawPerson = await peopleModule.getPersonById(personId, req);
                 
-                if (!person) {
+                if (!rawPerson) {
                     // Track not found metric with user context
                     MonitoringService.trackMetric('people.getPersonById.not_found', 1, {
                         personId,
@@ -219,7 +220,8 @@ function createPeopleController({ peopleModule }) {
                     deviceId
                 });
                 
-                res.json({ person });
+                // Return the raw person data from Graph API
+                res.json({ person: rawPerson });
             } catch (error) {
                 // Track error metrics with user context
                 const duration = Date.now() - startTime;

@@ -17,19 +17,12 @@ MonitoringService.info('Files Module initialized', {
 // Define the capabilities supported by this module
 // This array is used by the module registry to find appropriate modules for different intents
 const FILES_CAPABILITIES = [
-    'listFiles',
-    'searchFiles',      // File search capability using query strings (required for search API endpoint)
-    'downloadFile',
-    'uploadFile',
-    'getFileMetadata',
-    'createSharingLink',
-    'getSharingLinks',
-    'removeSharingPermission',
-    'getFileContent',
-    'setFileContent',
-    'updateFileContent'
+    'downloadFile',     // Download file content or get metadata with options.metadataOnly
+    'updateFileContent', // Update or set file content with options.setContent
+    'uploadFile'        // Upload new files
 ];
 
+// Create a consolidated FilesModule with only the essential file tools
 const FilesModule = {
     /**
      * Helper method to redact sensitive data from objects before logging
@@ -373,12 +366,19 @@ const FilesModule = {
     },
     
     /**
-     * Downloads a file by ID
+     * Downloads a file by ID or gets its metadata
      * @param {string} id - File ID
+     * @param {object} [options={}] - Options for the download
+     * @param {boolean} [options.metadataOnly=false] - If true, returns only file metadata without content
      * @param {object} req - Express request object (optional)
-     * @returns {Promise<Buffer>} File content
+     * @returns {Promise<Buffer|object>} File content as Buffer or file metadata object if metadataOnly is true
      */
-    async downloadFile(id, req) {
+    async downloadFile(id, options = {}, req) {
+        // Handle case where req is passed as second parameter (backward compatibility)
+        if (req === undefined && options && !options.metadataOnly && typeof options === 'object') {
+            req = options;
+            options = {};
+        }
         // Get services with fallbacks
         const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
         
@@ -388,6 +388,7 @@ const FilesModule = {
         // Log the request with detailed parameters
         monitoringService?.debug('File download requested', { 
             fileId: id,
+            metadataOnly: options.metadataOnly || false,
             timestamp: new Date().toISOString(),
             source: 'files.downloadFile'
         }, 'files');
@@ -408,34 +409,69 @@ const FilesModule = {
                 throw err;
             }
             
-            // Validate that GraphService is available
-            if (!graphService || typeof graphService.downloadFile !== 'function') {
-                const err = errorService.createError(
-                    ErrorService.CATEGORIES.SYSTEM,
-                    'GraphService.downloadFile not implemented',
-                    ErrorService.SEVERITIES.ERROR,
-                    { 
-                        fileId: id,
-                        timestamp: new Date().toISOString(),
-                        serviceError: 'missing_graph_service'
-                    }
-                );
-                monitoringService?.logError(err);
-                throw err;
+            let result;
+            
+            // Determine which operation to perform based on options
+            if (options.metadataOnly) {
+                // If metadataOnly is true, get file metadata instead of content
+                // Validate that GraphService.getFileMetadata is available
+                if (!graphService || typeof graphService.getFileMetadata !== 'function') {
+                    const err = errorService.createError(
+                        ErrorService.CATEGORIES.SYSTEM,
+                        'GraphService.getFileMetadata not implemented',
+                        ErrorService.SEVERITIES.ERROR,
+                        { 
+                            fileId: id,
+                            timestamp: new Date().toISOString(),
+                            serviceError: 'missing_graph_service'
+                        }
+                    );
+                    monitoringService?.logError(err);
+                    throw err;
+                }
+                
+                // Call the Graph service to get metadata
+                result = await graphService.getFileMetadata(id, req);
+                
+                // Calculate execution time
+                const executionTime = Date.now() - startTime;
+                
+                // Log success metrics
+                monitoringService?.trackMetric('files_metadata_success', executionTime, {
+                    fileId: id,
+                    timestamp: new Date().toISOString()
+                });
+            } else {
+                // Get file content (default behavior)
+                // Validate that GraphService.downloadFile is available
+                if (!graphService || typeof graphService.downloadFile !== 'function') {
+                    const err = errorService.createError(
+                        ErrorService.CATEGORIES.SYSTEM,
+                        'GraphService.downloadFile not implemented',
+                        ErrorService.SEVERITIES.ERROR,
+                        { 
+                            fileId: id,
+                            timestamp: new Date().toISOString(),
+                            serviceError: 'missing_graph_service'
+                        }
+                    );
+                    monitoringService?.logError(err);
+                    throw err;
+                }
+                
+                // Call the Graph service to download file content
+                result = await graphService.downloadFile(id, req);
+                
+                // Calculate execution time
+                const executionTime = Date.now() - startTime;
+                
+                // Log success metrics
+                monitoringService?.trackMetric('files_download_success', executionTime, {
+                    fileId: id,
+                    contentSize: result?.length || 0,
+                    timestamp: new Date().toISOString()
+                });
             }
-            
-            // Call the Graph service
-            const result = await graphService.downloadFile(id, req);
-            
-            // Calculate execution time
-            const executionTime = Date.now() - startTime;
-            
-            // Log success metrics
-            monitoringService?.trackMetric('files_download_success', executionTime, {
-                fileId: id,
-                contentSize: result?.length || 0,
-                timestamp: new Date().toISOString()
-            });
             
             return result;
         } catch (error) {
@@ -446,16 +482,18 @@ const FilesModule = {
             monitoringService?.trackMetric('files_download_failure', executionTime, {
                 errorType: error.code || 'unknown',
                 fileId: id,
+                metadataOnly: options.metadataOnly || false,
                 timestamp: new Date().toISOString()
             });
             
             // Create standardized error if not already one
             const mcpError = error.id ? error : errorService.createError(
                 ErrorService.CATEGORIES.SYSTEM,
-                `Failed to download file: ${error.message}`,
+                `Failed to ${options.metadataOnly ? 'get file metadata' : 'download file'}: ${error.message}`,
                 ErrorService.SEVERITIES.ERROR,
                 { 
                     fileId: id,
+                    metadataOnly: options.metadataOnly || false,
                     error: error.toString(),
                     stack: error.stack,
                     timestamp: new Date().toISOString()
@@ -985,23 +1023,32 @@ const FilesModule = {
     },
     
     /**
-     * Sets file content by ID
+     * Updates or sets file content by ID
      * @param {string} id - File ID
      * @param {Buffer} content - File content
+     * @param {object} options - Options for the operation
+     * @param {boolean} [options.setContent=false] - If true, treats operation as 'set' rather than 'update'
      * @param {object} req - Express request object (optional)
      * @returns {Promise<object>} Updated file metadata
      */
-    async setFileContent(id, content, req) {
+    async updateFileContent(id, content, options = {}, req) {
+        // Handle backward compatibility - if options is the request object, shift parameters
+        if (options && !req && (typeof options !== 'object' || options?.headers || options?.session)) {
+            req = options;
+            options = {};
+        }
+        
         // Get services with fallbacks
         const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
         
         const startTime = Date.now();
+        const operationType = options.setContent ? 'set' : 'update';
         
         // Validate input
         if (!id) {
             const err = errorService.createError(
                 ErrorService.CATEGORIES.VALIDATION,
-                'File ID is required for setFileContent',
+                `File ID is required for ${operationType}FileContent`,
                 ErrorService.SEVERITIES.ERROR,
                 { timestamp: new Date().toISOString() }
             );
@@ -1012,7 +1059,7 @@ const FilesModule = {
         if (!content) {
             const err = errorService.createError(
                 ErrorService.CATEGORIES.VALIDATION,
-                'File content is required for setFileContent',
+                `File content is required for ${operationType}FileContent`,
                 ErrorService.SEVERITIES.ERROR,
                 { fileId: id, timestamp: new Date().toISOString() }
             );
@@ -1021,112 +1068,50 @@ const FilesModule = {
         }
         
         try {
-            if (!graphService || typeof graphService.setFileContent !== 'function') {
-                const err = errorService.createError(
-                    ErrorService.CATEGORIES.SYSTEM,
-                    'GraphService.setFileContent not implemented',
-                    ErrorService.SEVERITIES.ERROR,
-                    { fileId: id, timestamp: new Date().toISOString() }
-                );
-                monitoringService?.logError(err);
-                throw err;
-            }
+            // Log operation details
+            monitoringService?.debug(`${operationType} file content requested`, {
+                fileId: id,
+                operationType,
+                contentSize: content?.length || 0,
+                timestamp: new Date().toISOString()
+            });
             
-            const result = await graphService.setFileContent(id, content, req);
+            // Call the consolidated updateFileContent method with options
+            const result = await graphService.updateFileContent(id, content, req, options);
             const executionTime = Date.now() - startTime;
             
-            monitoringService?.trackMetric('files_set_content_success', executionTime, {
-                fileId: id, contentSize: content?.length || 0, timestamp: new Date().toISOString()
+            // Track success metrics
+            monitoringService?.trackMetric(`files_${operationType}_content_success`, executionTime, {
+                fileId: id, 
+                contentSize: content?.length || 0, 
+                timestamp: new Date().toISOString()
             });
             
             return result;
         } catch (error) {
             const executionTime = Date.now() - startTime;
             
-            monitoringService?.trackMetric('files_set_content_failure', executionTime, {
-                errorType: error.code || 'unknown', fileId: id, contentSize: content?.length || 0, timestamp: new Date().toISOString()
+            // Track failure metrics
+            monitoringService?.trackMetric(`files_${operationType}_content_failure`, executionTime, {
+                errorType: error.code || 'unknown', 
+                fileId: id, 
+                contentSize: content?.length || 0, 
+                timestamp: new Date().toISOString(),
+                operationType
             });
             
             const mcpError = error.id ? error : errorService.createError(
                 ErrorService.CATEGORIES.SYSTEM,
-                `Failed to set file content: ${error.message}`,
+                `Failed to ${operationType} file content: ${error.message}`,
                 ErrorService.SEVERITIES.ERROR,
-                { fileId: id, contentSize: content?.length || 0, error: error.toString(), stack: error.stack, timestamp: new Date().toISOString() }
-            );
-            
-            monitoringService?.logError(mcpError);
-            throw mcpError;
-        }
-    },
-    
-    /**
-     * Updates file content by ID
-     * @param {string} id - File ID
-     * @param {Buffer} content - File content
-     * @param {object} req - Express request object (optional)
-     * @returns {Promise<object>} Updated file metadata
-     */
-    async updateFileContent(id, content, req) {
-        // Get services with fallbacks
-        const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
-        
-        const startTime = Date.now();
-        
-        // Validate input
-        if (!id) {
-            const err = errorService.createError(
-                ErrorService.CATEGORIES.VALIDATION,
-                'File ID is required for updateFileContent',
-                ErrorService.SEVERITIES.ERROR,
-                { timestamp: new Date().toISOString() }
-            );
-            monitoringService?.logError(err);
-            throw err;
-        }
-        
-        if (!content) {
-            const err = errorService.createError(
-                ErrorService.CATEGORIES.VALIDATION,
-                'File content is required for updateFileContent',
-                ErrorService.SEVERITIES.ERROR,
-                { fileId: id, timestamp: new Date().toISOString() }
-            );
-            monitoringService?.logError(err);
-            throw err;
-        }
-        
-        try {
-            if (!graphService || typeof graphService.updateFileContent !== 'function') {
-                const err = errorService.createError(
-                    ErrorService.CATEGORIES.SYSTEM,
-                    'GraphService.updateFileContent not implemented',
-                    ErrorService.SEVERITIES.ERROR,
-                    { fileId: id, timestamp: new Date().toISOString() }
-                );
-                monitoringService?.logError(err);
-                throw err;
-            }
-            
-            const result = await graphService.updateFileContent(id, content, req);
-            const executionTime = Date.now() - startTime;
-            
-            monitoringService?.trackMetric('files_update_content_success', executionTime, {
-                fileId: id, contentSize: content?.length || 0, timestamp: new Date().toISOString()
-            });
-            
-            return result;
-        } catch (error) {
-            const executionTime = Date.now() - startTime;
-            
-            monitoringService?.trackMetric('files_update_content_failure', executionTime, {
-                errorType: error.code || 'unknown', fileId: id, contentSize: content?.length || 0, timestamp: new Date().toISOString()
-            });
-            
-            const mcpError = error.id ? error : errorService.createError(
-                ErrorService.CATEGORIES.SYSTEM,
-                `Failed to update file content: ${error.message}`,
-                ErrorService.SEVERITIES.ERROR,
-                { fileId: id, contentSize: content?.length || 0, error: error.toString(), stack: error.stack, timestamp: new Date().toISOString() }
+                { 
+                    fileId: id, 
+                    contentSize: content?.length || 0, 
+                    error: error.toString(), 
+                    stack: error.stack, 
+                    timestamp: new Date().toISOString(),
+                    operationType 
+                }
             );
             
             monitoringService?.logError(mcpError);
@@ -1177,144 +1162,119 @@ async handleIntent(intent, entities = {}, context = {}) {
         let result;
             
         switch(intent) {
-            case 'listFiles': {
-                const parentId = entities.parentId || (typeof entities === 'string' ? entities : null);
+            case 'downloadFile': {
+                // Handle both file content download and metadata-only requests
+                const { fileId, metadataOnly } = entities;
                 
-                // Try to get from cache first
-                const cacheKey = `files:list:${parentId || 'root'}`;
-                let files = cacheService && await cacheService.get(cacheKey);
+                // Create options object for downloadFile
+                const options = { metadataOnly: metadataOnly === true };
                 
-                if (!files) {
-                    // Pass the request context if available
-                    const raw = await graphService.listFiles(parentId, context.req);
-                    files = Array.isArray(raw) ? raw.map(normalizeFile) : [];
-                    if (cacheService) await cacheService.set(cacheKey, files, 60);
-                }
-                result = { type: 'fileList', items: files };
-                break;
-            }
-            case 'searchFiles': {
-                const query = entities.query || (typeof entities === 'string' ? entities : '');
-                
-                if (!query) {
-                    // Log warning for missing query parameter
-                    monitoringService?.warn('searchFiles intent called without query parameter', {
-                        intent,
-                        timestamp: new Date().toISOString()
-                    }, 'files');
-                    result = { type: 'fileList', items: [] };
-                    break;
-                }
-                
-                // Log search request
-                monitoringService?.debug('Handling searchFiles intent', {
-                    query,
+                // Log the specific operation being performed
+                monitoringService?.debug(`Handling downloadFile intent with ${options.metadataOnly ? 'metadata only' : 'full content'}`, {
+                    fileId,
+                    metadataOnly: options.metadataOnly,
                     timestamp: new Date().toISOString()
                 }, 'files');
                 
-                // Try to get from cache first
-                const cacheKey = `files:search:${query}`;
-                let results = cacheService && await cacheService.get(cacheKey);
+                // Call the consolidated downloadFile method
+                const file = await this.downloadFile(fileId, options, context.req);
                 
-                if (!results) {
-                    monitoringService?.debug('Cache miss for search query', {
-                        query,
-                        timestamp: new Date().toISOString()
-                    }, 'files');
-                    
-                    try {
-                        // Pass the request context if available
-                        const raw = await graphService.searchFiles(query, context.req);
-                        results = Array.isArray(raw) ? raw.map(normalizeFile) : [];
-                        
-                        // Cache the results
-                        if (cacheService) {
-                            await cacheService.set(cacheKey, results, 60);
-                            monitoringService?.debug('Cached search results', {
-                                query,
-                                resultCount: results.length,
-                                timestamp: new Date().toISOString()
-                            }, 'files');
-                        }
-                    } catch (error) {
-                        // Log the search error
-                        const searchError = errorService.createError(
-                            'files',
-                            `Error searching files: ${error.message}`,
-                            'error',
-                            { 
-                                query,
-                                error: error.toString(),
-                                stack: error.stack,
-                                timestamp: new Date().toISOString()
-                            }
-                        );
-                        monitoringService?.logError(searchError);
-                        results = []; // Return empty array on error
-                    }
+                // Return appropriate response based on operation type
+                if (options.metadataOnly) {
+                    result = { type: 'fileMetadata', file: normalizeFile(file) };
                 } else {
-                    monitoringService?.debug('Cache hit for search query', {
-                        query,
-                        resultCount: results.length,
-                        timestamp: new Date().toISOString()
-                    }, 'files');
+                    result = { type: 'fileDownload', fileId, content: file };
                 }
-                
-                result = { type: 'fileList', items: results };
                 break;
             }
-            case 'downloadFile': {
-                const { fileId } = entities;
-                const file = await graphService.downloadFile(fileId, context.req);
-                result = { type: 'fileDownload', fileId, content: file };
-                break;
-            }
+            
             case 'uploadFile': {
-                const { name, content } = entities;
-                const uploadResult = await graphService.uploadFile(name, content, context.req);
+                // Handle file upload requests
+                const { name, content, parentId } = entities;
+                
+                // Log upload request details
+                monitoringService?.debug('Handling uploadFile intent', {
+                    fileName: name,
+                    parentId: parentId || 'root',
+                    contentSize: content?.length || 0,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+                
+                // Call the uploadFile method
+                const uploadResult = await this.uploadFile(name, content, context.req);
+                
+                // Return normalized file metadata
                 result = { type: 'fileUploadResult', file: normalizeFile(uploadResult) };
                 break;
             }
+            
+            case 'updateFileContent': {
+                // Handle both update and set file content operations
+                const { fileId, content, setContent } = entities;
+                
+                // Create options object for updateFileContent
+                const options = { setContent: setContent === true };
+                
+                // Log the specific operation being performed
+                monitoringService?.debug(`Handling ${options.setContent ? 'setFileContent' : 'updateFileContent'} intent`, {
+                    fileId,
+                    contentSize: content?.length || 0,
+                    setContent: options.setContent,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+                
+                // Call the consolidated updateFileContent method
+                const updateResult = await this.updateFileContent(fileId, content, options, context.req);
+                
+                // Return normalized file metadata
+                result = { 
+                    type: options.setContent ? 'setFileContentResult' : 'updateFileContentResult', 
+                    file: normalizeFile(updateResult) 
+                };
+                break;
+            }
+            
+            // For backward compatibility, map deprecated intents to consolidated functions
             case 'getFileMetadata': {
+                // Map to downloadFile with metadataOnly option
                 const { fileId } = entities;
-                const meta = await graphService.getFileMetadata(fileId, context.req);
-                result = { type: 'fileMetadata', file: normalizeFile(meta) };
+                
+                monitoringService?.debug('Mapping getFileMetadata intent to downloadFile with metadataOnly', {
+                    fileId,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+                
+                const file = await this.downloadFile(fileId, { metadataOnly: true }, context.req);
+                result = { type: 'fileMetadata', file: normalizeFile(file) };
                 break;
             }
-            case 'createSharingLink': {
-                const { fileId, type } = entities;
-                const link = await graphService.createSharingLink(fileId, type, context.req);
-                result = { type: 'sharingLink', link };
-                break;
-            }
-            case 'getSharingLinks': {
-                const { fileId } = entities;
-                const links = await graphService.getSharingLinks(fileId, context.req);
-                result = { type: 'sharingLinks', links };
-                break;
-            }
-            case 'removeSharingPermission': {
-                const { fileId, permissionId } = entities;
-                const permResult = await graphService.removeSharingPermission(fileId, permissionId, context.req);
-                result = { type: 'removeSharingPermissionResult', result: permResult };
-                break;
-            }
+            
             case 'getFileContent': {
+                // Map to downloadFile
                 const { fileId } = entities;
-                const content = await graphService.getFileContent(fileId, context.req);
+                
+                monitoringService?.debug('Mapping getFileContent intent to downloadFile', {
+                    fileId,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+                
+                const content = await this.downloadFile(fileId, { metadataOnly: false }, context.req);
                 result = { type: 'fileContent', fileId, content };
                 break;
             }
+            
             case 'setFileContent': {
+                // Map to updateFileContent with setContent option
                 const { fileId, content } = entities;
-                const setResult = await graphService.setFileContent(fileId, content, context.req);
-                result = { type: 'setFileContentResult', file: normalizeFile(setResult) };
-                break;
-            }
-            case 'updateFileContent': {
-                const { fileId, content } = entities;
-                const updateResult = await graphService.updateFileContent(fileId, content, context.req);
-                result = { type: 'updateFileContentResult', file: normalizeFile(updateResult) };
+                
+                monitoringService?.debug('Mapping setFileContent intent to updateFileContent with setContent option', {
+                    fileId,
+                    contentSize: content?.length || 0,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+                
+                const updateResult = await this.updateFileContent(fileId, content, { setContent: true }, context.req);
+                result = { type: 'setFileContentResult', file: normalizeFile(updateResult) };
                 break;
             }
             default: {

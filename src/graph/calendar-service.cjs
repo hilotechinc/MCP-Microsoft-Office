@@ -718,6 +718,7 @@ async function createEvent(eventData, userId = 'me', options = {}) {
   let retryCount = 0;
   let lastError = null;
   let createdGraphEvent = null;
+  const startTime = Date.now(); // Initialize startTime for performance tracking
 
   while (retryCount < maxRetries) {
     try {
@@ -730,36 +731,15 @@ async function createEvent(eventData, userId = 'me', options = {}) {
       }, 'calendar');
       createdGraphEvent = await client.api(endpointPath).post(graphEvent);
 
-      // START INSERTED CODE - Check for invalid Graph API response
-      if (!createdGraphEvent || typeof createdGraphEvent !== 'object' || !createdGraphEvent.id) {
-        const detailMessage = !createdGraphEvent 
-            ? 'Graph API returned null or undefined.' 
-            : (typeof createdGraphEvent !== 'object' 
-                ? 'Graph API did not return an object.' 
-                : 'Graph API response is missing an ID.');
-
-        const errorContext = {
-            userId: redactSensitiveData({ userId }),
-            submittedEventData: redactSensitiveData(graphEvent), // The data sent to Graph
-            graphResponse: redactSensitiveData(createdGraphEvent), // Log the actual problematic response (redacted)
-            detail: detailMessage,
-            timestamp: new Date().toISOString()
-        };
-        
-        // Ensure ErrorService is available or use a default error
-        const mcpError = ErrorService?.createError ? ErrorService.createError(
-            'graph',
-            'Failed to create calendar event: Invalid response from Graph API.',
-            'error',
-            errorContext
-        ) : new Error('Failed to create calendar event: Invalid response from Graph API. ErrorService unavailable.');
-        
-        MonitoringService?.logError(mcpError);
-        EventService?.emit('mcp.error', mcpError);
-        throw mcpError; 
-      }
-      // END INSERTED CODE
-
+      // Calculate execution time
+      const executionTime = Date.now() - startTime;
+      
+      // Track performance metrics
+      MonitoringService?.trackMetric('calendar_event_create_time', executionTime, {
+        endpoint: endpointPath,
+        timestamp: new Date().toISOString()
+      });
+      
       // Normalize the created event
       const normalizedEvent = normalizeEvent(createdGraphEvent);
 
@@ -803,24 +783,26 @@ async function createEvent(eventData, userId = 'me', options = {}) {
       }
       
       // Non-retryable error or max retries reached
+      // Create standardized error object
+      let mcpError = null;
+      
+      mcpError = ErrorService?.createError(
+        'calendar',
+        `Error creating calendar event: ${error.message || 'Unknown error'}`,
+        'error',
+        {
+          userId: redactSensitiveData({ userId }),
+          statusCode: error.statusCode || 'unknown',
+          errorMessage: error.message || 'No message',
+          timestamp: new Date().toISOString()
+        }
+      );
+      
+      // Log the error
       if (process.env.NODE_ENV !== 'production') {
-        // Create standardized error object
-        const mcpError = ErrorService?.createError(
-          'calendar',
-          `Error creating calendar event: ${error.message || 'Unknown error'}`,
-          'error',
-          {
-            userId: redactSensitiveData({ userId }),
-            statusCode: error.statusCode || 'unknown',
-            errorMessage: error.message || 'No message',
-            timestamp: new Date().toISOString()
-          }
-        );
-        
-        // Log the error
         MonitoringService?.logError(mcpError);
         
-        MonitoringService?.error('Error creating calendar event', {
+        MonitoringService?.error(`Error creating calendar event`, {
           userId: redactSensitiveData({ userId }),
           errorMessage: error.message || 'No message',
           statusCode: error.statusCode || 'unknown',
@@ -842,9 +824,6 @@ async function createEvent(eventData, userId = 'me', options = {}) {
   // but adding as a safeguard
   throw lastError;
 }
-
-// Email validation regex - RFC 5322 compliant
-const EMAIL_REGEX = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
 
 /**
  * Helper function to get the correct endpoint path based on userId
@@ -1552,12 +1531,28 @@ async function cancelEvent(eventId, options = {}, req) {
         response = await client.api(userId === 'me' ? `/me/events/${eventId}` : `/users/${userId}/events/${eventId}`).delete();
       }
       
-      // Verify success by checking for @odata.context in the response
-      // This is a reliable indicator that the operation succeeded
-      const success = response && (response['@odata.context'] || response.id);
+      // Verify success by checking response status and content
+      // The cancel endpoint returns 202 with no body content, while delete returns 204
+      let success = false;
+      
+      if (sendCancellation) {
+        // Cancel endpoint returns 202 with empty or minimal response body
+        // Also accept Graph client wrapper response format: {success: true, status: 202}
+        success = response === undefined || response === null || response === '' || 
+                  (typeof response === 'object' && Object.keys(response).length === 0) ||
+                  response['@odata.context'] || response.id ||
+                  (response.success === true && (response.status === 202 || response.status === 204));
+      } else {
+        // Delete endpoint returns 204 with no content
+        // Also accept Graph client wrapper response format: {success: true, status: 204}
+        success = response === undefined || response === null || response === '' ||
+                  (typeof response === 'object' && Object.keys(response).length === 0) ||
+                  response['@odata.context'] || response.id ||
+                  (response.success === true && (response.status === 202 || response.status === 204));
+      }
       
       if (!success) {
-        throw new Error('Event cancellation failed: Invalid response from server');
+        throw new Error(`Event cancellation failed: Unexpected response format - ${JSON.stringify(response)}`);
       }
       
       if (process.env.NODE_ENV !== 'production') {
@@ -1567,7 +1562,7 @@ async function cancelEvent(eventId, options = {}, req) {
           timestamp: new Date().toISOString()
         }, 'calendar');
       }
-      
+
       // Emit event for UI updates with redacted data
       EventService?.emit('calendar:event:cancelled', {
         eventId: redactSensitiveData({ eventId }),
@@ -1674,7 +1669,7 @@ async function findMeetingTimes(options = {}) {
   // Extract req from options for authentication
   const { req, userId = 'me', ...otherOptions } = options;
   const client = await graphClientFactory.createClient(req);
-
+  
   // Process attendees if provided
   let attendees = [];
   if (options.attendees && Array.isArray(options.attendees)) {
@@ -2418,7 +2413,7 @@ const LARGE_ATTACHMENT_THRESHOLD = 1 * 1024 * 1024; // 1MB - Threshold for strea
 
 /**
  * Add an attachment to an event with size validation and streaming for large files.
- * @param {string} eventId - ID of the event
+ * @param {string} eventId - ID of the event to add attachment to
  * @param {object} attachment - Attachment data
  * @param {string} attachment.name - Name of the attachment
  * @param {string} attachment.contentType - MIME type of the attachment
@@ -2512,7 +2507,7 @@ async function addEventAttachment(eventId, attachment, req, options = {}) {
     // Standard approach for smaller attachments
     const endpoint = userId === 'me' ? `/me/events/${eventId}/attachments` : `/users/${userId}/events/${eventId}/attachments`;
     response = await client.api(endpoint).post(requestBody);
-    
+
     if (process.env.NODE_ENV !== 'production') {
       MonitoringService?.info(`Successfully added attachment to event`, {
         eventId: redactSensitiveData({ eventId }),
@@ -3091,11 +3086,12 @@ async function updateEvent(id, eventData, userId = 'me', options = {}) {
   const maxRetries = 3;
   let retryCount = 0;
   let lastError = null;
+  let preferTimeZone = userTimeZone; // Declare outside try block for catch block access
   
   while (retryCount < maxRetries) {
     try {
       // Enhanced timezone handling for the Prefer header
-      let preferTimeZone = userTimeZone;
+      preferTimeZone = userTimeZone; // Reset to initial value for each retry
       MonitoringService?.debug(`Determining timezone format for Prefer header`, {
         initialTimeZone: preferTimeZone,
         operation: 'updateEvent',
@@ -3151,11 +3147,8 @@ async function updateEvent(id, eventData, userId = 'me', options = {}) {
       // Update the event with PATCH to only send changed fields
       // Use sendUpdates=all to ensure attendees are notified of changes
       const endpoint = userId === 'me' ? `/me/events/${id}` : `/users/${userId}/events/${id}`;
-      const updatedEvent = await client
-        .api(`${endpoint}?sendUpdates=all`)
-        .headers(options.headers)
-        .patch(patch);
-      
+      const updatedEvent = await client.api(`${endpoint}?sendUpdates=all`).patch(patch, { headers: options.headers });
+
       // Calculate execution time and track performance
       const executionTime = Date.now() - startTime;
       MonitoringService?.trackMetric('calendar_event_update_time', executionTime, {
