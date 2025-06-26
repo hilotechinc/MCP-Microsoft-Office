@@ -103,8 +103,8 @@ async function getInbox(options = {}, req) {
 }
 
 /**
- * Searches emails by query string.
- * @param {string} query
+ * Searches emails by query string using Microsoft Graph KQL syntax.
+ * @param {string} query - KQL search query (e.g., "from:user@domain.com subject:meeting")
  * @param {object} options
  * @param {object} req - Express request object
  * @returns {Promise<Array<object>>}
@@ -140,7 +140,28 @@ async function searchEmails(query, options = {}, req) {
     
     const client = await graphClientFactory.createClient(req);
     const top = options.top || options.limit || 10;
-    const res = await client.api(`/me/messages?$search="${encodeURIComponent(query)}"&$top=${top}`).get();
+    
+    // Clean the query for KQL syntax - remove problematic quote wrapping
+    // Microsoft Graph mail search uses KQL and should not wrap the entire query in quotes
+    let cleanQuery = query.trim();
+    
+    // If the query is wrapped in quotes, remove them to avoid double-wrapping
+    if (cleanQuery.startsWith('"') && cleanQuery.endsWith('"')) {
+      cleanQuery = cleanQuery.slice(1, -1);
+    }
+    
+    // Build the search URL with proper KQL syntax
+    // Note: Don't wrap the entire query in quotes - let KQL handle its own syntax
+    const searchUrl = `/me/messages?$search=${encodeURIComponent(cleanQuery)}&$top=${top}`;
+    
+    MonitoringService.debug('Executing mail search with KQL', {
+      originalQuery: query,
+      cleanedQuery: cleanQuery,
+      searchUrl: searchUrl.replace(/&/g, '&'), // For logging readability
+      timestamp: new Date().toISOString()
+    }, 'graph');
+    
+    const res = await client.api(searchUrl).get();
     const emails = (res.value || []).map(normalizeEmail);
     
     const executionTime = Date.now() - startTime;

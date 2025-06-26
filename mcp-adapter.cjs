@@ -114,14 +114,14 @@ let adapterState = {
 const stubModuleRegistry = {
     getAllModules: () => [
         { id: 'mail', name: 'mail', capabilities: ['getInbox', 'sendEmail', 'searchEmails', 'flagEmail', 'getEmailDetails', 'markAsRead', 'readMailDetails', 'getMailAttachments', 'markEmailRead', 'addMailAttachment', 'removeMailAttachment'] },
-        { id: 'calendar', name: 'calendar', capabilities: ['getEvents', 'create', 'update', 'getAvailability', 'findMeetingTimes', 'cancelEvent', 'addAttachment', 'removeAttachment'] },
+        { id: 'calendar', name: 'calendar', capabilities: ['getEvents', 'create', 'update', 'getAvailability', 'findMeetingTimes', 'cancelEvent', 'acceptEvent', 'tentativelyAcceptEvent', 'declineEvent', 'addAttachment', 'removeAttachment'] },
         { id: 'files', name: 'files', capabilities: ['listFiles', 'uploadFile', 'downloadFile', 'getFileMetadata'] },
         { id: 'people', name: 'people', capabilities: ['find', 'search', 'getRelevantPeople', 'getPersonById'] }
     ],
     getModule: (moduleName) => {
         const modules = {
             'mail': { id: 'mail', capabilities: ['getInbox', 'sendEmail', 'searchEmails', 'flagEmail', 'getEmailDetails', 'markAsRead', 'readMailDetails', 'getMailAttachments', 'markEmailRead', 'addMailAttachment', 'removeMailAttachment'] },
-            'calendar': { id: 'calendar', capabilities: ['getEvents', 'create', 'update', 'getAvailability', 'findMeetingTimes', 'cancelEvent', 'addAttachment', 'removeAttachment'] },
+            'calendar': { id: 'calendar', capabilities: ['getEvents', 'create', 'update', 'getAvailability', 'findMeetingTimes', 'cancelEvent', 'acceptEvent', 'tentativelyAcceptEvent', 'declineEvent', 'addAttachment', 'removeAttachment'] },
             'files': { id: 'files', capabilities: ['listFiles', 'uploadFile', 'downloadFile', 'getFileMetadata'] },
             'people': { id: 'people', capabilities: ['find', 'search', 'getRelevantPeople', 'getPersonById'] }
         };
@@ -969,14 +969,35 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 const timeZone = transformedParams.timeZone;
                 
                 // Transform parameters to match the controller's expectations
-                apiData = {
-                    subject: transformedParams.subject,
-                    start: transformDateTime(start, timeZone),
-                    end: transformDateTime(end, timeZone),
-                    location: transformedParams.location,
-                    body: transformedParams.body,
-                    isOnlineMeeting: transformedParams.isOnlineMeeting
-                };
+                // Normalize and filter input fields for createEvent
+                const eventData = {};
+                if (transformedParams.subject) eventData.subject = transformedParams.subject;
+                if (start && typeof start === 'object') eventData.start = transformDateTime(start, timeZone);
+                if (end && typeof end === 'object') eventData.end = transformDateTime(end, timeZone);
+                if (transformedParams.isOnlineMeeting !== undefined) eventData.isOnlineMeeting = transformedParams.isOnlineMeeting;
+                // Normalize location
+                if (transformedParams.location && typeof transformedParams.location === 'object' && transformedParams.location.displayName) {
+                    eventData.location = { displayName: transformedParams.location.displayName };
+                }
+                // Normalize body
+                if (transformedParams.body && typeof transformedParams.body === 'object' && transformedParams.body.content) {
+                    eventData.body = {
+                        content: transformedParams.body.content,
+                        contentType: transformedParams.body.contentType || 'text'
+                    };
+                }
+                // Normalize attendees
+                if (Array.isArray(transformedParams.attendees)) {
+                    const formattedAttendees = [];
+                    for (const attendee of transformedParams.attendees) {
+                        if (attendee && attendee.emailAddress && attendee.emailAddress.address) {
+                            formattedAttendees.push(attendee);
+                        }
+                    }
+                    if (formattedAttendees.length > 0) eventData.attendees = formattedAttendees;
+                }
+                // Remove any null/undefined fields
+                apiData = Object.fromEntries(Object.entries(eventData).filter(([_, v]) => v !== null && v !== undefined));
                 
                 // Special handling for attendees based on format
                 if (transformedParams.attendees) {
@@ -1034,7 +1055,7 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                 if (!transformedParams.id) {
                     throw new Error('Event ID is required for calendar update');
                 }
-                apiPath = '/v1/calendar/events/' + transformedParams.id;
+                apiPath = `/v1/calendar/events/${transformedParams.id}`;
                 apiMethod = 'PUT';
                 
                 try {
@@ -1096,10 +1117,37 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                         updateData.isOnlineMeeting = transformedParams.isOnlineMeeting;
                     }
                     
-                    // Filter out any null or undefined values from the final apiData object
-                    apiData = Object.fromEntries(
-                        Object.entries(updateData).filter(([_, value]) => value !== null && value !== undefined)
-                    );
+                    // Normalize and filter input fields for updateEvent
+                    // Only send fields that are present and valid, never null
+                    const safeUpdateData = {};
+                    if (updateData.subject) safeUpdateData.subject = updateData.subject;
+                    if (updateData.start && typeof updateData.start === 'object') safeUpdateData.start = updateData.start;
+                    if (updateData.end && typeof updateData.end === 'object') safeUpdateData.end = updateData.end;
+                    if (updateData.isOnlineMeeting !== undefined) safeUpdateData.isOnlineMeeting = updateData.isOnlineMeeting;
+                    if (updateData.isAllDay !== undefined) safeUpdateData.isAllDay = updateData.isAllDay;
+                    // Normalize location
+                    if (updateData.location && typeof updateData.location === 'object' && updateData.location.displayName) {
+                        safeUpdateData.location = { displayName: updateData.location.displayName };
+                    }
+                    // Normalize body
+                    if (updateData.body && typeof updateData.body === 'object' && updateData.body.content) {
+                        safeUpdateData.body = {
+                            content: updateData.body.content,
+                            contentType: updateData.body.contentType || 'text'
+                        };
+                    }
+                    // Normalize attendees
+                    if (Array.isArray(updateData.attendees)) {
+                        const formattedAttendees = [];
+                        for (const attendee of updateData.attendees) {
+                            if (attendee && attendee.emailAddress && attendee.emailAddress.address) {
+                                formattedAttendees.push(attendee);
+                            }
+                        }
+                        if (formattedAttendees.length > 0) safeUpdateData.attendees = formattedAttendees;
+                    }
+                    // Remove any null/undefined fields
+                    apiData = Object.fromEntries(Object.entries(safeUpdateData).filter(([_, value]) => value !== null && value !== undefined));
                 } catch (error) {
                     
                     throw new Error(`Failed to transform updateEvent parameters: ${error.message}`);
@@ -1143,7 +1191,7 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                     throw new Error('Event ID is required for accepting an event');
                 }
                 
-                apiPath = `/api/v1/calendar/events/${acceptEventId}/accept`;
+                apiPath = `/v1/calendar/events/${acceptEventId}/accept`;
                 apiMethod = 'POST';
                 console.error(`[DEBUG] acceptEvent - apiPath:`, apiPath);
                 
@@ -1165,7 +1213,7 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                     throw new Error('Event ID is required for tentatively accepting an event')
                 }
                 
-                apiPath = `/api/v1/calendar/events/${tentativeEventId}/tentativelyAccept`;
+                apiPath = `/v1/calendar/events/${tentativeEventId}/tentativelyAccept`;
                 apiMethod = 'POST';
                 console.error(`[DEBUG] tentativelyAcceptEvent - apiPath:`, apiPath);
                 
@@ -1185,7 +1233,7 @@ async function executeModuleMethod(moduleName, methodName, params = {}) {
                     throw new Error('Event ID is required for declining an event')
                 }
                 
-                apiPath = `/api/v1/calendar/events/${declineEventId}/decline`;
+                apiPath = `/v1/calendar/events/${declineEventId}/decline`;
                 apiMethod = 'POST';
                 
                 // Optional comment for the response
@@ -2098,7 +2146,7 @@ async function registerDevice() {
             if (attempt > 1) {
                 process.stderr.write(`🔄 Device registration attempt ${attempt}/${MAX_REGISTRATION_RETRIES}...\n`);
             }
-            
+
             // Ensure OAuth discovery has been performed
             if (!oauthDiscovery.discovered) {
                 const discoverySuccess = await discoverOAuthEndpoints();
@@ -2662,12 +2710,14 @@ async function authenticateDevice() {
             }
             
             if (isLastAttempt) {
-                process.stderr.write('\n💡 Troubleshooting tips:\n');
-                process.stderr.write('   • Ensure the MCP server is running and accessible\n');
-                process.stderr.write('   • Check your network connection\n');
-                process.stderr.write('   • Verify the MCP_SERVER_URL environment variable\n');
-                process.stderr.write('   • Try restarting the adapter if the issue persists\n\n');
-                return false;
+                // Final attempt failed - provide detailed error
+                if (error.message.includes('ECONNREFUSED') || error.message.includes('ENOTFOUND')) {
+                    throw new Error('Device authentication failed: Unable to connect to MCP server. Please check your network connection and server URL.');
+                } else if (error.message.includes('timeout')) {
+                    throw new Error('Device authentication failed: Request timed out. The MCP server may be overloaded or unreachable.');
+                } else {
+                    throw new Error(`Device authentication failed after ${MAX_AUTH_ATTEMPTS} attempts: ${error.message}`);
+                }
             }
             
             // Wait before retrying (progressive backoff)

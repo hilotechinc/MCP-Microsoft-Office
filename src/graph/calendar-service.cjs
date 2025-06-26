@@ -348,56 +348,222 @@ function isValidISODate(dateString) {
 }
 
 /**
+ * Converts timeframe shortcuts to date ranges
+ * @param {string} timeframe - Timeframe shortcut
+ * @returns {object} Object with start and end dates in YYYY-MM-DD format
+ */
+function getTimeframeRange(timeframe) {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  
+  switch (timeframe.toLowerCase()) {
+    case 'today':
+      return {
+        start: today.toISOString().split('T')[0],
+        end: today.toISOString().split('T')[0]
+      };
+      
+    case 'tomorrow':
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      return {
+        start: tomorrow.toISOString().split('T')[0],
+        end: tomorrow.toISOString().split('T')[0]
+      };
+      
+    case 'this_week':
+      const startOfWeek = new Date(today);
+      startOfWeek.setDate(today.getDate() - today.getDay()); // Sunday
+      const endOfWeek = new Date(startOfWeek);
+      endOfWeek.setDate(startOfWeek.getDate() + 6); // Saturday
+      return {
+        start: startOfWeek.toISOString().split('T')[0],
+        end: endOfWeek.toISOString().split('T')[0]
+      };
+      
+    case 'next_week':
+      const nextWeekStart = new Date(today);
+      nextWeekStart.setDate(today.getDate() - today.getDay() + 7); // Next Sunday
+      const nextWeekEnd = new Date(nextWeekStart);
+      nextWeekEnd.setDate(nextWeekStart.getDate() + 6); // Next Saturday
+      return {
+        start: nextWeekStart.toISOString().split('T')[0],
+        end: nextWeekEnd.toISOString().split('T')[0]
+      };
+      
+    case 'this_month':
+      const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+      const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+      return {
+        start: startOfMonth.toISOString().split('T')[0],
+        end: endOfMonth.toISOString().split('T')[0]
+      };
+      
+    case 'next_month':
+      const nextMonthStart = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+      const nextMonthEnd = new Date(today.getFullYear(), today.getMonth() + 2, 0);
+      return {
+        start: nextMonthStart.toISOString().split('T')[0],
+        end: nextMonthEnd.toISOString().split('T')[0]
+      };
+      
+    default:
+      throw new Error(`Unknown timeframe: ${timeframe}. Supported values: today, tomorrow, this_week, next_week, this_month, next_month`);
+  }
+}
+
+/**
  * Retrieves calendar events within a date range with pagination support.
  * @param {object} options - Query options
- * @param {string} options.start - Start date in ISO format (YYYY-MM-DD)
- * @param {string} options.end - End date in ISO format (YYYY-MM-DD)
+ * @param {string} [options.start] - Start date in ISO format (YYYY-MM-DD)
+ * @param {string} [options.end] - End date in ISO format (YYYY-MM-DD)
  * @param {number} [options.top=50] - Maximum number of events to return
+ * @param {number} [options.limit] - Alias for top
  * @param {string} [options.orderby='start/dateTime'] - Property to sort by
+ * @param {string} [options.filter] - OData $filter query
+ * @param {string} [options.select] - Comma-separated list of properties to include
+ * @param {string} [options.expand] - Comma-separated list of properties to expand
+ * @param {string} [options.subject] - Filter by subject containing text (convenience)
+ * @param {string} [options.organizer] - Filter by organizer email (convenience)
+ * @param {string} [options.attendee] - Filter by attendee email (convenience)
+ * @param {string} [options.location] - Filter by location containing text (convenience)
+ * @param {string} [options.timeframe] - Predefined time range
  * @param {string} [options.userId='me'] - User ID to get events for
  * @param {object} [options.req] - Request object
  * @returns {Promise<Array<object>>} Normalized calendar events
  */
 async function getEvents(options = {}) {
-  // Extract userId from options at the beginning to ensure it's available in catch block
-  const { start, end, top = 50, orderby = 'start/dateTime', userId = 'me', req } = options;
+  // Extract parameters with defaults
+  const { 
+    start, 
+    end, 
+    top, 
+    limit,
+    orderby = 'start/dateTime', 
+    filter,
+    select,
+    expand,
+    subject,
+    organizer,
+    attendee,
+    location,
+    timeframe,
+    userId = 'me', 
+    req 
+  } = options;
+  
+  // Use limit or top, with default of 50
+  const maxResults = limit || top || 50;
+  
   let endpoint;
   
   try {
     const client = await graphClientFactory.createClient(req);
     
+    // Handle timeframe shortcuts
+    let effectiveStart = start;
+    let effectiveEnd = end;
+    
+    if (timeframe) {
+      const timeRange = getTimeframeRange(timeframe);
+      effectiveStart = effectiveStart || timeRange.start;
+      effectiveEnd = effectiveEnd || timeRange.end;
+    }
+    
     // Validate date formats if provided
-    if (start && !isValidISODate(start)) {
-      throw new Error(`Invalid start date format: ${start}. Expected YYYY-MM-DD.`);
+    if (effectiveStart && !isValidISODate(effectiveStart)) {
+      throw new Error(`Invalid start date format: ${effectiveStart}. Expected YYYY-MM-DD.`);
     }
     
-    if (end && !isValidISODate(end)) {
-      throw new Error(`Invalid end date format: ${end}. Expected YYYY-MM-DD.`);
+    if (effectiveEnd && !isValidISODate(effectiveEnd)) {
+      throw new Error(`Invalid end date format: ${effectiveEnd}. Expected YYYY-MM-DD.`);
     }
     
-    // Build query parameters
+    // Build query parameters array
     let queryParams = [];
     
-    // Add filter if dates are provided
-    if (start && end) {
-      queryParams.push(`$filter=start/dateTime ge '${start}T00:00:00' and end/dateTime le '${end}T23:59:59'`);
+    // Build filter conditions
+    let filterConditions = [];
+    
+    // Add date range filter
+    if (effectiveStart && effectiveEnd) {
+      filterConditions.push(`start/dateTime ge '${effectiveStart}T00:00:00.000Z' and end/dateTime le '${effectiveEnd}T23:59:59.999Z'`);
+    } else if (effectiveStart) {
+      filterConditions.push(`start/dateTime ge '${effectiveStart}T00:00:00.000Z'`);
+    } else if (effectiveEnd) {
+      filterConditions.push(`end/dateTime le '${effectiveEnd}T23:59:59.999Z'`);
+    }
+    
+    // Add convenience filters with proper OData syntax
+    if (subject) {
+      // Use contains() function for subject text search
+      const escapedSubject = subject.replace(/'/g, "''");
+      filterConditions.push(`contains(tolower(subject), '${escapedSubject.toLowerCase()}')`);
+    }
+    
+    if (organizer) {
+      // Filter by organizer email address
+      const escapedOrganizer = organizer.replace(/'/g, "''");
+      filterConditions.push(`organizer/emailAddress/address eq '${escapedOrganizer}'`);
+    }
+    
+    if (location) {
+      // Use contains() function for location text search
+      const escapedLocation = location.replace(/'/g, "''");
+      filterConditions.push(`contains(tolower(location/displayName), '${escapedLocation.toLowerCase()}')`);
+    }
+    
+    if (attendee) {
+      // Use any() lambda operator for attendee search
+      const escapedAttendee = attendee.replace(/'/g, "''");
+      filterConditions.push(`attendees/any(a: a/emailAddress/address eq '${escapedAttendee}')`);
+    }
+    
+    // Combine with custom filter
+    if (filter) {
+      filterConditions.push(`(${filter})`);
+    }
+    
+    // Add combined filter to query params
+    if (filterConditions.length > 0) {
+      queryParams.push(`$filter=${encodeURIComponent(filterConditions.join(' and '))}`);
+    }
+    
+    // Add select parameter
+    if (select) {
+      queryParams.push(`$select=${encodeURIComponent(select)}`);
+    }
+    
+    // Add expand parameter
+    if (expand) {
+      queryParams.push(`$expand=${encodeURIComponent(expand)}`);
     }
     
     // Add pagination and ordering
-    queryParams.push(`$top=${top}`);
-    queryParams.push(`$orderby=${orderby}`);
+    queryParams.push(`$top=${maxResults}`);
+    queryParams.push(`$orderby=${encodeURIComponent(orderby)}`);
     
     // Combine query parameters
     const queryString = queryParams.length > 0 ? `?${queryParams.join('&')}` : '';
     
     // Make API request using our helper function
     endpoint = getEndpointPath(userId, `/events${queryString}`);
-    MonitoringService?.debug(`Fetching calendar events`, {
+    MonitoringService?.debug(`Fetching calendar events with $filter (no $search support)`, {
       endpoint,
       userId: redactSensitiveData({ userId }),
-      dateRange: { start, end },
+      filters: {
+        dateRange: { start: effectiveStart, end: effectiveEnd },
+        subject,
+        organizer: organizer ? redactSensitiveData({ email: organizer }).email : undefined,
+        attendee: attendee ? redactSensitiveData({ email: attendee }).email : undefined,
+        location,
+        timeframe,
+        customFilter: filter
+      },
+      queryParams: queryParams.length,
       timestamp: new Date().toISOString()
     }, 'calendar');
+    
     // Start timer for performance tracking
     const startTime = Date.now();
     
@@ -410,17 +576,26 @@ async function getEvents(options = {}) {
     MonitoringService?.trackMetric('calendar_events_fetch_time', executionTime, {
       endpoint,
       responseSize: res.value ? res.value.length : 0,
+      hasFilters: queryParams.length > 2, // More than just $top and $orderby
       timestamp: new Date().toISOString()
     });
     
-    // Normalize events
-    const normalizedEvents = (res.value || []).map(normalizeEvent);
+    // Normalize events (only if select wasn't used, as select might return partial data)
+    let events;
+    if (select) {
+      // Return raw data when select is used, as normalization might fail with partial data
+      events = res.value || [];
+    } else {
+      // Use full normalization for complete event objects
+      events = (res.value || []).map(normalizeEvent);
+    }
     
     // Emit event for UI updates with redacted data
     try {
       EventService.emit('calendar:events:fetched', {
-        count: normalizedEvents.length,
-        timeRange: { start, end },
+        count: events.length,
+        timeRange: { start: effectiveStart, end: effectiveEnd },
+        hasFilters: queryParams.length > 2,
         executionTime,
         timestamp: new Date().toISOString()
       });
@@ -432,8 +607,8 @@ async function getEvents(options = {}) {
       }, 'calendar');
     }
     
-    // Return normalized events
-    return normalizedEvents;
+    // Return events
+    return events;
   } catch (error) {
     // Create standardized error object
     const mcpError = ErrorService.createError(
@@ -441,7 +616,12 @@ async function getEvents(options = {}) {
       `Failed to fetch calendar events: ${error.message || 'Unknown error'}`,
       'error',
       {
-        options,
+        options: {
+          ...options,
+          // Redact sensitive data in error logs
+          organizer: organizer ? redactSensitiveData({ email: organizer }).email : undefined,
+          attendee: attendee ? redactSensitiveData({ email: attendee }).email : undefined
+        },
         originalError: error.stack || error.toString(),
         timestamp: new Date().toISOString()
       }
@@ -454,8 +634,6 @@ async function getEvents(options = {}) {
       // Fallback only if MonitoringService.logError is not available
       console.error('[CALENDAR] Error fetching calendar events:', error.message || 'Unknown error');
     }
-    
-    // Don't return mock data - always throw the error to be handled by the caller
     
     // In production, throw the error to be handled by the caller
     const graphError = new Error(`Failed to fetch calendar events: ${error.message}`);
@@ -799,8 +977,8 @@ async function createEvent(eventData, userId = 'me', options = {}) {
       );
       
       // Log the error
-      if (process.env.NODE_ENV !== 'production') {
-        MonitoringService?.logError(mcpError);
+      if (MonitoringService?.logError) {
+        MonitoringService.logError(mcpError);
         
         MonitoringService?.error(`Error creating calendar event`, {
           userId: redactSensitiveData({ userId }),
@@ -815,6 +993,7 @@ async function createEvent(eventData, userId = 'me', options = {}) {
       const graphError = new Error(`Failed to create calendar event: ${error.message}`);
       graphError.name = 'GraphApiError';
       graphError.originalError = error;
+      graphError.retryAttempts = retryCount;
       graphError.mcpError = mcpError;
       throw graphError;
     }
@@ -1489,7 +1668,7 @@ async function declineEvent(eventId, commentOrOptions = '', req) {
  * @param {Object} req - Request object for authentication (3rd parameter for module compatibility)
  * @param {string} [options.comment=''] - Optional comment to include with the cancellation
  * @param {boolean} [options.sendCancellation=true] - Whether to send cancellation notices to attendees
- * @param {string} [options.userId='me'] - User ID for the calendar
+ * @param {string} [userId='me'] - User ID for the calendar
  * @returns {Promise<object>} Response status with confirmation of success
  */
 async function cancelEvent(eventId, options = {}, req) {

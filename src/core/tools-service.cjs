@@ -201,12 +201,12 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 break;
             case 'searchEmails':
             case 'searchMail':
-                toolDef.description = 'Search emails by query';
+                toolDef.description = 'Search emails using Microsoft Graph KQL (Keyword Query Language) syntax';
                 toolDef.endpoint = '/api/v1/mail/search';
                 toolDef.parameters = {
                     query: { 
                         type: 'string', 
-                        description: 'Search query string', 
+                        description: 'KQL search query string. Examples: "from:user@domain.com", "subject:meeting", "from:john AND subject:report", "hasattachments:true". Do not wrap the entire query in quotes.', 
                         required: true,
                         aliases: ['q'] // Support both 'query' and 'q' parameters
                     },
@@ -322,11 +322,98 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
             // Calendar tools
             case 'getEvents':
             case 'getCalendar':
-                toolDef.description = 'Fetch calendar events from Microsoft 365';
+                toolDef.description = 'Fetch calendar events from Microsoft 365 with advanced filtering capabilities. Note: Calendar events use $filter instead of $search for text queries.';
                 toolDef.endpoint = '/api/v1/calendar';
                 toolDef.parameters = {
-                    // Example: Add specific parameters if needed
-                    // start: { type: 'string', format: 'date-time' }, end: { type: 'string', format: 'date-time' }
+                    // Date range parameters
+                    start: { 
+                        type: 'string', 
+                        description: 'Start date in ISO format (YYYY-MM-DD) to filter events from', 
+                        optional: true,
+                        format: 'date'
+                    },
+                    end: { 
+                        type: 'string', 
+                        description: 'End date in ISO format (YYYY-MM-DD) to filter events until', 
+                        optional: true,
+                        format: 'date'
+                    },
+                    
+                    // Pagination and limits
+                    limit: { 
+                        type: 'number', 
+                        description: 'Maximum number of events to return (1-999)', 
+                        optional: true, 
+                        default: 50,
+                        minimum: 1,
+                        maximum: 999
+                    },
+                    top: { 
+                        type: 'number', 
+                        description: 'Alias for limit - maximum number of events to return', 
+                        optional: true
+                    },
+                    
+                    // Microsoft Graph query parameters
+                    filter: { 
+                        type: 'string', 
+                        description: 'OData $filter query to filter events (e.g., "startsWith(subject,\'Meeting\')" or "organizer/emailAddress/address eq \'user@domain.com\'")', 
+                        optional: true
+                    },
+                    select: { 
+                        type: 'string', 
+                        description: 'Comma-separated list of properties to include in response (e.g., "subject,start,end,organizer")', 
+                        optional: true
+                    },
+                    orderby: { 
+                        type: 'string', 
+                        description: 'Property to sort results by (e.g., "start/dateTime desc", "subject asc")', 
+                        optional: true, 
+                        default: 'start/dateTime'
+                    },
+                    expand: { 
+                        type: 'string', 
+                        description: 'Comma-separated list of related properties to expand (e.g., "attendees,calendar")', 
+                        optional: true
+                    },
+                    
+                    // Convenience filters (converted to $filter queries)
+                    subject: { 
+                        type: 'string', 
+                        description: 'Filter events by subject containing this text (converted to contains() filter)', 
+                        optional: true
+                    },
+                    organizer: { 
+                        type: 'string', 
+                        description: 'Filter events by organizer email address (converted to eq filter)', 
+                        optional: true
+                    },
+                    attendee: { 
+                        type: 'string', 
+                        description: 'Filter events where this email address is an attendee (converted to any() filter)', 
+                        optional: true
+                    },
+                    location: { 
+                        type: 'string', 
+                        description: 'Filter events by location containing this text (converted to contains() filter)', 
+                        optional: true
+                    },
+                    
+                    // Time-based filters
+                    timeframe: { 
+                        type: 'string', 
+                        description: 'Predefined time range (today, tomorrow, this_week, next_week, this_month)', 
+                        optional: true,
+                        enum: ['today', 'tomorrow', 'this_week', 'next_week', 'this_month', 'next_month']
+                    },
+                    
+                    // Response options
+                    debug: { 
+                        type: 'boolean', 
+                        description: 'Enable debug mode to return additional metadata', 
+                        optional: true, 
+                        default: false 
+                    }
                 };
                 break;
             case 'createEvent':
@@ -334,35 +421,52 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 toolDef.endpoint = '/api/v1/calendar/events';
                 toolDef.method = 'POST';
                 toolDef.parameters = {
-                    subject: { type: 'string', description: 'Event subject/title' },
-                    start: { 
-                        type: 'object', 
+                    subject: { type: 'string', description: 'Event subject/title', required: true },
+                    start: {
+                        type: 'object',
                         description: 'Start time',
+                        required: true,
                         properties: {
-                            dateTime: { type: 'string', description: 'ISO date string' },
+                            dateTime: { type: 'string', description: 'ISO date string', required: true },
                             timeZone: { type: 'string', description: 'Time zone', optional: true }
                         }
                     },
-                    end: { 
-                        type: 'object', 
+                    end: {
+                        type: 'object',
                         description: 'End time',
+                        required: true,
                         properties: {
-                            dateTime: { type: 'string', description: 'ISO date string' },
+                            dateTime: { type: 'string', description: 'ISO date string', required: true },
                             timeZone: { type: 'string', description: 'Time zone', optional: true }
                         }
                     },
-                    location: { 
-                        type: 'any', 
-                        description: 'Event location (string or object with displayName)',
-                        optional: true
+                    location: {
+                        type: 'object',
+                        description: 'Event location (object with displayName, omit or do not send if null)',
+                        optional: true,
+                        properties: {
+                            displayName: { type: 'string', description: 'Location display name', required: true }
+                        }
                     },
-                    body: { type: 'string', description: 'Event description/body', optional: true },
-                    attendees: { 
-                        type: 'array', 
-                        description: 'Array of attendee email addresses or objects',
+                    body: {
+                        type: 'object',
+                        description: 'Event description/body content (object with content and optional contentType)',
+                        optional: true,
+                        properties: {
+                            content: { type: 'string', description: 'Body content text', required: true },
+                            contentType: { type: 'string', description: 'Content type (text or html)', optional: true, default: 'text' }
+                        }
+                    },
+                    attendees: {
+                        type: 'array',
+                        description: 'Array of attendee objects (with emailAddress.address)',
                         optional: true,
                         items: {
-                            type: 'string'
+                            type: 'object',
+                            properties: {
+                                emailAddress: { type: 'object', properties: { address: { type: 'string', required: true } }, required: true },
+                                type: { type: 'string', description: 'Attendee type (required, optional, resource)', optional: true }
+                            }
                         }
                     },
                     isOnlineMeeting: { type: 'boolean', description: 'Whether this is an online meeting', optional: true }
@@ -375,44 +479,51 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 toolDef.parameters = {
                     id: { type: 'string', description: 'Event ID to update', required: true },
                     subject: { type: 'string', description: 'Event subject/title', optional: true },
-                    start: { 
-                        type: 'object', 
+                    start: {
+                        type: 'object',
                         description: 'Start time',
                         optional: true,
                         properties: {
-                            dateTime: { type: 'string', description: 'ISO date string' },
+                            dateTime: { type: 'string', description: 'ISO date string', required: true },
                             timeZone: { type: 'string', description: 'Time zone', optional: true }
                         }
                     },
-                    end: { 
-                        type: 'object', 
+                    end: {
+                        type: 'object',
                         description: 'End time',
                         optional: true,
                         properties: {
-                            dateTime: { type: 'string', description: 'ISO date string' },
+                            dateTime: { type: 'string', description: 'ISO date string', required: true },
                             timeZone: { type: 'string', description: 'Time zone', optional: true }
                         }
                     },
-                    location: { 
-                        type: 'any', 
-                        description: 'Event location (string or object with displayName)',
-                        optional: true
+                    location: {
+                        type: 'object',
+                        description: 'Event location (object with displayName, omit or do not send if null)',
+                        optional: true,
+                        properties: {
+                            displayName: { type: 'string', description: 'Location display name', required: true }
+                        }
                     },
-                    body: { 
-                        type: 'object', 
-                        description: 'Event description/body content',
+                    body: {
+                        type: 'object',
+                        description: 'Event description/body content (object with content and optional contentType)',
                         optional: true,
                         properties: {
                             content: { type: 'string', description: 'Body content text', required: true },
                             contentType: { type: 'string', description: 'Content type (text or html)', optional: true, default: 'text' }
                         }
                     },
-                    attendees: { 
-                        type: 'array', 
-                        description: 'Array of attendee email addresses or objects',
+                    attendees: {
+                        type: 'array',
+                        description: 'Array of attendee objects (with emailAddress.address)',
                         optional: true,
                         items: {
-                            type: 'string'
+                            type: 'object',
+                            properties: {
+                                emailAddress: { type: 'object', properties: { address: { type: 'string', required: true } }, required: true },
+                                type: { type: 'string', description: 'Attendee type (required, optional, resource)', optional: true }
+                            }
                         }
                     },
                     isAllDay: { type: 'boolean', description: 'Whether this is an all-day event', optional: true },
@@ -505,49 +616,52 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 toolDef.parameters = {
                     users: { 
                         type: 'array', 
-                        itemType: 'string', 
                         description: 'Array of user email addresses to check availability for (must be valid email addresses)', 
                         required: true 
                     },
                     timeSlots: { 
                         type: 'array', 
-                        itemType: 'object', 
                         description: 'Array of time slots to check availability within', 
                         required: true,
-                        schema: { // Define nested schema for clarity
-                            start: { 
-                                type: 'object', 
-                                required: true,
-                                schema: {
-                                    dateTime: { 
-                                        type: 'string', 
-                                        format: 'date-time', 
-                                        description: 'Start date/time in ISO format (e.g., 2025-05-02T14:00:00)', 
-                                        required: true 
-                                    },
-                                    timeZone: { 
-                                        type: 'string', 
-                                        description: 'Time zone (e.g., UTC, Europe/Oslo)', 
-                                        optional: true, 
-                                        default: 'UTC' 
+                        items: {
+                            type: 'object',
+                            properties: {
+                                start: {
+                                    type: 'object',
+                                    description: 'Start time',
+                                    required: true,
+                                    properties: {
+                                        dateTime: { 
+                                            type: 'string', 
+                                            format: 'date-time', 
+                                            description: 'Start date/time in ISO format (e.g., 2025-05-02T14:00:00)', 
+                                            required: true 
+                                        },
+                                        timeZone: { 
+                                            type: 'string', 
+                                            description: 'Time zone (e.g., UTC, Europe/Oslo)', 
+                                            optional: true, 
+                                            default: 'UTC' 
+                                        }
                                     }
-                                }
-                            },
-                            end: { 
-                                type: 'object', 
-                                required: true,
-                                schema: {
-                                    dateTime: { 
-                                        type: 'string', 
-                                        format: 'date-time', 
-                                        description: 'End date/time in ISO format (e.g., 2025-05-02T15:00:00)', 
-                                        required: true 
-                                    },
-                                    timeZone: { 
-                                        type: 'string', 
-                                        description: 'Time zone (e.g., UTC, Europe/Oslo)', 
-                                        optional: true, 
-                                        default: 'UTC' 
+                                },
+                                end: {
+                                    type: 'object',
+                                    description: 'End time',
+                                    required: true,
+                                    properties: {
+                                        dateTime: { 
+                                            type: 'string', 
+                                            format: 'date-time', 
+                                            description: 'End date/time in ISO format (e.g., 2025-05-02T15:00:00)', 
+                                            required: true 
+                                        },
+                                        timeZone: { 
+                                            type: 'string', 
+                                            description: 'Time zone (e.g., UTC, Europe/Oslo)', 
+                                            optional: true, 
+                                            default: 'UTC' 
+                                        }
                                     }
                                 }
                             }
