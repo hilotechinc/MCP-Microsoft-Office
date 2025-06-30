@@ -9,6 +9,7 @@ const peopleService = require('./people-service.cjs');
 const MonitoringService = require('../core/monitoring-service.cjs');
 const ErrorService = require('../core/error-service.cjs');
 const EventService = require('../core/event-service.cjs');
+const GraphFilterValidator = require('./graph-filter-validator.cjs');
 
 // Configuration for time zones
 const CONFIG = {
@@ -519,14 +520,65 @@ async function getEvents(options = {}) {
       filterConditions.push(`attendees/any(a: a/emailAddress/address eq '${escapedAttendee}')`);
     }
     
-    // Combine with custom filter
+    // Validate and combine with custom filter
     if (filter) {
-      filterConditions.push(`(${filter})`);
+      try {
+        // Validate the filter expression against known Graph API limitations
+        GraphFilterValidator.validateFilterOrThrow(filter);
+        
+        // If valid, add to filter conditions
+        filterConditions.push(`(${filter})`);
+      } catch (filterError) {
+        // Create standardized error
+        const mcpError = ErrorService.createError(
+          'graph',
+          `Invalid Graph API filter: ${filterError.message}`,
+          'warning',
+          {
+            filter,
+            suggestion: filterError.suggestion || 'Review Microsoft Graph API filter limitations',
+            timestamp: new Date().toISOString()
+          }
+        );
+        
+        // Log the warning
+        MonitoringService?.warn('Invalid Graph API filter expression', {
+          filter,
+          error: filterError.message,
+          suggestion: filterError.suggestion,
+          timestamp: new Date().toISOString()
+        }, 'calendar');
+        
+        // Instead of failing, we'll skip this filter condition
+        // This prevents the API call from failing with a 501 error
+        // The client will get results without this filter applied
+        EventService.emit('calendar:filter:skipped', {
+          filter,
+          reason: filterError.message,
+          timestamp: new Date().toISOString()
+        });
+      }
     }
     
     // Add combined filter to query params
     if (filterConditions.length > 0) {
-      queryParams.push(`$filter=${encodeURIComponent(filterConditions.join(' and '))}`);
+      const combinedFilter = filterConditions.join(' and ');
+      
+      // Log the final filter for debugging
+      MonitoringService?.debug('Final Graph API filter expression', {
+        combinedFilter,
+        originalFilters: {
+          date: effectiveStart || effectiveEnd ? true : false,
+          subject: !!subject,
+          organizer: !!organizer,
+          location: !!location,
+          attendee: !!attendee,
+          customFilter: !!filter
+        },
+        timestamp: new Date().toISOString()
+      }, 'calendar');
+      
+      queryParams.push(`$filter=${encodeURIComponent(combinedFilter)}`);
     }
     
     // Add select parameter
