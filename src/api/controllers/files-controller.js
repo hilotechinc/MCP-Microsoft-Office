@@ -1140,15 +1140,16 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
         monitoringService.info(`Processing ${req.method} ${req.path}`, {
             method: req.method,
             path: req.path,
-            fileId: req.query.id,
+            fileId: req.query.fileId || req.query.id,
             ip: req.ip,
             userId,
             deviceId
         }, 'files', null, userId, deviceId);
         
         try {
-            // Validate input
-            if (!req.query.id) {
+            // Validate input (accept both fileId and id for compatibility)
+            const fileId = req.query.fileId || req.query.id;
+            if (!fileId) {
                 // Create validation error with user context
                 const validationError = ErrorService.createError(
                     ErrorService.CATEGORIES.API,
@@ -1169,27 +1170,15 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                 return res.status(400).json({ error: 'File ID is required' });
             }
             
-            // Log the request (only in development)
-            if (process.env.NODE_ENV === 'development') {
-                monitoringService.debug('Files sharing links requested', { 
-                    fileId: req.query.id,
-                    timestamp: new Date().toISOString(),
-                    source: 'files-controller.getSharingLinks',
-                    requestId: req.id,
-                    userId,
-                    deviceId
-                }, 'files');
-            }
-            
             // Call the module method directly with req as separate parameter
-            const links = await filesModule.getSharingLinks(req.query.id, req);
+            const links = await filesModule.getSharingLinks(fileId, req);
             
             // Calculate execution time
             const executionTime = Date.now() - startTime;
             
             // Log success metrics with user context
             monitoringService.trackMetric('files_sharing_links_api_success', executionTime, {
-                fileId: req.query.id,
+                fileId: fileId,
                 linkCount: Array.isArray(links) ? links.length : 0,
                 timestamp: new Date().toISOString(),
                 userId,
@@ -1198,7 +1187,7 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
             
             // Log success with result summary and user context
             monitoringService.info('Files sharing links API completed successfully', {
-                fileId: req.query.id,
+                fileId: fileId,
                 linkCount: Array.isArray(links) ? links.length : 0,
                 executionTimeMs: executionTime,
                 timestamp: new Date().toISOString(),
@@ -1217,7 +1206,7 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                 `Files sharing links retrieval error: ${err.message}`, 
                 ErrorService.SEVERITIES.ERROR, 
                 { 
-                    fileId: req.query.id,
+                    fileId: req.query.fileId || req.query.id,
                     stack: err.stack,
                     timestamp: new Date().toISOString(),
                     userId,

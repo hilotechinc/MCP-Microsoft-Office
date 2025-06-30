@@ -431,10 +431,43 @@ async function getFileMetadata(id, req) {
  * @returns {Promise<object>} Normalized sharing link
  */
 async function createSharingLink(id, type = 'view', req) {
-  const client = await graphClientFactory.createClient(req);
-  const body = { type, scope: 'anonymous' };
-  const res = await client.api(`/me/drive/items/${id}/createLink`).post(body);
-  return res.link ? { webUrl: res.link.webUrl } : {};
+  try {
+    const client = await graphClientFactory.createClient(req);
+    
+    // Microsoft Graph API expects specific parameters for createLink
+    // Try organization scope first as anonymous might be blocked in demo tenants
+    const body = {
+      type: type === 'edit' ? 'edit' : 'view',
+      scope: 'organization'  // Changed from 'anonymous' to 'organization'
+    };
+    
+    MonitoringService.debug('Creating sharing link', {
+      fileId: id,
+      linkType: body.type,
+      scope: body.scope,
+      timestamp: new Date().toISOString()
+    }, 'graph');
+    
+    const res = await client.api(`/me/drive/items/${id}/createLink`).post(body);
+    
+    // Return normalized response
+    if (res && res.link && res.link.webUrl) {
+      return { 
+        webUrl: res.link.webUrl,
+        type: res.link.type || body.type,
+        scope: res.link.scope || body.scope
+      };
+    }
+    
+    return { error: 'No sharing link returned from API' };
+  } catch (error) {
+    MonitoringService.error('Failed to create sharing link', {
+      fileId: id,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    }, 'graph');
+    throw error;
+  }
 }
 
 /**
@@ -457,8 +490,45 @@ async function getSharingLinks(id, req) {
  * @returns {Promise<object>}
  */
 async function removeSharingPermission(fileId, permissionId, req) {
-  const client = await graphClientFactory.createClient(req);
-  return await client.api(`/me/drive/items/${fileId}/permissions/${permissionId}`).delete();
+  try {
+    // Validate input parameters
+    if (!fileId) {
+      throw new Error('File ID is required');
+    }
+    if (!permissionId) {
+      throw new Error('Permission ID is required');
+    }
+    
+    const client = await graphClientFactory.createClient(req);
+    
+    MonitoringService.debug('Removing sharing permission', {
+      fileId,
+      permissionId,
+      timestamp: new Date().toISOString()
+    }, 'graph');
+    
+    // Delete the permission
+    const result = await client.api(`/me/drive/items/${fileId}/permissions/${permissionId}`).delete();
+    
+    MonitoringService.info('Sharing permission removed successfully', {
+      fileId,
+      permissionId,
+      timestamp: new Date().toISOString()
+    }, 'graph');
+    
+    return { success: true, fileId, permissionId };
+  } catch (error) {
+    MonitoringService.error('Failed to remove sharing permission', {
+      fileId,
+      permissionId,
+      error: error.message,
+      statusCode: error.statusCode,
+      timestamp: new Date().toISOString()
+    }, 'graph');
+    
+    // Re-throw with more context
+    throw new Error(`Failed to remove sharing permission: ${error.message}`);
+  }
 }
 
 /**
@@ -614,8 +684,24 @@ async function updateFileContent(id, content, req, options = {}) {
     
     const client = await graphClientFactory.createClient(req);
     
-    // Use PUT for file content updates as per Graph API documentation
-    const result = await client.api(`/me/drive/items/${id}/content`).put(content);
+    // Ensure content is properly formatted for Graph API
+    let formattedContent = content;
+    if (typeof content === 'string') {
+      formattedContent = Buffer.from(content, 'utf8');
+    } else if (!Buffer.isBuffer(content)) {
+      formattedContent = Buffer.from(String(content), 'utf8');
+    }
+    
+    // First get the file metadata to get the file name/path
+    const fileMetadata = await client.api(`/me/drive/items/${id}`).get();
+    
+    if (!fileMetadata || !fileMetadata.name) {
+      throw new Error('Could not retrieve file metadata for content update');
+    }
+    
+    // Use the same approach as uploadFile - path-based API which works better
+    const result = await client.api(`/me/drive/root:/${encodeURIComponent(fileMetadata.name)}:/content`)
+      .put(formattedContent);
     
     // Track success metrics
     const executionTime = Date.now() - startTime;
@@ -650,9 +736,16 @@ async function updateFileContent(id, content, req, options = {}) {
   }
 }
 
-// Export only the three essential file tools as per consolidation requirements
+// Export all file service methods
 module.exports = {
-  downloadFile,   // Handles both file content download and metadata retrieval with options.metadataOnly
-  uploadFile,     // Handles file uploads
-  updateFileContent // Handles both update and set operations with options.setContent
+  listFiles,              // List files and folders in a directory
+  searchFiles,            // Search files by name
+  downloadFile,           // Handles both file content download and metadata retrieval with options.metadataOnly
+  uploadFile,             // Handles file uploads
+  getFileMetadata,        // Get file metadata by ID
+  getFileContent,         // Get file content by ID
+  updateFileContent,      // Handles both update and set operations with options.setContent
+  createSharingLink,      // Create sharing links for files
+  getSharingLinks,        // Get sharing links for files
+  removeSharingPermission // Remove sharing permissions from files
 };

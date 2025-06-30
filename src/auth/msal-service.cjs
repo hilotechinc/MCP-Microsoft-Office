@@ -410,6 +410,17 @@ async function getAccessToken(req) {
             console.log('[MSAL] Getting token for query user:', userId);
         }
         
+        if (process.env.NODE_ENV === 'development') {
+            console.log(`[MSAL] Request details:`, {
+                hasReq: !!req,
+                hasUser: !!req?.user,
+                userObj: req?.user,
+                hasSession: !!req?.session,
+                sessionId: req?.session?.id,
+                extractedUserId: userId
+            });
+        }
+        
         if (!userId) {
             throw new Error('No user ID available for token retrieval');
         }

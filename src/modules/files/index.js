@@ -7,20 +7,28 @@ const { normalizeFile } = require('../../graph/normalizers.cjs');
 const ErrorService = require('../../core/error-service.cjs');
 const MonitoringService = require('../../core/monitoring-service.cjs');
 
-// Log module initialization
-MonitoringService.info('Files Module initialized', {
-    serviceName: 'files-module',
-    capabilities: 13, // FILES_CAPABILITIES.length will be 13
-    timestamp: new Date().toISOString()
-}, 'files');
-
 // Define the capabilities supported by this module
 // This array is used by the module registry to find appropriate modules for different intents
 const FILES_CAPABILITIES = [
-    'downloadFile',     // Download file content or get metadata with options.metadataOnly
-    'updateFileContent', // Update or set file content with options.setContent
-    'uploadFile'        // Upload new files
+    'listFiles',            // List files and folders in a directory
+    'searchFiles',          // Search files by name or content
+    'downloadFile',         // Download file content or get metadata with options.metadataOnly
+    'uploadFile',           // Upload new files
+    'getFileMetadata',      // Get file metadata by ID
+    'getFileContent',       // Get file content by ID
+    'setFileContent',       // Set file content (mapped to updateFileContent with setContent: true)
+    'updateFileContent',    // Update or set file content with options.setContent
+    'createSharingLink',    // Create sharing links for files
+    'getSharingLinks',      // Get existing sharing links for files
+    'removeSharingPermission' // Remove sharing permissions from files
 ];
+
+// Log module initialization
+MonitoringService.info('Files Module initialized', {
+    serviceName: 'files-module',
+    capabilities: FILES_CAPABILITIES.length, // Dynamic count of capabilities
+    timestamp: new Date().toISOString()
+}, 'files');
 
 // Create a consolidated FilesModule with only the essential file tools
 const FilesModule = {
@@ -1119,6 +1127,16 @@ const FilesModule = {
         }
     },
     
+    /**
+     * Sets file content (wrapper around updateFileContent with setContent option).
+     * @param {string} id - File ID
+     * @param {string|Buffer} content - File content
+     * @param {object} req - Express request object
+     * @returns {Promise<object>} Updated file metadata
+     */
+    async setFileContent(id, content, req) {
+        return await this.updateFileContent(id, content, { setContent: true }, req);
+    },
 
 /**
  * Handles file-related intents routed to this module.
@@ -1275,6 +1293,78 @@ async handleIntent(intent, entities = {}, context = {}) {
                 
                 const updateResult = await this.updateFileContent(fileId, content, { setContent: true }, context.req);
                 result = { type: 'setFileContentResult', file: normalizeFile(updateResult) };
+                break;
+            }
+            
+            case 'listFiles': {
+                // Handle file listing requests
+                const { parentId } = entities;
+                
+                monitoringService?.debug('Handling listFiles intent', {
+                    parentId: parentId || 'root',
+                    timestamp: new Date().toISOString()
+                }, 'files');
+                
+                const files = await this.listFiles(parentId, context.req);
+                result = { type: 'fileList', files: files.map(normalizeFile) };
+                break;
+            }
+            
+            case 'searchFiles': {
+                // Handle file search requests
+                const { query } = entities;
+                
+                monitoringService?.debug('Handling searchFiles intent', {
+                    query,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+                
+                const files = await this.searchFiles(query, context.req);
+                result = { type: 'searchResults', query, files: files.map(normalizeFile) };
+                break;
+            }
+            
+            case 'createSharingLink': {
+                // Handle sharing link creation requests
+                const { fileId, type = 'view' } = entities;
+                
+                monitoringService?.debug('Handling createSharingLink intent', {
+                    fileId,
+                    linkType: type,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+                
+                const sharingLink = await this.createSharingLink(fileId, type, context.req);
+                result = { type: 'sharingLink', fileId, sharingLink };
+                break;
+            }
+            
+            case 'getSharingLinks': {
+                // Handle get sharing links requests
+                const { fileId } = entities;
+                
+                monitoringService?.debug('Handling getSharingLinks intent', {
+                    fileId,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+                
+                const sharingLinks = await this.getSharingLinks(fileId, context.req);
+                result = { type: 'sharingLinks', fileId, sharingLinks };
+                break;
+            }
+            
+            case 'removeSharingPermission': {
+                // Handle remove sharing permission requests
+                const { fileId, permissionId } = entities;
+                
+                monitoringService?.debug('Handling removeSharingPermission intent', {
+                    fileId,
+                    permissionId,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+                
+                const removeResult = await this.removeSharingPermission(fileId, permissionId, context.req);
+                result = { type: 'permissionRemoved', fileId, permissionId, result: removeResult };
                 break;
             }
             default: {

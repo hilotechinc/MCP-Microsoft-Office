@@ -34,27 +34,74 @@ async function createClient(req) {
     
     try {
         // Determine the type of request
-        const isApiCall = req && (req.isApiCall || req.path?.startsWith('/v1/') || req.headers?.['x-mcp-internal-call'] === 'true');
+        const isApiCall = req && (
+            req.isApiCall || 
+            req.path?.startsWith('/v1/') || 
+            req.headers?.['x-mcp-internal-call'] === 'true' ||
+            (req.user && req.user.deviceId && req.user.deviceId.startsWith('mcp-token-'))
+        );
+        
+        // Debug logging for setFileContent issue
+        if (req && req.path === '/content') {
+            console.log('[GRAPH CLIENT] setFileContent request details:', {
+                path: req.path,
+                originalUrl: req.originalUrl,
+                mcpHeader: req.headers?.['x-mcp-internal-call'],
+                isApiCall,
+                hasUser: !!req.user,
+                userDeviceId: req.user?.deviceId
+            });
+        }
         
         if (process.env.NODE_ENV === 'development') {
             MonitoringService?.debug('Graph client creation type determined', {
                 isApiCall,
                 requestType: isApiCall ? 'API call' : 'regular request',
+                hasRequest: !!req,
+                requestPath: req?.path,
+                hasHeaders: !!req?.headers,
+                mcpHeader: req?.headers?.['x-mcp-internal-call'],
+                allHeaders: req?.headers ? Object.keys(req.headers) : [],
                 timestamp: new Date().toISOString()
             }, 'graph');
         }
         
         let token;
         
+        // Debug the exact flow
+        console.log('[GRAPH CLIENT] Token retrieval flow:', {
+            isApiCall,
+            willUseMostRecentToken: isApiCall,
+            willUseGetAccessToken: !isApiCall,
+            requestPath: req?.path,
+            mcpHeader: req?.headers?.['x-mcp-internal-call'],
+            userDeviceId: req?.user?.deviceId
+        });
+        
         // For API calls (including internal MCP calls), use the stored token
         if (isApiCall) {
+            console.log('[GRAPH CLIENT] Taking API call branch - using getMostRecentToken');
+            
+            // Extract user ID from request for MCP calls
+            let userId = null;
+            if (req?.user?.deviceId && req.user.deviceId.startsWith('mcp-token-')) {
+                userId = req.user.deviceId;
+            } else if (req?.user?.userId) {
+                userId = req.user.userId;
+            }
+            
+            console.log('[GRAPH CLIENT] Extracted userId:', userId);
+            
             if (process.env.NODE_ENV === 'development') {
                 MonitoringService?.debug('Getting stored token for API call', {
+                    userId,
                     timestamp: new Date().toISOString()
                 }, 'graph');
             }
-            token = await msalService.getMostRecentToken();
+            token = await msalService.getMostRecentToken(userId);
         } else {
+            console.log('[GRAPH CLIENT] Taking regular request branch - using getAccessToken');
+            
             // Normal flow - get token from session
             if (process.env.NODE_ENV === 'development') {
                 MonitoringService?.debug('Getting token from session', {

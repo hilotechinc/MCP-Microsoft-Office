@@ -937,7 +937,7 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 toolDef.endpoint = '/api/v1/files/content';
                 toolDef.method = 'POST';
                 toolDef.parameters = {
-                    id: { 
+                    fileId: { 
                         type: 'string', 
                         description: 'ID of the file to set content for',
                         required: true
@@ -954,7 +954,7 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 toolDef.endpoint = '/api/v1/files/content/update';
                 toolDef.method = 'POST';
                 toolDef.parameters = {
-                    id: { 
+                    fileId: { 
                         type: 'string', 
                         description: 'ID of the file to update content for',
                         required: true
@@ -986,7 +986,7 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 toolDef.endpoint = '/api/v1/files/share';
                 toolDef.method = 'POST';
                 toolDef.parameters = {
-                    id: { 
+                    fileId: { 
                         type: 'string', 
                         description: 'ID of the file to create a sharing link for',
                         required: true
@@ -1004,14 +1004,14 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 toolDef.endpoint = '/api/v1/files/sharing';
                 toolDef.method = 'GET';
                 toolDef.parameters = {
-                    id: { 
+                    fileId: { 
                         type: 'string', 
                         description: 'ID of the file to get sharing links for',
                         required: true
                     }
                 };
                 toolDef.parameterMapping = {
-                    id: { inQuery: true }
+                    fileId: { inQuery: true }
                 };
                 break;
             case 'removeSharingPermission':

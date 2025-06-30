@@ -115,14 +115,14 @@ const stubModuleRegistry = {
     getAllModules: () => [
         { id: 'mail', name: 'mail', capabilities: ['getInbox', 'sendEmail', 'searchEmails', 'flagEmail', 'getEmailDetails', 'markAsRead', 'readMailDetails', 'getMailAttachments', 'markEmailRead', 'addMailAttachment', 'removeMailAttachment'] },
         { id: 'calendar', name: 'calendar', capabilities: ['getEvents', 'create', 'update', 'getAvailability', 'findMeetingTimes', 'cancelEvent', 'acceptEvent', 'tentativelyAcceptEvent', 'declineEvent', 'addAttachment', 'removeAttachment'] },
-        { id: 'files', name: 'files', capabilities: ['listFiles', 'uploadFile', 'downloadFile', 'getFileMetadata'] },
+        { id: 'files', name: 'files', capabilities: ['listFiles', 'searchFiles', 'downloadFile', 'uploadFile', 'getFileMetadata', 'getFileContent', 'setFileContent', 'updateFileContent', 'createSharingLink', 'getSharingLinks', 'removeSharingPermission'] },
         { id: 'people', name: 'people', capabilities: ['find', 'search', 'getRelevantPeople', 'getPersonById'] }
     ],
     getModule: (moduleName) => {
         const modules = {
             'mail': { id: 'mail', capabilities: ['getInbox', 'sendEmail', 'searchEmails', 'flagEmail', 'getEmailDetails', 'markAsRead', 'readMailDetails', 'getMailAttachments', 'markEmailRead', 'addMailAttachment', 'removeMailAttachment'] },
             'calendar': { id: 'calendar', capabilities: ['getEvents', 'create', 'update', 'getAvailability', 'findMeetingTimes', 'cancelEvent', 'acceptEvent', 'tentativelyAcceptEvent', 'declineEvent', 'addAttachment', 'removeAttachment'] },
-            'files': { id: 'files', capabilities: ['listFiles', 'uploadFile', 'downloadFile', 'getFileMetadata'] },
+            'files': { id: 'files', capabilities: ['listFiles', 'searchFiles', 'downloadFile', 'uploadFile', 'getFileMetadata', 'getFileContent', 'setFileContent', 'updateFileContent', 'createSharingLink', 'getSharingLinks', 'removeSharingPermission'] },
             'people': { id: 'people', capabilities: ['find', 'search', 'getRelevantPeople', 'getPersonById'] }
         };
         return modules[moduleName] || null;
