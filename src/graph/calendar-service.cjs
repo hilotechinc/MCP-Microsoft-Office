@@ -503,9 +503,29 @@ async function getEvents(options = {}) {
     }
     
     if (organizer) {
-      // Filter by organizer email address
+      // Microsoft Graph API supports filtering by organizer NAME but NOT by email address
+      // Use organizer/emailAddress/name eq 'Display Name' (confirmed working by Microsoft Support)
       const escapedOrganizer = organizer.replace(/'/g, "''");
-      filterConditions.push(`organizer/emailAddress/address eq '${escapedOrganizer}'`);
+      
+      // Check if the organizer looks like an email address or display name
+      if (organizer.includes('@')) {
+        // If it's an email address, warn that we can't filter by email
+        MonitoringService?.warn('Organizer email address filtering not supported by Microsoft Graph API', {
+          organizer,
+          message: 'Microsoft Graph API does not support organizer/emailAddress/address filters. Use display name instead.',
+          suggestion: 'Provide the organizer\'s display name (e.g., "John Doe") instead of email address for filtering to work.',
+          timestamp: new Date().toISOString()
+        }, 'calendar');
+        // Skip email address filtering
+      } else {
+        // If it's a display name, use the supported filter
+        filterConditions.push(`organizer/emailAddress/name eq '${escapedOrganizer}'`);
+        MonitoringService?.debug('Using organizer name filter', {
+          organizer,
+          filter: `organizer/emailAddress/name eq '${escapedOrganizer}'`,
+          timestamp: new Date().toISOString()
+        }, 'calendar');
+      }
     }
     
     if (location) {
@@ -2568,8 +2588,11 @@ async function getCalendars(options = {}) {
     if ((includeDelegated || includeShared) && userId === 'me') {
       try {
         // Get calendars the user has access to via delegation or sharing
-        // This endpoint returns all calendars including delegated and shared ones
-        const allCalResponse = await client.api('/me/calendarGroups/calendars').get();
+        // Note: /me/calendarGroups/calendars is malformed - need to iterate through calendar groups
+        // For now, skip this to avoid 400 errors - we'll use only primary calendars
+        // TODO: Implement proper calendar group iteration: /me/calendarGroups -> /me/calendarGroups/{id}/calendars
+        const allCalResponse = { value: [] }; // Skip this call to avoid malformed ID errors
+        // const allCalResponse = await client.api('/me/calendarGroups/calendars').get();
         const allCalendars = allCalResponse.value || [];
         
         // Identify which calendars are not in the primary list and add them

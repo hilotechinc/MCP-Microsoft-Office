@@ -16,9 +16,10 @@ const MonitoringService = require('../core/monitoring-service.cjs');
  */
 const UNSUPPORTED_FILTERS = [
   {
-    pattern: /organizer\/emailAddress\/address\s+ne\s+/i,
-    message: "Filter 'ne' operator not supported on organizer/emailAddress/address",
-    suggestion: "Try using a different property or filter client-side"
+    // Microsoft Graph API does NOT support organizer email ADDRESS filtering
+    pattern: /organizer\/emailAddress\/address/i,
+    message: "Microsoft Graph API does not support organizer/emailAddress/address filters (always returns HTTP 501)",
+    suggestion: "Use organizer/emailAddress/name eq 'Display Name' instead, or filter client-side after retrieving events"
   },
   {
     pattern: /attendees\/emailAddress\/address\s+ne\s+/i,
@@ -51,7 +52,8 @@ const PROPERTY_FILTER_SUPPORT = {
   'start/dateTime': ['eq', 'ne', 'gt', 'ge', 'lt', 'le'],
   'end/dateTime': ['eq', 'ne', 'gt', 'ge', 'lt', 'le'],
   'location/displayName': ['eq', 'contains'],
-  'organizer/emailAddress/address': ['eq'], // Note: 'ne' is NOT supported
+  'organizer/emailAddress/name': ['eq'], // Supported - filter by organizer display name
+  // 'organizer/emailAddress/address': [], // NOT SUPPORTED - Microsoft Graph always returns HTTP 501
   'attendees/emailAddress/address': ['eq'] // Note: 'ne' is NOT supported
 };
 

@@ -322,7 +322,7 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
             // Calendar tools
             case 'getEvents':
             case 'getCalendar':
-                toolDef.description = 'Fetch calendar events from Microsoft 365 with advanced filtering capabilities. Note: Calendar events use $filter instead of $search for text queries.';
+                toolDef.description = 'Fetch calendar events from Microsoft 365. IMPORTANT: Microsoft Graph has strict filter limitations - organizer email filtering often fails with HTTP 501 errors. Use convenience parameters (subject, organizer, attendee) instead of complex $filter expressions.';
                 toolDef.endpoint = '/api/v1/calendar';
                 toolDef.parameters = {
                     // Date range parameters
@@ -357,7 +357,7 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                     // Microsoft Graph query parameters
                     filter: { 
                         type: 'string', 
-                        description: 'OData $filter query to filter events (e.g., "startsWith(subject,\'Meeting\')" or "organizer/emailAddress/address eq \'user@domain.com\'")', 
+                        description: 'OData $filter query - WARNING: Microsoft Graph has severe limitations. Many expressions cause HTTP 501 errors. AVOID organizer/emailAddress filters. Use simple expressions only like "contains(subject,\'text\')" or "start/dateTime ge \'2025-01-01T00:00:00Z\'"', 
                         optional: true
                     },
                     select: { 
@@ -377,25 +377,25 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                         optional: true
                     },
                     
-                    // Convenience filters (converted to $filter queries)
+                    // Convenience filters (converted to $filter queries) - RECOMMENDED APPROACH
                     subject: { 
                         type: 'string', 
-                        description: 'Filter events by subject containing this text (converted to contains() filter)', 
+                        description: 'Filter events by subject containing this text (SAFE - uses contains() filter)', 
                         optional: true
                     },
                     organizer: { 
                         type: 'string', 
-                        description: 'Filter events by organizer email address (converted to eq filter)', 
+                        description: 'Filter events by organizer display name (e.g., "John Doe"). NOTE: Email addresses are NOT supported - use the person\'s display name instead. Microsoft Graph API supports organizer/emailAddress/name but not organizer/emailAddress/address filtering.', 
                         optional: true
                     },
                     attendee: { 
                         type: 'string', 
-                        description: 'Filter events where this email address is an attendee (converted to any() filter)', 
+                        description: 'Filter events where this email address is an attendee (RISKY - uses lambda expressions that may fail)', 
                         optional: true
                     },
                     location: { 
                         type: 'string', 
-                        description: 'Filter events by location containing this text (converted to contains() filter)', 
+                        description: 'Filter events by location containing this text (SAFE - uses contains() filter)', 
                         optional: true
                     },
                     
