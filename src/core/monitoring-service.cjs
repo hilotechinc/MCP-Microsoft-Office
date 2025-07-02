@@ -23,6 +23,41 @@ function getStorageService() {
   return storageService;
 }
 
+/**
+ * Determines if a log message is infrastructure-related and should not be shown to users
+ * @param {string} message - The log message
+ * @param {string} category - The log category
+ * @returns {boolean} True if this is an infrastructure log
+ */
+function isInfrastructureLog(message, category) {
+  // In development mode, show all logs for debugging purposes
+  if (process.env.NODE_ENV === 'development') {
+    return false;
+  }
+  
+  // Infrastructure log patterns to exclude from user logs in production
+  const infrastructurePatterns = [
+    /^Request entered (routes|controller)$/,
+    /^Request exiting (routes|controller) - \d+$/,
+    /^Processing (GET|POST|PUT|DELETE|PATCH) /,
+    /^Fetching status/,
+    /^Connection status updated/,
+    /^Started (periodic status refresh|log auto-refresh)/,
+    /^Authentication status/,
+    /^User (not )?authenticated/,
+    /^Session-based authentication/,
+    /^Microsoft 365 session authentication/,
+    /^API call authenticated/,
+    /^JWT token validated/,
+    /^Database connection acquired/,
+    /^Started log auto-refresh/,
+    /^Fetching logs/
+  ];
+  
+  // Check if message matches any infrastructure pattern
+  return infrastructurePatterns.some(pattern => pattern.test(message));
+}
+
 // Import event service for event-based architecture (lazy loaded to avoid circular dependency)
 let eventService = null;
 
@@ -694,8 +729,8 @@ async function info(message, context = {}, category = 'general', traceId = null,
             deviceId: logData.deviceId
         });
         
-        // Persist user-specific logs if userId is provided
-        if (userId) {
+        // Persist user-specific logs if userId is provided (but skip infrastructure logs)
+        if (userId && !isInfrastructureLog(message, category)) {
             console.log(`[DEBUG] Attempting to persist user log for userId: ${userId}, message: ${message}, category: ${category}`);
             try {
                 const storage = getStorageService();
@@ -754,8 +789,8 @@ async function warn(message, context = {}, category = 'general', traceId = null,
             deviceId: logData.deviceId
         });
         
-        // Persist user-specific logs if userId is provided
-        if (userId) {
+        // Persist user-specific logs if userId is provided (but skip infrastructure logs)
+        if (userId && !isInfrastructureLog(message, category)) {
             try {
                 const storage = getStorageService();
                 if (storage) {
@@ -809,8 +844,8 @@ async function debug(message, context = {}, category = 'general', traceId = null
             deviceId: logData.deviceId
         });
         
-        // Persist user-specific logs if userId is provided
-        if (userId) {
+        // Persist user-specific logs if userId is provided (but skip infrastructure logs)
+        if (userId && !isInfrastructureLog(message, category)) {
             try {
                 const storage = getStorageService();
                 if (storage) {

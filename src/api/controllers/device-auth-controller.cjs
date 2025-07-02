@@ -149,14 +149,15 @@ async function authorizeDevice(req, res) {
         let userId = value.user_id;
         if (userId === 'current_session') {
             // Check if user is authenticated in current session
-            if (!req.session?.msUser) {
+            if (!req.session?.msUser?.username) {
                 return res.status(401).json({
                     error: 'unauthorized',
-                    error_description: 'User must be authenticated to authorize device'
+                    error_description: 'Microsoft 365 authentication required to authorize device'
                 });
             }
-            // Use session ID as user identifier for session-based auth
-            userId = req.session.id;
+            // CRITICAL FIX: Use Microsoft 365 email as consistent user identifier
+            // This ensures JWT tokens will carry the same user ID as web sessions
+            userId = `ms365:${req.session.msUser.username}`;
         }
 
         // Find device by user code
@@ -445,13 +446,23 @@ async function generateMcpToken(req, res) {
         // Generate a pseudo-device ID for this MCP token
         const deviceId = `mcp-token-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         
+        // Ensure we're using Microsoft 365-based userId for consistency
+        // This should already be in ms365:email@domain.com format from auth middleware
+        if (!userId || !userId.startsWith('ms365:')) {
+            return res.status(400).json({
+                error: 'invalid_user_context',
+                error_description: 'User must be authenticated with Microsoft 365 to generate MCP token'
+            });
+        }
+        
         // Use DeviceJwtService to generate a long-lived token
         // CRITICAL: Use Microsoft 365-based userId to ensure consistency across sessions and API calls
         const tokenPayload = {
             sessionId: sessionId || 'direct-generation',
             microsoftEmail: microsoftEmail,
             microsoftName: microsoftName,
-            originalUserId: userId  // Store original for debugging
+            originalUserId: userId,  // Store original for debugging
+            tokenType: 'mcp-bearer'
         };
 
         const mcpToken = DeviceJwtService.generateLongLivedAccessToken(deviceId, userId, tokenPayload);

@@ -565,8 +565,10 @@ async function getUserLogs(userId, options = {}) {
     // Create the final WHERE clause
     const whereClause = whereConditions.join(' AND ');
     
-    // Create the query with pagination
-    const query = `SELECT * FROM user_logs WHERE ${whereClause} 
+    // Create the query with pagination - format timestamp as proper ISO string
+    const query = `SELECT id, user_id, message, category, level, 
+                   REPLACE(timestamp, ' ', 'T') || 'Z' as timestamp
+                   FROM user_logs WHERE ${whereClause} 
                   ORDER BY timestamp DESC LIMIT ? OFFSET ?`;
     params.push(limit, offset);
     

@@ -87,14 +87,44 @@ const msalConfig = {
     },
     system: { 
         loggerOptions: { 
-            loggerCallback(level, message) { 
-                const mcpError = ErrorService.createError(
-                    ErrorService.CATEGORIES.AUTH,
-                    `MSAL library message: ${message}`,
-                    level === 'Error' ? ErrorService.SEVERITIES.ERROR : ErrorService.SEVERITIES.WARNING,
-                    { level, timestamp: new Date().toISOString() }
-                );
-                MonitoringService.logError(mcpError);
+            loggerCallback(level, message) {
+                // Map MSAL log levels to appropriate MCP severities
+                let severity;
+                let logMethod;
+                
+                switch (level) {
+                    case 'Error':
+                        severity = ErrorService.SEVERITIES.ERROR;
+                        logMethod = 'logError';
+                        break;
+                    case 'Warning':
+                        severity = ErrorService.SEVERITIES.WARNING;
+                        logMethod = 'warn';
+                        break;
+                    case 'Info':
+                    default:
+                        severity = ErrorService.SEVERITIES.INFO;
+                        logMethod = 'info';
+                        break;
+                }
+                
+                if (logMethod === 'logError') {
+                    // For errors, create an error object and use logError
+                    const mcpError = ErrorService.createError(
+                        ErrorService.CATEGORIES.AUTH,
+                        `MSAL library message: ${message}`,
+                        severity,
+                        { level, timestamp: new Date().toISOString() }
+                    );
+                    MonitoringService.logError(mcpError);
+                } else {
+                    // For info and warnings, use direct logging methods
+                    MonitoringService[logMethod](
+                        `MSAL library message: ${message}`,
+                        { level, timestamp: new Date().toISOString() },
+                        'auth'
+                    );
+                }
             } 
         } 
     }

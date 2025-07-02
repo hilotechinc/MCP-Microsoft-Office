@@ -1076,9 +1076,32 @@ export class AppController {
             let timestamp;
             let isoTimestamp;
             try {
-                const date = new Date(log.timestamp);
+                // Parse the timestamp correctly - handle both ISO strings and database timestamps
+                let date;
+                if (typeof log.timestamp === 'string' && log.timestamp.includes('T')) {
+                    // ISO format: 2025-07-02T18:35:12.000Z (already UTC, parse normally)
+                    date = new Date(log.timestamp);
+                } else if (typeof log.timestamp === 'string') {
+                    // Database format: 2025-07-02 18:35:12 (stored as UTC, needs timezone handling)
+                    // Append 'Z' to indicate UTC, then let browser convert to local time
+                    const utcString = log.timestamp.replace(' ', 'T') + 'Z';
+                    date = new Date(utcString);
+                } else {
+                    // Numeric timestamp
+                    date = new Date(log.timestamp);
+                }
+                
                 if (!isNaN(date.getTime())) {
-                    timestamp = date.toLocaleString();
+                    // Format as local time without timezone conversion issues
+                    timestamp = date.toLocaleString('en-GB', { 
+                        day: '2-digit', 
+                        month: '2-digit', 
+                        year: 'numeric',
+                        hour: '2-digit', 
+                        minute: '2-digit', 
+                        second: '2-digit',
+                        hour12: false
+                    });
                     isoTimestamp = date.toISOString();
                 } else {
                     timestamp = new Date().toLocaleString();

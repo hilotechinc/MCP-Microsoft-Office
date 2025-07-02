@@ -32,19 +32,23 @@ async function requireAuth(req, res, next) {
                 if (isAuthenticated) {
                     // MICROSOFT 365-CENTRIC AUTH: Use Microsoft 365 email as consistent user ID
                     const msUser = req.session.msUser;
-                    const microsoftUserId = msUser?.username || `session:${req.session.id}`;
+                    
+                    if (!msUser?.username) {
+                        throw new Error('Microsoft 365 user information missing from session');
+                    }
                     
                     req.user = {
-                        userId: `ms365:${microsoftUserId}`,
+                        userId: `ms365:${msUser.username}`,
                         sessionId: req.session.id,
-                        microsoftEmail: msUser?.username,
-                        microsoftName: msUser?.name,
-                        homeAccountId: msUser?.homeAccountId
+                        microsoftEmail: msUser.username,
+                        microsoftName: msUser.name,
+                        homeAccountId: msUser.homeAccountId
                     };
                     
                     MonitoringService.debug('Microsoft 365 session authentication successful', {
                         sessionId: req.session.id,
-                        microsoftEmail: microsoftUserId,
+                        microsoftEmail: msUser.username,
+                        userId: `ms365:${msUser.username}`,
                         path: req.path,
                         timestamp: new Date().toISOString()
                     }, 'auth');
@@ -157,10 +161,20 @@ async function requireAuth(req, res, next) {
             const isAuthenticated = await msalService.isAuthenticated(req);
             
             if (isAuthenticated) {
-                // Set user context for controllers
+                // MICROSOFT 365-CENTRIC AUTH: Use Microsoft 365 email as consistent user ID
+                const msUser = req.session.msUser;
+                
+                if (!msUser?.username) {
+                    throw new Error('Microsoft 365 user information missing from session');
+                }
+                
+                // Set user context for controllers with Microsoft 365 identity
                 req.user = {
-                    userId: `user:${req.session.id}`,
-                    sessionId: req.session.id
+                    userId: `ms365:${msUser.username}`,
+                    sessionId: req.session.id,
+                    microsoftEmail: msUser.username,
+                    microsoftName: msUser.name,
+                    homeAccountId: msUser.homeAccountId
                 };
                 
                 MonitoringService.debug('Session-based authentication successful', {

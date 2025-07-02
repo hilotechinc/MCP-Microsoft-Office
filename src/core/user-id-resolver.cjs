@@ -20,18 +20,33 @@ function resolveUserId(req) {
         return `ms365:${req.user.microsoftEmail}`;
     }
     
-    // Priority 3: Existing userId from req.user (if already set correctly)
+    // Priority 3: Existing userId from req.user (if already set correctly with ms365 prefix)
     if (req.user?.userId?.startsWith('ms365:')) {
         return req.user.userId;
     }
     
-    // Priority 4: Session-based fallback (less secure)
+    // Priority 4: Try to extract Microsoft 365 identity from any available source
+    // Check if auth middleware has already set a proper user context
+    if (req.user?.userId && req.user.microsoftEmail) {
+        // Trust the auth middleware's determination
+        return req.user.userId;
+    }
+    
+    // Priority 5: Session-based fallback (less secure, avoid if possible)
+    if (req.session?.id && req.session.msUser?.username) {
+        // Even in fallback, prefer Microsoft 365 identity if available
+        return `ms365:${req.session.msUser.username}`;
+    }
+    
+    // Priority 6: Last resort - session ID (should be avoided)
     if (req.session?.id) {
+        console.warn('[USER-ID-RESOLVER] Falling back to session ID - Microsoft 365 auth missing');
         return `session:${req.session.id}`;
     }
     
-    // Priority 5: Existing userId from req.user (legacy format)
+    // Priority 7: Legacy userId from req.user (should not happen with proper auth)
     if (req.user?.userId) {
+        console.warn('[USER-ID-RESOLVER] Using legacy userId format:', req.user.userId);
         return req.user.userId;
     }
     
