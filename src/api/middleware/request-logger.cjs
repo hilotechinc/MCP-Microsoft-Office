@@ -17,6 +17,17 @@ const { v4: uuidv4 } = require('uuid');
  */
 function createRequestLogger(component) {
     return (req, res, next) => {
+        // Skip all request logging in production mode
+        if (process.env.NODE_ENV === 'production') {
+            return next();
+        }
+        
+        // Skip logging for the logs endpoint to prevent feedback loops
+        const path = req.originalUrl || req.url;
+        if (path.includes('/api/v1/logs')) {
+            return next();
+        }
+        
         // Generate or use existing request ID for tracking the request through the system
         if (!req.requestId) {
             req.requestId = uuidv4();

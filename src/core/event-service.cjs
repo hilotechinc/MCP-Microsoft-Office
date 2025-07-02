@@ -8,8 +8,10 @@ const ErrorService = require('./error-service.cjs');
 // Use lazy loading for MonitoringService to avoid circular dependency
 let MonitoringService = null;
 
-// Initialize service with basic console logging first
-console.log('[MCP EVENTS] Event service initialized');
+// Initialize service with basic console logging first (only in non-silent mode)
+if (process.env.MCP_SILENT_MODE !== 'true') {
+    console.log('[MCP EVENTS] Event service initialized');
+}
 
 class EventService {
     constructor() {

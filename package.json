@@ -7,7 +7,7 @@
     "scripts": {
         "dev:web": "node dev-server.cjs",
         "dev:api": "node src/main/server.cjs",
-        "start": "electron .",
+        "start": "NODE_ENV=production MCP_SILENT_MODE=true node dev-server.cjs",
         "server": "node src/main/combined-server.cjs",
         "dev": "./start-mcp.sh",
         "dev:electron": "nodemon --exec electron . --watch src",

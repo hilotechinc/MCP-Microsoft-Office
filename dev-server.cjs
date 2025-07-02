@@ -84,13 +84,11 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 async function startDevServer() {
-  monitoringService.info('Starting MCP Desktop development server...', {}, 'dev-server');
+  // Starting development server
   
   // Initialize database factory and storage service first
   try {
-    monitoringService.info('Initializing database factory and storage service...', {}, 'dev-server');
     await initializeModules();
-    monitoringService.info('Database factory and storage service initialized successfully', {}, 'dev-server');
   } catch (error) {
     monitoringService.error('Failed to initialize database factory and storage service:', { 
       error: error.message, 
@@ -101,13 +99,10 @@ async function startDevServer() {
   
   // Create a single Express app for both frontend and API
   const app = express();
-  const PORT = 3000;
+  const HOST = process.env.HOST || 'localhost';
+  const PORT = process.env.PORT || 3000;
   
-  // Add request logging
-  app.use((req, res, next) => {
-    monitoringService.debug(`${req.method} ${req.path}`, { query: req.query }, 'dev-server');
-    next();
-  });
+  // Skip verbose request logging for cleaner output
   
   // Directly register API routes on the main app
   // This avoids proxy issues by using the same server for both frontend and API
@@ -136,7 +131,7 @@ async function startDevServer() {
     try {
       const msalService = require('./src/auth/msal-service.cjs');
       await msalService.login(req, res);
-      console.log('Login process initiated (GET)');
+      // Login initiated
     } catch (error) {
       console.error('Login failed:', error);
       res.status(500).json({ error: 'Login failed', message: error.message });
@@ -147,7 +142,7 @@ async function startDevServer() {
     try {
       const msalService = require('./src/auth/msal-service.cjs');
       await msalService.login(req, res);
-      console.log('Login process initiated (POST)');
+      // Login initiated
     } catch (error) {
       console.error('Login failed:', error);
       res.status(500).json({ error: 'Login failed', message: error.message });
@@ -158,7 +153,7 @@ async function startDevServer() {
     try {
       const msalService = require('./src/auth/msal-service.cjs');
       await msalService.logout(req, res);
-      console.log('User logged out successfully');
+      // User logged out
     } catch (error) {
       console.error('Logout failed:', error);
       res.status(500).json({ error: 'Logout failed', message: error.message });
@@ -170,7 +165,7 @@ async function startDevServer() {
     try {
       const msalService = require('./src/auth/msal-service.cjs');
       await msalService.handleAuthCallback(req, res);
-      console.log('OAuth callback processed successfully');
+      // OAuth callback processed
     } catch (error) {
       console.error('OAuth callback failed:', error);
       res.redirect('/?error=' + encodeURIComponent('Authentication failed: ' + error.message));
@@ -245,22 +240,14 @@ async function startDevServer() {
   });
   
   // Start the server
-  const server = app.listen(PORT, () => {
-    monitoringService.info(`MCP Desktop dev server running at http://localhost:${PORT}`, {}, 'dev-server');
-    
-    console.log(`
-🚀 MCP Desktop dev server running at http://localhost:${PORT}/
-📊 API and frontend served from the same origin
-🔍 Authentication and API routes configured
-📝 Logs written to ${monitoringService.LOG_FILE_PATH}
-    `);
+  const server = app.listen(PORT, HOST, () => {
+    console.log(`🚀 Server running at http://${HOST}:${PORT}`);
   });
   
   // Handle server shutdown gracefully
   process.on('SIGINT', () => {
-    monitoringService.info('Shutting down MCP Desktop dev server...', {}, 'dev-server');
+    console.log('Shutting down server...');
     server.close(() => {
-      monitoringService.info('MCP Desktop dev server stopped', {}, 'dev-server');
       process.exit(0);
     });
   });
@@ -269,10 +256,6 @@ async function startDevServer() {
 }
 
 startDevServer().catch(err => {
-  monitoringService.error(`Failed to start development server: ${err.message}`, { 
-    stack: err.stack 
-  }, 'dev-server');
-  
-  console.error('Failed to start development server:', err);
+  console.error('Failed to start server:', err.message);
   process.exit(1);
 });

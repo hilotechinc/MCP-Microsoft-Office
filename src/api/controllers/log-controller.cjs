@@ -243,8 +243,9 @@ function filterLogs(logs, filters) {
 async function clearLogEntries(req, res) {
     try {
         const { scope = 'user' } = req.query;
-        const isAuthenticated = req.user && req.user.userId;
-        const userId = isAuthenticated ? req.user.userId : null;
+        const { resolveUserId } = require('../../core/user-id-resolver.cjs');
+        const userId = resolveUserId(req);
+        const isAuthenticated = !!userId;
         
         // If user is authenticated and we're not explicitly clearing global logs,
         // clear only the user's logs

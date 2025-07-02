@@ -16,6 +16,7 @@ const ErrorService = require('../core/error-service.cjs');
 
 // Default config values
 const DEFAULTS = {
+  HOST: 'localhost',
   PORT: 3000,
   NODE_ENV: 'development',
   LOG_LEVEL: 'info',
@@ -51,6 +52,7 @@ const PRODUCTION_REQUIRED = [
 
 // Joi schema for config validation
 const configSchema = Joi.object({
+  HOST: Joi.string().default(DEFAULTS.HOST),
   PORT: Joi.number().integer().min(1).max(65535).default(DEFAULTS.PORT),
   NODE_ENV: Joi.string().valid('development', 'production', 'test').default(DEFAULTS.NODE_ENV),
   LOG_LEVEL: Joi.string().valid('info', 'warn', 'error', 'debug').default(DEFAULTS.LOG_LEVEL),

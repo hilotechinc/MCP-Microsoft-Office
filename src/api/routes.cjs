@@ -178,6 +178,8 @@ function registerRoutes(router) {
     }); // /v1/logs/calendar
     // TODO: Apply rate limiting
     logRouter.post('/clear', placeholderRateLimit, logController.clearLogEntries); // /v1/logs/clear
+    // RESTful DELETE endpoint for clearing logs
+    logRouter.delete('/', placeholderRateLimit, logController.clearLogEntries); // /v1/logs
     v1.use('/logs', logRouter); // Mounted at /v1/logs
 
     // --- Device Authentication Router --- (OAuth2 Device Flow)

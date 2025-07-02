@@ -213,13 +213,21 @@ function setupAPIHandlers() {
     });
     
     // Logs endpoint
-    ipcMain.handle('api:logs', async () => {
+    ipcMain.handle('api:logs', async (event, data) => {
         try {
-            const response = await axios.get(`${BASE_URL}/api/v1/logs`);
-            return response.data;
+            // Check if this is a clear action
+            if (data && data.action === 'clear') {
+                const response = await axios.delete(`${BASE_URL}/api/v1/logs`);
+                return response.data;
+            } else {
+                // Regular fetch logs
+                const response = await axios.get(`${BASE_URL}/api/v1/logs`, { params: data });
+                return response.data;
+            }
         } catch (error) {
             if (MonitoringService) {
-                MonitoringService.error('Failed to fetch logs', { error: error.message }, 'api');
+                const action = data && data.action === 'clear' ? 'clear logs' : 'fetch logs';
+                MonitoringService.error(`Failed to ${action}`, { error: error.message }, 'api');
             }
             return { error: error.message };
         }
