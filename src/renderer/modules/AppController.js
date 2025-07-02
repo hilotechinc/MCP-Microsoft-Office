@@ -1,8 +1,10 @@
 /**
- * @fileoverview Main App Controller for MCP renderer process
- * Orchestrates UI, API, and Connection management
+ * @fileoverview Main application controller for the MCP Desktop application
+ * Manages the application lifecycle, UI, and service interactions
  */
 
+import { UIManager } from './UIManager.js';
+import { IPCService } from '../services/IPCService.js';
 import { APIService } from './APIService.js';
 import { ConnectionManager } from './ConnectionManager.js';
 
@@ -24,6 +26,41 @@ export class AppController {
         // Log management
         this.currentLogFilter = 'all';
         this.logRefreshInterval = null;
+    }
+
+    /**
+     * Initialize the UI components
+     */
+    initUI() {
+        try {
+            // Add debug button for testing error reporting (only in dev mode)
+            if (process.env.NODE_ENV === 'development') {
+                const debugContainer = document.createElement('div');
+                debugContainer.style.position = 'fixed';
+                debugContainer.style.bottom = '10px';
+                debugContainer.style.right = '10px';
+                debugContainer.style.zIndex = '9999';
+                
+                const debugButton = document.createElement('button');
+                debugButton.textContent = 'Test Error';
+                debugButton.style.padding = '5px 10px';
+                debugButton.style.backgroundColor = '#ff5555';
+                debugButton.style.color = 'white';
+                debugButton.style.border = 'none';
+                debugButton.style.borderRadius = '4px';
+                debugButton.style.cursor = 'pointer';
+                
+                debugButton.addEventListener('click', async () => {
+                    console.log('[RENDERER DEBUG] Test error button clicked');
+                    await this.testTriggerError();
+                });
+                
+                debugContainer.appendChild(debugButton);
+                document.body.appendChild(debugContainer);
+            }
+        } catch (error) {
+            console.error('Failed to initialize UI:', error);
+        }
     }
 
     /**
@@ -51,6 +88,9 @@ export class AppController {
             
             // Setup connection listeners
             this.setupConnectionListeners();
+            
+            // Setup monitoring event listeners
+            this.setupMonitoringEventListeners();
             
             // Initial render
             await this.render();
@@ -153,6 +193,231 @@ export class AppController {
                     break;
             }
         });
+    }
+    
+    /**
+     * Test function to trigger an error for debugging
+     * @returns {Promise<boolean>} Success status
+     */
+    async testTriggerError() {
+        try {
+            console.log('[RENDERER DEBUG] Triggering test error');
+            
+            // Create a direct error for immediate testing
+            this.handleDirectError('Test error created from renderer', 'renderer-test');
+            
+            // Try to send via IPC as well if available
+            try {
+                const ipcService = new IPCService();
+                if (ipcService.isAvailable) {
+                    console.log('[RENDERER DEBUG] Sending test error via IPC');
+                    const success = ipcService.sendSync('test:trigger:error');
+                    console.log('[RENDERER DEBUG] Test error trigger sent:', success);
+                } else {
+                    console.warn('[RENDERER DEBUG] IPC not available for test');
+                }
+            } catch (ipcError) {
+                console.error('[RENDERER DEBUG] IPC error:', ipcError);
+            }
+            
+            return true;
+        } catch (error) {
+            console.error('[RENDERER DEBUG] Failed to trigger test error:', error);
+            return false;
+        }
+    }
+    
+    /**
+     * Create an error directly in the renderer process
+     * @param {string} message - Error message
+     * @param {string} category - Error category
+     * @param {string} severity - Error severity (default: 'error')
+     * @param {Object} additionalContext - Additional context for the error
+     */
+    handleDirectError(message, category = 'renderer', severity = 'error', additionalContext = {}) {
+        console.log(`[RENDERER DEBUG] Creating direct ${severity}:`, message);
+        
+        try {
+            // Create error via ErrorService if available
+            if (window.ErrorService && typeof window.ErrorService.createError === 'function') {
+                const context = {
+                    source: 'renderer-direct',
+                    timestamp: new Date().toISOString(),
+                    ...additionalContext
+                };
+                
+                window.ErrorService.createError(
+                    category,
+                    message,
+                    severity,
+                    context
+                );
+                
+                console.log('[RENDERER DEBUG] Error created via ErrorService');
+            } else {
+                // Fallback to MonitoringService
+                if (window.MonitoringService) {
+                    if (severity === 'error' && typeof window.MonitoringService.error === 'function') {
+                        window.MonitoringService.error(message, additionalContext, category);
+                    } else if (severity === 'warn' && typeof window.MonitoringService.warn === 'function') {
+                        window.MonitoringService.warn(message, additionalContext, category);
+                    } else if (typeof window.MonitoringService.info === 'function') {
+                        window.MonitoringService.info(message, additionalContext, category);
+                    }
+                    
+                    console.log('[RENDERER DEBUG] Error logged via MonitoringService');
+                } else {
+                    // Last resort - use console
+                    console.error('[RENDERER DIRECT ERROR]', { message, category, severity, context: additionalContext });
+                }
+            }
+            
+            // Also show in UI if it's an error
+            if (severity === 'error' && typeof window.UINotification?.showError === 'function') {
+                window.UINotification.showError(message);
+                console.log('[RENDERER DEBUG] Error notification shown in UI');
+            }
+        } catch (error) {
+            console.error('[RENDERER DEBUG] Failed to create direct error:', error);
+        }
+    }
+    
+    /**
+     * Setup monitoring event listeners for real-time error and log events
+     */
+    /**
+     * Helper method to set up IPC listeners with the provided IPC object
+     * @param {Object} ipc - The IPC object to use for event listeners
+     * @private
+     */
+    _setupIpcListeners(ipc) {
+        // Store unsubscribe functions to clean up later if needed
+        this.monitoringUnsubscribers = [];
+        
+        // Set up error event listener
+        ipc.on('monitoring:error:event', (event, data) => {
+            console.log('[RENDERER DEBUG] Received error event via direct IPC:', data);
+            this.handleErrorEvent(data);
+        });
+        
+        // Set up warning event listener
+        ipc.on('monitoring:warn:event', (event, data) => {
+            console.log('[RENDERER DEBUG] Received warn event via direct IPC:', data);
+            this.handleWarnEvent(data);
+        });
+        
+        // Set up info event listener
+        ipc.on('monitoring:info:event', (event, data) => {
+            console.log('[RENDERER DEBUG] Received info event via direct IPC:', data);
+            this.handleInfoEvent(data);
+        });
+        
+        // Set up system memory warning listener
+        ipc.on('system:memory:warning', (event, data) => {
+            console.log('[RENDERER DEBUG] Received system memory warning via direct IPC:', data);
+            this.handleSystemMemoryWarning(data);
+        });
+        
+        // Set up system emergency listener
+        ipc.on('system:emergency', (event, data) => {
+            console.log('[RENDERER DEBUG] Received system emergency via direct IPC:', data);
+            this.handleSystemEmergency(data);
+        });
+        
+        window.MonitoringService && window.MonitoringService.info(
+            'Direct IPC monitoring event listeners set up successfully',
+            { operation: 'setup-direct-ipc-monitoring' },
+            'renderer'
+        );
+    }
+    
+    setupMonitoringEventListeners() {
+        try {
+            console.log('[RENDERER DEBUG] Setting up monitoring event listeners');
+            
+            // Check if window.electron.ipcRenderer is available directly (in Electron environment)
+            if (window.electron && window.electron.ipcRenderer) {
+                console.log('[RENDERER DEBUG] Using window.electron.ipcRenderer directly');
+                this._setupIpcListeners(window.electron.ipcRenderer);
+                return;
+            }
+            
+            // Try to create IPCService instance
+            try {
+                // Use getInstance instead of constructor to follow singleton pattern
+                const ipcService = IPCService.getInstance();
+                
+                if (!ipcService.isAvailable) {
+                    console.warn('[RENDERER DEBUG] IPC not available via IPCService');
+                    window.MonitoringService && window.MonitoringService.warn(
+                        'IPC not available for monitoring event listeners', 
+                        { operation: 'setup-monitoring-events' },
+                        'renderer'
+                    );
+                    return;
+                }
+                
+                console.log('[RENDERER DEBUG] Using IPCService for event listeners');
+                
+                // Store unsubscribe functions to clean up later if needed
+                this.monitoringUnsubscribers = [];
+                
+                // Subscribe to error events
+                const errorUnsubscribe = ipcService.on('monitoring:error:event', (event, data) => {
+                    console.log('[RENDERER DEBUG] Received error event:', data);
+                    this.handleErrorEvent(data);
+                });
+                this.monitoringUnsubscribers.push(errorUnsubscribe);
+                
+                // Subscribe to warning events
+                const warnUnsubscribe = ipcService.on('monitoring:warn:event', (event, data) => {
+                    console.log('[RENDERER DEBUG] Received warn event:', data);
+                    this.handleWarnEvent(data);
+                });
+                this.monitoringUnsubscribers.push(warnUnsubscribe);
+                
+                // Subscribe to info events
+                const infoUnsubscribe = ipcService.on('monitoring:info:event', (event, data) => {
+                    console.log('[RENDERER DEBUG] Received info event:', data);
+                    this.handleInfoEvent(data);
+                });
+                this.monitoringUnsubscribers.push(infoUnsubscribe);
+                
+                // Subscribe to system events
+                const systemMemoryUnsubscribe = ipcService.on('system:memory:warning', (event, data) => {
+                    console.log('[RENDERER DEBUG] Received system memory warning:', data);
+                    this.handleSystemMemoryWarning(data);
+                });
+                this.monitoringUnsubscribers.push(systemMemoryUnsubscribe);
+                
+                const systemEmergencyUnsubscribe = ipcService.on('system:emergency', (event, data) => {
+                    console.log('[RENDERER DEBUG] Received system emergency:', data);
+                    this.handleSystemEmergency(data);
+                });
+                this.monitoringUnsubscribers.push(systemEmergencyUnsubscribe);
+                
+                window.MonitoringService && window.MonitoringService.info(
+                    'Monitoring event listeners set up successfully',
+                    { operation: 'setup-monitoring-events' },
+                    'renderer'
+                );
+            } catch (ipcError) {
+                console.error('[RENDERER DEBUG] Error initializing IPCService:', ipcError);
+                window.MonitoringService && window.MonitoringService.error(
+                    'Failed to initialize IPCService',
+                    { error: ipcError.message, stack: ipcError.stack, operation: 'ipc-init' },
+                    'renderer'
+                );
+            }
+            
+        } catch (error) {
+            console.error('[RENDERER DEBUG] Failed to set up monitoring event listeners:', error);
+            window.MonitoringService && window.MonitoringService.error(
+                'Failed to set up monitoring event listeners',
+                { error: error.message, stack: error.stack, operation: 'setup-monitoring-events' },
+                'renderer'
+            );
+        }
     }
 
     /**
@@ -687,6 +952,13 @@ export class AppController {
         // Initialize logs array if not provided
         logs = logs || [];
         
+        console.log('[RENDERER DEBUG] displayLogs called with', {
+            logCount: logs.length,
+            clearExisting,
+            firstLogTimestamp: logs.length > 0 ? logs[0]?.timestamp : 'none',
+            lastLogTimestamp: logs.length > 0 ? logs[logs.length-1]?.timestamp : 'none'
+        });
+        
         // If we're clearing existing logs and there are no new logs, show empty message
         if (logs.length === 0 && clearExisting) {
             logsContainer.innerHTML = '<p>No recent activity to display</p>';
@@ -699,7 +971,7 @@ export class AppController {
             // Extract existing logs from the current display
             const existingEntries = logsContainer.querySelectorAll('.simple-log-entry');
             existingEntries.forEach(entry => {
-                const timestamp = entry.querySelector('.log-timestamp')?.textContent;
+                const timestamp = entry.getAttribute('data-timestamp');
                 const level = entry.getAttribute('data-level');
                 const category = entry.getAttribute('data-category');
                 const message = entry.querySelector('.log-message')?.textContent;
@@ -708,7 +980,7 @@ export class AppController {
                 
                 if (timestamp && level && message) {
                     allLogs.push({
-                        timestamp: new Date(timestamp).toISOString(),
+                        timestamp: timestamp,
                         level,
                         category: category || 'general',
                         message,
@@ -720,8 +992,42 @@ export class AppController {
             });
         }
 
-        // Add new logs and deduplicate by timestamp + message
-        const newLogs = logs.filter(log => {
+        // Process the new logs to ensure they have proper timestamps
+        const processedLogs = logs.map(log => {
+            // Ensure timestamp is a valid ISO string
+            let timestamp = log.timestamp;
+            if (!timestamp) {
+                timestamp = new Date().toISOString();
+            } else if (!(timestamp instanceof Date) && typeof timestamp === 'string') {
+                // Make sure it's a valid date string
+                try {
+                    const date = new Date(timestamp);
+                    if (isNaN(date.getTime())) {
+                        timestamp = new Date().toISOString();
+                    }
+                } catch (e) {
+                    timestamp = new Date().toISOString();
+                }
+            } else if (timestamp instanceof Date) {
+                timestamp = timestamp.toISOString();
+            }
+            
+            return {
+                ...log,
+                timestamp,
+                // Ensure we have an ID for each log
+                id: log.id || `log-${timestamp}-${Math.random().toString(36).substring(2, 10)}`
+            };
+        });
+
+        // Add new logs and deduplicate by id or timestamp + message
+        const newLogs = processedLogs.filter(log => {
+            // If the log has an ID, use that for deduplication
+            if (log.id && typeof log.id === 'string') {
+                return !allLogs.some(existing => existing.id === log.id);
+            }
+            
+            // Otherwise use timestamp + message
             const logKey = `${log.timestamp}-${log.message}`;
             return !allLogs.some(existing => `${existing.timestamp}-${existing.message}` === logKey);
         });
@@ -729,7 +1035,11 @@ export class AppController {
         allLogs = [...allLogs, ...newLogs];
 
         // Sort all logs by timestamp (newest first)
-        const sortedLogs = allLogs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+        const sortedLogs = allLogs.sort((a, b) => {
+            const dateA = new Date(a.timestamp);
+            const dateB = new Date(b.timestamp);
+            return dateB - dateA;
+        });
         
         // Limit to last 100 logs to prevent memory issues
         const limitedLogs = sortedLogs.slice(0, 100);
@@ -759,153 +1069,331 @@ export class AppController {
             </div>
             <div class="simple-log-list" id="simple-log-list">
         `;
-
+        
         // Display all logs in simple chronological order
         limitedLogs.forEach((log, index) => {
-            const timestamp = new Date(log.timestamp).toLocaleString();
+            // Ensure we have a valid timestamp and format it properly
+            let timestamp;
+            let isoTimestamp;
+            try {
+                const date = new Date(log.timestamp);
+                if (!isNaN(date.getTime())) {
+                    timestamp = date.toLocaleString();
+                    isoTimestamp = date.toISOString();
+                } else {
+                    timestamp = new Date().toLocaleString();
+                    isoTimestamp = new Date().toISOString();
+                    console.warn('[RENDERER DEBUG] Invalid timestamp in log:', log.timestamp);
+                }
+            } catch (e) {
+                timestamp = new Date().toLocaleString();
+                isoTimestamp = new Date().toISOString();
+                console.warn('[RENDERER DEBUG] Error parsing timestamp:', e);
+            }
+            
             const level = log.level || 'info';
             const category = log.category || 'general';
             const message = log.message || '';
-            const context = log.context ? JSON.stringify(log.context, null, 2) : '';
+            let context = '';
+            
+            // Handle context data properly
+            if (log.context) {
+                try {
+                    if (typeof log.context === 'string') {
+                        // Try to parse if it's a JSON string
+                        try {
+                            const parsedContext = JSON.parse(log.context);
+                            context = JSON.stringify(parsedContext, null, 2);
+                        } catch (e) {
+                            context = log.context;
+                        }
+                    } else if (typeof log.context === 'object') {
+                        context = JSON.stringify(log.context, null, 2);
+                    } else {
+                        context = String(log.context);
+                    }
+                } catch (e) {
+                    console.warn('[RENDERER DEBUG] Error processing context:', e);
+                    context = 'Error processing context data';
+                }
+            }
             
             // Extract user context information if available
             const userId = log.userId || (log.context && log.context.userId) || '';
             const deviceId = log.deviceId || (log.context && log.context.deviceId) || '';
-            const userBadge = userId ? `<span class="user-badge" title="User ID: ${userId}">${userId.slice(0, 8)}</span>` : '';
-            const deviceBadge = deviceId ? `<span class="device-badge" title="Device ID: ${deviceId}">${deviceId.slice(0, 8)}</span>` : '';
+            
+            // Create user and device badges with proper handling of potentially undefined values
+            let userBadge = '';
+            if (userId && typeof userId === 'string') {
+                const displayId = userId.length > 8 ? userId.slice(0, 8) : userId;
+                userBadge = `<span class="user-badge" title="User ID: ${userId}">${displayId}</span>`;
+            }
+            
+            let deviceBadge = '';
+            if (deviceId && typeof deviceId === 'string') {
+                const displayId = deviceId.length > 8 ? deviceId.slice(0, 8) : deviceId;
+                deviceBadge = `<span class="device-badge" title="Device ID: ${deviceId}">${displayId}</span>`;
+            }
             
             // Create searchable text content for filtering
             const searchableContent = `${timestamp} ${level} ${category} ${message} ${context} ${userId} ${deviceId}`.toLowerCase();
             
+            // Get a stable ID for the log entry
+            const logId = log.id || `log-${isoTimestamp}-${index}`;
+            
             logsHtml += `
-                <div class="simple-log-entry" data-level="${level}" data-category="${category}" data-search="${searchableContent}" data-index="${index}" data-user-id="${userId}" data-device-id="${deviceId}">
-                    <div class="log-header">
-                        <span class="log-timestamp">${timestamp}</span>
-                        <span class="log-level level-${level}">${level.toUpperCase()}</span>
-                        <span class="log-category">${category}</span>
-                        ${userBadge}
-                        ${deviceBadge}
-                        ${log.id ? `<span class="log-id">${log.id.slice(0, 8)}</span>` : ''}
-                    </div>
-                    <div class="log-message">${message}</div>
-                    ${context ? `
-                        <div class="log-context-container">
-                            <button class="context-toggle-btn" data-index="${index}">Show Context</button>
-                            <pre class="log-context" id="context-${index}" style="display: none;">${context}</pre>
-                        </div>
-                    ` : ''}
+            <div class="simple-log-entry" 
+                data-level="${level}" 
+                data-category="${category}" 
+                data-search="${searchableContent}" 
+                data-index="${index}" 
+                data-user-id="${userId}" 
+                data-device-id="${deviceId}"
+                data-timestamp="${isoTimestamp}"
+                data-log-id="${logId}"
+            >
+                <div class="log-header">
+                    <span class="log-timestamp" title="${isoTimestamp}">${timestamp}</span>
+                    <span class="log-level ${level}">${level.toUpperCase()}</span>
+                    <span class="log-category">${category}</span>
+                    ${userBadge}
+                    ${deviceBadge}
                 </div>
+                <div class="log-message">${message}</div>
+                ${context ? `<pre class="log-context">${context}</pre>` : ''}
+                <button class="toggle-context" title="Toggle context details">...</button>
+            </div>
             `;
         });
-
+        
+        // Close the log list and update the container
         logsHtml += `
             </div>
+        `;
+        
+        // Add CSS styles for badges and other log elements
+        logsHtml += `
             <style>
-                .user-badge, .device-badge {
-                    display: inline-block;
-                    padding: 2px 5px;
-                    border-radius: 3px;
-                    font-size: 11px;
-                    margin-right: 5px;
-                    cursor: default;
-                }
-                .user-badge {
-                    background-color: #e6f7ff;
-                    color: #0070c0;
-                    border: 1px solid #91d5ff;
-                }
-                .device-badge {
-                    background-color: #f6ffed;
-                    color: #52c41a;
-                    border: 1px solid #b7eb8f;
-                }
-                .log-scope-selector {
-                    display: flex;
-                    align-items: center;
-                    margin-right: 15px;
-                }
-                .radio-label {
-                    display: flex;
-                    align-items: center;
-                    margin-right: 10px;
-                    font-size: 12px;
-                    cursor: pointer;
-                }
-                .radio-label input {
-                    margin-right: 4px;
-                }
-                .log-scope-indicator {
-                    font-size: 0.8em;
-                    color: #6c757d;
-                    margin-left: 10px;
-                    padding: 2px 6px;
-                    border-radius: 10px;
-                }
-                .user-scope {
-                    background-color: rgba(0, 123, 255, 0.1);
-                }
-                .global-scope {
-                    background-color: rgba(108, 117, 125, 0.1);
-                }
+                .user-badge, .device-badge { display: inline-block; padding: 2px 5px; border-radius: 3px; font-size: 11px; margin-right: 5px; cursor: default; }
+                .user-badge { background-color: #e6f7ff; color: #0070c0; border: 1px solid #91d5ff; }
+                .device-badge { background-color: #f6ffed; color: #52c41a; border: 1px solid #b7eb8f; }
+                .log-scope-selector { display: flex; align-items: center; margin-right: 15px; }
+                .radio-label { display: flex; align-items: center; margin-right: 10px; font-size: 12px; cursor: pointer; }
+                .radio-label input { margin-right: 4px; }
+                .log-scope-indicator { font-size: 0.8em; color: #6c757d; margin-left: 10px; padding: 2px 6px; border-radius: 10px; }
+                .user-scope { background-color: rgba(0, 123, 255, 0.1); }
+                .global-scope { background-color: rgba(108, 117, 125, 0.1); }
             </style>
         `;
 
-        // Update container with new HTML
+        
+        // Update the container with all logs
         logsContainer.innerHTML = logsHtml;
         
-        // Setup simple event listeners
-        this.setupSimpleLogViewerEventListeners();
+        // Setup log search functionality
+        this._setupLogSearch();
+        
+        // Setup context toggle functionality
+        this._setupContextToggles();
     }
-
+    
+    /**
+     * Setup simple event listeners for the log viewer interface
+     * @private
+     */
+    _setupLogSearch() {
+        const searchInput = document.getElementById('log-search-input');
+        const clearButton = document.getElementById('clear-search-btn');
+        const logEntries = document.querySelectorAll('.simple-log-entry');
+        
+        if (!searchInput || !clearButton) return;
+        
+        // Search functionality
+        searchInput.addEventListener('input', (e) => {
+            const searchTerm = e.target.value.toLowerCase().trim();
+            
+            logEntries.forEach(entry => {
+                const searchText = entry.getAttribute('data-search') || '';
+                if (searchTerm === '' || searchText.includes(searchTerm)) {
+                    entry.style.display = '';
+                } else {
+                    entry.style.display = 'none';
+                }
+            });
+            
+            // Show/hide clear button
+            clearButton.style.display = searchTerm ? 'block' : 'none';
+        });
+        
+        // Clear search
+        clearButton.addEventListener('click', () => {
+            searchInput.value = '';
+            clearButton.style.display = 'none';
+            
+            // Show all entries
+            logEntries.forEach(entry => {
+                entry.style.display = '';
+            });
+        });
+    }
+    
+    /**
+     * Setup context toggle buttons for log entries
+     * @private
+     */
+    _setupContextToggles() {
+        const toggleButtons = document.querySelectorAll('.toggle-context');
+        
+        toggleButtons.forEach(button => {
+            const logEntry = button.closest('.simple-log-entry');
+            const contextElement = logEntry?.querySelector('.log-context');
+            
+            if (contextElement) {
+                // Initially hide context
+                contextElement.style.display = 'none';
+                
+                // Add toggle functionality
+                button.addEventListener('click', () => {
+                    const isVisible = contextElement.style.display !== 'none';
+                    contextElement.style.display = isVisible ? 'none' : 'block';
+                    button.textContent = isVisible ? '...' : 'Hide';
+                });
+            } else {
+                // No context to toggle, hide the button
+                button.style.display = 'none';
+            }
+        });
+    }
+    
+    /**
+     * Add a single log entry to the logs display
+     * @param {Object} log - Log entry to add
+     */
+    addLogEntry(log) {
+        if (!log) return;
+        
+        // Display the log without clearing existing logs
+        this.displayLogs([log], false);
+    }
+    
+    /**
+     * Setup event listeners for log interface
+     */
+    setupLogEventListeners() {
+        try {
+            // Auto-refresh toggle
+            const autoRefreshToggle = document.getElementById('auto-refresh-toggle');
+            if (autoRefreshToggle) {
+                autoRefreshToggle.addEventListener('change', (e) => {
+                    this.handleAutoRefreshToggle(e.target.checked);
+                });
+            }
+            
+            // Log filter buttons
+            const filterButtons = document.querySelectorAll('.log-filter-btn');
+            filterButtons.forEach(button => {
+                button.addEventListener('click', () => {
+                    const filter = button.getAttribute('data-filter');
+                    if (filter) {
+                        this.handleLogFilter(filter);
+                        
+                        // Update active state
+                        filterButtons.forEach(btn => btn.classList.remove('active'));
+                        button.classList.add('active');
+                    }
+                });
+            });
+            
+            // Refresh logs button
+            const refreshButton = document.getElementById('refresh-logs-btn');
+            if (refreshButton) {
+                refreshButton.addEventListener('click', () => {
+                    this.fetchRecentLogs(true);
+                });
+            }
+            
+            // Log scope selector
+            const userScopeRadio = document.getElementById('user-logs-scope');
+            const globalScopeRadio = document.getElementById('global-logs-scope');
+            
+            if (userScopeRadio && globalScopeRadio) {
+                userScopeRadio.addEventListener('change', () => {
+                    if (userScopeRadio.checked) {
+                        this.fetchRecentLogs(true, 'user');
+                    }
+                });
+                
+                globalScopeRadio.addEventListener('change', () => {
+                    if (globalScopeRadio.checked) {
+                        this.fetchRecentLogs(true, 'global');
+                    }
+                });
+            }
+            
+            // Setup search and context toggle functionality
+            this._setupLogSearch();
+            this._setupContextToggles();
+            
+        } catch (error) {
+            console.error('[RENDERER DEBUG] Error setting up log event listeners:', error);
+        }
+    }
+    
     /**
      * Setup simple event listeners for the log viewer interface
      */
     setupSimpleLogViewerEventListeners() {
-        // Search input
-        const searchInput = document.getElementById('log-search-input');
-        if (searchInput) {
-            searchInput.addEventListener('input', (e) => {
-                const searchQuery = e.target.value.toLowerCase();
-                const logEntries = document.querySelectorAll('.simple-log-entry');
-                
-                logEntries.forEach((entry) => {
-                    const searchableContent = entry.getAttribute('data-search');
-                    if (searchableContent.includes(searchQuery)) {
-                        entry.style.display = 'block';
-                    } else {
-                        entry.style.display = 'none';
+        try {
+            // Search input
+            const searchInput = document.getElementById('log-search-input');
+            if (searchInput) {
+                searchInput.addEventListener('input', (e) => {
+                    const searchQuery = e.target.value.toLowerCase();
+                    const logEntries = document.querySelectorAll('.simple-log-entry');
+                    
+                    logEntries.forEach((entry) => {
+                        const searchableContent = entry.getAttribute('data-search') || '';
+                        if (searchableContent.includes(searchQuery)) {
+                            entry.style.display = 'block';
+                        } else {
+                            entry.style.display = 'none';
+                        }
+                    });
+                });
+            }
+            
+            // Clear search button
+            const clearSearchBtn = document.getElementById('clear-search-btn');
+            if (clearSearchBtn) {
+                clearSearchBtn.addEventListener('click', () => {
+                    const searchInput = document.getElementById('log-search-input');
+                    if (searchInput) {
+                        searchInput.value = '';
+                        searchInput.dispatchEvent(new Event('input'));
+                    }
+                });
+            }
+            
+            // Context toggles
+            document.querySelectorAll('.context-toggle-btn').forEach(button => {
+                button.addEventListener('click', (e) => {
+                    const logEntry = e.target.closest('.simple-log-entry');
+                    const context = logEntry?.querySelector('.log-context');
+                    
+                    if (context) {
+                        if (context.style.display === 'none') {
+                            context.style.display = 'block';
+                            e.target.textContent = 'Hide Context';
+                        } else {
+                            context.style.display = 'none';
+                            e.target.textContent = 'Show Context';
+                        }
                     }
                 });
             });
+        } catch (error) {
+            console.error('[RENDERER DEBUG] Error setting up simple log viewer event listeners:', error);
         }
-        
-        // Clear search button
-        const clearSearchBtn = document.getElementById('clear-search-btn');
-        if (clearSearchBtn) {
-            clearSearchBtn.addEventListener('click', () => {
-                const searchInput = document.getElementById('log-search-input');
-                if (searchInput) {
-                    searchInput.value = '';
-                    searchInput.dispatchEvent(new Event('input'));
-                }
-            });
-        }
-        
-        // Context toggles
-        document.querySelectorAll('.context-toggle-btn').forEach(button => {
-            button.addEventListener('click', (e) => {
-                const logEntry = e.target.closest('.simple-log-entry');
-                const context = logEntry.querySelector('.log-context');
-                
-                if (context.style.display === 'none') {
-                    context.style.display = 'block';
-                    e.target.textContent = 'Hide Context';
-                } else {
-                    context.style.display = 'none';
-                    e.target.textContent = 'Show Context';
-                }
-            });
-        });
     }
 
     /**
@@ -951,6 +1439,196 @@ export class AppController {
         }
         if (errorLogsCard) {
             errorLogsCard.style.display = 'none';
+        }
+    }
+
+    /**
+     * Set up IPC listeners using direct ipcRenderer access
+     * @param {Object} ipcRenderer - The Electron ipcRenderer object
+     * @private
+     */
+    _setupIpcListeners(ipcRenderer) {
+        if (!ipcRenderer) {
+            console.error('[RENDERER DEBUG] No ipcRenderer provided');
+            return;
+        }
+        
+        console.log('[RENDERER DEBUG] Setting up direct IPC event listeners');
+        
+        // Error events
+        ipcRenderer.on('monitoring:error:event', (event, data) => {
+            console.log('[RENDERER DEBUG] Received direct error event:', data);
+            this.handleErrorEvent(data);
+        });
+        
+        // Warning events
+        ipcRenderer.on('monitoring:warn:event', (event, data) => {
+            console.log('[RENDERER DEBUG] Received direct warn event:', data);
+            this.handleWarnEvent(data);
+        });
+        
+        // Info events
+        ipcRenderer.on('monitoring:info:event', (event, data) => {
+            console.log('[RENDERER DEBUG] Received direct info event:', data);
+            this.handleInfoEvent(data);
+        });
+        
+        // System events
+        ipcRenderer.on('system:memory:warning', (event, data) => {
+            console.log('[RENDERER DEBUG] Received direct system memory warning:', data);
+            this.handleSystemMemoryWarning(data);
+        });
+        
+        ipcRenderer.on('system:emergency', (event, data) => {
+            console.log('[RENDERER DEBUG] Received direct system emergency:', data);
+            this.handleSystemEmergency(data);
+        });
+        
+        window.MonitoringService && window.MonitoringService.info(
+            'Direct IPC event listeners set up successfully',
+            { operation: 'setup-direct-ipc-events' },
+            'renderer'
+        );
+    }
+
+    /**
+     * Handle error event from main process
+     * @param {Object} data - Error event data
+     */
+    handleErrorEvent(data) {
+        try {
+            console.log('[RENDERER DEBUG] Received error event:', data);
+            
+            if (!data) return;
+            
+            // Add to logs immediately without waiting for refresh
+            const logs = [{
+                id: data.id || `error-${Date.now()}`,
+                timestamp: data.timestamp || new Date().toISOString(),
+                level: 'error',
+                category: data.category || 'unknown',
+                message: data.message || 'Unknown error',
+                context: data.context || {},
+                userId: data.userId,
+                deviceId: data.deviceId
+            }];
+            
+            console.log('[RENDERER DEBUG] Adding error log to UI:', logs[0]);
+            
+            // Display the log without clearing existing logs
+            this.displayLogs(logs, false);
+            
+            // Show notification for errors
+            if (window.UINotification) {
+                window.UINotification.showError(
+                    data.message || 'An error occurred', 
+                    { category: data.category, context: data.context }
+                );
+            }
+            
+        } catch (error) {
+            console.error('Failed to handle error event:', error);
+        }
+    }
+    
+    /**
+     * Handle warning event from main process
+     * @param {Object} data - Warning event data
+     */
+    handleWarnEvent(data) {
+        try {
+            if (!data) return;
+            
+            // Add to logs immediately without waiting for refresh
+            const logs = [{
+                id: data.id || `warn-${Date.now()}`,
+                timestamp: data.timestamp || new Date().toISOString(),
+                level: 'warn',
+                category: data.category || 'unknown',
+                message: data.message || 'Unknown warning',
+                context: data.context || {},
+                userId: data.userId,
+                deviceId: data.deviceId
+            }];
+            
+            // Display the log without clearing existing logs
+            this.displayLogs(logs, false);
+            
+        } catch (error) {
+            console.error('Failed to handle warning event:', error);
+        }
+    }
+    
+    /**
+     * Handle info event from main process
+     * @param {Object} data - Info event data
+     */
+    handleInfoEvent(data) {
+        try {
+            if (!data) return;
+            
+            // Add to logs immediately without waiting for refresh
+            const logs = [{
+                id: data.id || `info-${Date.now()}`,
+                timestamp: data.timestamp || new Date().toISOString(),
+                level: 'info',
+                category: data.category || 'unknown',
+                message: data.message || '',
+                context: data.context || {},
+                userId: data.userId,
+                deviceId: data.deviceId
+            }];
+            
+            // Display the log without clearing existing logs
+            this.displayLogs(logs, false);
+            
+        } catch (error) {
+            console.error('Failed to handle info event:', error);
+        }
+    }
+    
+    /**
+     * Handle system memory warning event
+     * @param {Object} data - System memory warning data
+     */
+    handleSystemMemoryWarning(data) {
+        try {
+            if (!data) return;
+            
+            // Show notification for memory warnings
+            if (window.UINotification) {
+                window.UINotification.showWarning(
+                    'System memory warning: ' + (data.message || 'Memory usage is high'),
+                    { memoryUsage: data.memoryUsage, availableMemory: data.availableMemory }
+                );
+            }
+            
+        } catch (error) {
+            console.error('Failed to handle system memory warning:', error);
+        }
+    }
+    
+    /**
+     * Handle system emergency event
+     * @param {Object} data - System emergency data
+     */
+    handleSystemEmergency(data) {
+        try {
+            if (!data) return;
+            
+            // Show notification for system emergencies
+            if (window.UINotification) {
+                window.UINotification.showError(
+                    'System emergency: ' + (data.message || 'Critical system issue'),
+                    { type: data.type, memoryUsage: data.memoryUsage }
+                );
+            }
+            
+            // Force refresh logs to show emergency status
+            this.fetchRecentLogs(true, 'global');
+            
+        } catch (error) {
+            console.error('Failed to handle system emergency:', error);
         }
     }
 

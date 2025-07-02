@@ -30,14 +30,21 @@ async function requireAuth(req, res, next) {
                 const isAuthenticated = await msalService.isAuthenticated(req);
                 
                 if (isAuthenticated) {
-                    // Set user context for controllers (browser session)
+                    // MICROSOFT 365-CENTRIC AUTH: Use Microsoft 365 email as consistent user ID
+                    const msUser = req.session.msUser;
+                    const microsoftUserId = msUser?.username || `session:${req.session.id}`;
+                    
                     req.user = {
-                        userId: `user:${req.session.id}`,
-                        sessionId: req.session.id
+                        userId: `ms365:${microsoftUserId}`,
+                        sessionId: req.session.id,
+                        microsoftEmail: msUser?.username,
+                        microsoftName: msUser?.name,
+                        homeAccountId: msUser?.homeAccountId
                     };
                     
-                    MonitoringService.debug('Browser session authentication successful', {
+                    MonitoringService.debug('Microsoft 365 session authentication successful', {
                         sessionId: req.session.id,
+                        microsoftEmail: microsoftUserId,
                         path: req.path,
                         timestamp: new Date().toISOString()
                     }, 'auth');
@@ -86,9 +93,21 @@ async function requireAuth(req, res, next) {
             const decoded = DeviceJwtService.validateAccessToken(token);
             
             // Set authenticated user context from validated token
+            console.log(`[DEBUG] JWT Token Validated with Microsoft 365 Identity:`, {
+                decodedUserId: decoded.userId,
+                microsoftEmail: decoded.microsoftEmail,
+                deviceId: decoded.deviceId,
+                tokenExp: decoded.exp,
+                timestamp: new Date().toISOString()
+            });
+            
+            // MICROSOFT 365-CENTRIC AUTH: Use the same Microsoft 365-based user ID
+            // that was used when generating the token to ensure log consistency
             req.user = {
                 deviceId: decoded.deviceId,
-                userId: decoded.userId,
+                userId: decoded.userId,  // This is ms365:email@domain.com format
+                microsoftEmail: decoded.microsoftEmail,
+                microsoftName: decoded.microsoftName,
                 isApiCall: true,
                 tokenExp: decoded.exp
             };

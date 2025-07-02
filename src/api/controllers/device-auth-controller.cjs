@@ -440,19 +440,31 @@ async function generateMcpToken(req, res) {
             });
         }
 
-        const { userId, sessionId } = req.user;
+        const { userId, sessionId, microsoftEmail, microsoftName } = req.user;
         
         // Generate a pseudo-device ID for this MCP token
         const deviceId = `mcp-token-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         
         // Use DeviceJwtService to generate a long-lived token
+        // CRITICAL: Use Microsoft 365-based userId to ensure consistency across sessions and API calls
         const tokenPayload = {
-            sessionId: sessionId || 'direct-generation'
+            sessionId: sessionId || 'direct-generation',
+            microsoftEmail: microsoftEmail,
+            microsoftName: microsoftName,
+            originalUserId: userId  // Store original for debugging
         };
 
         const mcpToken = DeviceJwtService.generateLongLivedAccessToken(deviceId, userId, tokenPayload);
 
-        // Log the token generation
+        // Log the token generation with detailed debugging
+        console.log(`[DEBUG] MCP Token Generated with Microsoft 365 Identity:`, {
+            userId: userId,
+            microsoftEmail: microsoftEmail,
+            sessionId: sessionId,
+            deviceId: deviceId,
+            timestamp: new Date().toISOString()
+        });
+        
         MonitoringService.info('MCP bearer token generated', {
             userId: userId.substring(0, 8) + '...',
             deviceId,

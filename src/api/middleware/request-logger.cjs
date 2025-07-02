@@ -5,6 +5,7 @@
  */
 
 const MonitoringService = require('../../core/monitoring-service.cjs');
+const { resolveUserId } = require('../../core/user-id-resolver.cjs');
 const { v4: uuidv4 } = require('uuid');
 
 /**
@@ -21,8 +22,14 @@ function createRequestLogger(component) {
             req.requestId = uuidv4();
         }
         
-        // Extract user context if available from req.user (set by auth middleware)
-        const { userId, deviceId } = req.user || {};
+        // Extract user context using consistent user ID resolution
+        const userId = resolveUserId(req);
+        const { deviceId } = req.user || {};
+        
+        // DEBUG: Log what user ID we're using for logging
+        if (userId && process.env.NODE_ENV === 'development') {
+            console.log(`[DEBUG] Request Logger - Resolved userId: ${userId} for component: ${component}`);
+        }
         
         // Create context object with request details
         const context = {

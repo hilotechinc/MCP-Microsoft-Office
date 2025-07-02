@@ -384,7 +384,48 @@ function shouldFilterLog(level, message, category, context = {}) {
  * Handle log events from other components (event subscription)
  */
 function handleLogEvent(logData) {
-    // Add to circular buffer
+    // For metric events, handle differently to prevent recursion
+    if (logData.type === 'metric' && logData.name) {
+        // Add directly to buffer without calling trackMetric
+        logBuffer.add(logData);
+        
+        // Log to Winston if available, but don't emit any new events
+        if (logger) {
+            try {
+                logger.debug(`[METRIC] ${logData.name}: ${logData.value}`, { 
+                    metricName: logData.name, 
+                    metricValue: logData.value,
+                    ...(logData.context || {})
+                });
+            } catch (err) {
+                console.error(`[MONITORING] Failed to log metric to Winston: ${err.message}`);
+            }
+        }
+        
+        // Store user-specific metrics if userId is provided
+        if (logData.userId) {
+            try {
+                const storage = getStorageService();
+                if (storage) {
+                    // Don't await to avoid blocking - let it run in background
+                    storage.addUserLog(logData.userId, 'info', `Metric: ${logData.name}`, 'metrics', {
+                        metricName: logData.name,
+                        metricValue: logData.value,
+                        ...(logData.context || {})
+                    }, null, logData.deviceId)
+                        .catch(err => {
+                            console.error(`[MCP METRIC] Failed to persist user log: ${err.message}`);
+                        });
+                }
+            } catch (storageError) {
+                console.error(`[MCP METRIC] Error accessing storage for user log: ${storageError.message}`);
+            }
+        }
+        
+        return;
+    }
+    
+    // Add to circular buffer for non-metric events
     logBuffer.add(logData);
     
     // Log to Winston if available
@@ -422,15 +463,16 @@ async function initialize() {
     }
   }
   
-  // Subscribe to all log events
+  // Subscribe to log events EXCEPT metrics to prevent recursion
   try {
     subscriptions.push(
       await eventService.subscribe(eventTypes.ERROR, handleLogEvent),
       await eventService.subscribe(eventTypes.INFO, handleLogEvent),
       await eventService.subscribe(eventTypes.WARN, handleLogEvent),
-      await eventService.subscribe(eventTypes.DEBUG, handleLogEvent),
-      await eventService.subscribe(eventTypes.METRIC, handleLogEvent)
+      await eventService.subscribe(eventTypes.DEBUG, handleLogEvent)
+      // Removed subscription to METRIC events to prevent recursion
     );
+    console.log('[MONITORING] Successfully subscribed to log events (excluding metrics)');
   } catch (error) {
     console.warn('[MONITORING] Failed to subscribe to event service:', error.message);
   }
@@ -523,7 +565,11 @@ async function logError(error) {
         
         // Emit error event
         if (eventService) {
-            eventService.publish(eventTypes.ERROR, logData);
+            try {
+                await eventService.emit(eventTypes.ERROR, logData);
+            } catch (emitError) {
+                console.error(`[MCP ERROR] Failed to emit error event: ${emitError.message}`);
+            }
         }
 
         // Persist user-specific logs if userId is provided
@@ -650,14 +696,21 @@ async function info(message, context = {}, category = 'general', traceId = null,
         
         // Persist user-specific logs if userId is provided
         if (userId) {
+            console.log(`[DEBUG] Attempting to persist user log for userId: ${userId}, message: ${message}, category: ${category}`);
             try {
                 const storage = getStorageService();
                 if (storage) {
+                    console.log(`[DEBUG] Storage service available, calling addUserLog`);
                     // Don't await to avoid blocking - let it run in background
                     storage.addUserLog(userId, 'info', message, category, context, traceId, deviceId)
+                        .then(result => {
+                            console.log(`[DEBUG] User log persisted successfully:`, { logId: result.id, userId, message });
+                        })
                         .catch(err => {
                             console.error(`[MCP INFO] Failed to persist user log: ${err.message}`);
                         });
+                } else {
+                    console.error(`[DEBUG] Storage service not available for user log persistence`);
                 }
             } catch (storageError) {
                 console.error(`[MCP INFO] Error accessing storage for user log: ${storageError.message}`);
@@ -778,8 +831,14 @@ async function debug(message, context = {}, category = 'general', traceId = null
 
 /**
  * Track a metric
+ * @param {string} name - Metric name
+ * @param {any} value - Metric value
+ * @param {Object} context - Additional context
+ * @param {string|null} userId - User ID if available
+ * @param {string|null} deviceId - Device ID if available
+ * @param {boolean} fromEvent - Internal flag to prevent recursion, true if this call originated from an event
  */
-async function trackMetric(name, value, context = {}, userId = null, deviceId = null) {
+async function trackMetric(name, value, context = {}, userId = null, deviceId = null, fromEvent = false) {
     // Skip metrics about storage operations to prevent recursive loops
     if (name.startsWith('storage_') || context.category === 'storage') {
         // Just log to console instead of persisting to prevent recursion
@@ -823,13 +882,27 @@ async function trackMetric(name, value, context = {}, userId = null, deviceId = 
         });
     }
     
-    // Emit metric event if event service is available
-    if (eventService) {
+    // IMPORTANT: We've completely disabled metric event emission to prevent recursion
+    // The monitoring service no longer subscribes to metric events
+    // This ensures metrics are logged but don't trigger additional events
+    
+    // Store user-specific metrics in database if storage service is available
+    if (userId) {
         try {
-            await eventService.publish(eventTypes.METRIC, logData);
-        } catch (error) {
-            // Don't log this error to avoid potential recursion
-            console.error(`[MCP MONITORING] Failed to publish metric event: ${error.message}`);
+            const storage = getStorageService();
+            if (storage) {
+                // Don't await to avoid blocking - let it run in background
+                storage.addUserLog(userId, 'info', `Metric: ${name}`, 'metrics', {
+                    metricName: name,
+                    metricValue: value,
+                    ...context
+                }, null, deviceId)
+                    .catch(err => {
+                        console.error(`[MCP METRIC] Failed to persist user log: ${err.message}`);
+                    });
+            }
+        } catch (storageError) {
+            console.error(`[MCP METRIC] Error accessing storage for user log: ${storageError.message}`);
         }
     }
     

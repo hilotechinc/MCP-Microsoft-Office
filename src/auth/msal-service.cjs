@@ -271,8 +271,8 @@ async function handleAuthCallback(req, res) {
                 timestamp: new Date().toISOString()
             }, 'auth');
             
-            // Store token using session ID as user identifier for session-based auth
-            const userKey = req.session?.id ? `user:${req.session.id}` : 'default';
+            // MICROSOFT 365-CENTRIC AUTH: Store token using Microsoft 365 email as user identifier
+            const userKey = `ms365:${userInfo.username}`;
             await storageService.setSecureSetting(`${userKey}:ms-access-token`, userInfo.accessToken, req.session?.id);
             await storageService.setSetting(`${userKey}:ms-user-info`, {
                 username: userInfo.username,
@@ -321,13 +321,17 @@ async function isAuthenticated(req) {
     let userId, sessionId;
     
     if (req.user?.isApiCall && req.user?.userId) {
-        // Device auth flow - use userId from JWT token
-        userId = req.user.userId;
+        // Device auth flow - use Microsoft 365-based userId from JWT token
+        userId = req.user.userId;  // This should be ms365:email@domain.com
         sessionId = req.user.sessionId || req.user.userId;
-    } else if (req.session?.id) {
-        // Session-based auth flow - use session ID
+    } else if (req.session?.id && req.session?.msUser?.username) {
+        // Session-based auth flow - use Microsoft 365 email as consistent identifier
         sessionId = req.session.id;
-        userId = `user:${sessionId}`;
+        userId = `ms365:${req.session.msUser.username}`;
+    } else if (req.session?.id) {
+        // Fallback for sessions without Microsoft 365 auth
+        sessionId = req.session.id;
+        userId = `session:${sessionId}`;
     }
     
     MonitoringService.info('Checking authentication status', {

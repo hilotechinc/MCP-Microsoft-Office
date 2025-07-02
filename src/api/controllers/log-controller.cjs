@@ -9,6 +9,7 @@ const express = require('express');
 const MonitoringService = require('../../core/monitoring-service.cjs');
 const ErrorService = require('../../core/error-service.cjs');
 const StorageService = require('../../core/storage-service.cjs');
+const { resolveUserId } = require('../../core/user-id-resolver.cjs');
 
 // No need to maintain a separate cache of logs - use monitoring service's circular buffer for global logs
 // User-specific logs are retrieved from the database
@@ -94,9 +95,9 @@ async function getLogEntries(req, res) {
         const { limit = '100', category, level, source, scope = 'user' } = req.query;
         const parsedLimit = parseInt(limit, 10) || 100;
         
-        // Check if user is authenticated and we have user context
-        const isAuthenticated = req.user && req.user.userId;
-        const userId = isAuthenticated ? req.user.userId : null;
+        // Check if user is authenticated and resolve consistent user ID
+        const userId = resolveUserId(req);
+        const isAuthenticated = !!userId;
         
         // Only log if this is not an auto-refresh request to prevent feedback loops
         if ((req.headers['x-requested-by'] !== 'auto-refresh') && process.env.NODE_ENV === 'development') {
@@ -125,10 +126,13 @@ async function getLogEntries(req, res) {
                 };
                 
                 // Get user logs from storage service
+                console.log(`[DEBUG] Fetching user logs for userId: ${userId}`);
                 const userLogs = await StorageService.getUserLogs(userId, options);
+                console.log(`[DEBUG] Found ${userLogs ? userLogs.length : 0} user logs`);
                 
                 if (userLogs && userLogs.length > 0) {
                     result = userLogs;
+                    console.log(`[DEBUG] Using ${userLogs.length} user logs from database`);
                     
                     // Only log detailed info for non-auto-refresh requests
                     if ((req.headers['x-requested-by'] !== 'auto-refresh') && process.env.NODE_ENV === 'development') {
@@ -151,18 +155,21 @@ async function getLogEntries(req, res) {
         
         // If no user logs were found or we're requesting global logs, get from circular buffer
         if (result.length === 0 || scope === 'global') {
+            console.log(`[DEBUG] Falling back to system logs. User logs found: ${result.length}, scope: ${scope}`);
             // Get logs from monitoring service's circular buffer
             const logs = MonitoringService.getLogBuffer().getAll();
+            console.log(`[DEBUG] Retrieved ${logs.length} system logs from circular buffer`);
             
             // Apply filtering based on query parameters
             let filteredLogs = filterLogs(logs, { category, level });
             
             // If user is authenticated and we're not explicitly requesting global logs,
             // filter to only show logs that match the user's ID or have no user ID
-            if (isAuthenticated && scope !== 'global') {
+            if (isAuthenticated && userId) {
+                // Filter logs to only include those for the authenticated user
+                // Do NOT include system logs (logs without userId) when fetching user logs
                 filteredLogs = filteredLogs.filter(log => {
-                    // Include logs that have matching userId or no userId at all
-                    return (!log.userId || log.userId === userId);
+                    return log.userId === userId;
                 });
             }
             
