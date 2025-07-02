@@ -1,6 +1,7 @@
 /**
  * @fileoverview Request logger middleware for MCP API.
  * Logs detailed information about API requests and their flow through the system.
+ * Includes user context for multi-user isolation and monitoring.
  */
 
 const MonitoringService = require('../../core/monitoring-service.cjs');
@@ -20,6 +21,9 @@ function createRequestLogger(component) {
             req.requestId = uuidv4();
         }
         
+        // Extract user context if available from req.user (set by auth middleware)
+        const { userId, deviceId } = req.user || {};
+        
         // Create context object with request details
         const context = {
             requestId: req.requestId,
@@ -38,7 +42,10 @@ function createRequestLogger(component) {
             MonitoringService.info(
                 `Request entered ${component}`,
                 context,
-                component
+                component,
+                null, // traceId
+                userId,
+                deviceId
             );
         }
         
@@ -67,7 +74,10 @@ function createRequestLogger(component) {
                         processingTimeMs: processingTimeMs.toFixed(2),
                         contentType: res.getHeader('content-type')
                     },
-                    component
+                    component,
+                    null, // traceId
+                    userId,
+                    deviceId
                 );
             }
             

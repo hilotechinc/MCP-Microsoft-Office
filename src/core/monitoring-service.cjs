@@ -10,6 +10,19 @@ const os = require('os');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 
+// Lazy load storage service to avoid circular dependency
+let storageService = null;
+function getStorageService() {
+  if (!storageService) {
+    try {
+      storageService = require('./storage-service.cjs');
+    } catch (error) {
+      console.warn('[MONITORING] Could not load storage service:', error.message);
+    }
+  }
+  return storageService;
+}
+
 // Import event service for event-based architecture (lazy loaded to avoid circular dependency)
 let eventService = null;
 
@@ -458,52 +471,87 @@ function createLogData(level, message, context = {}, category = '', traceId = nu
 /**
  * Logs an error event - maintains same signature as original
  */
-function logError(error) {
-    if (!logger) initLogger();
+async function logError(error) {
+    // Skip if emergency mode is active
+    if (emergencyLoggingDisabled) return;
+
+    // Check memory before processing expensive operation
+    checkMemoryForEmergency();
     
-    if (!shouldLogError(error.category)) {
+    // If not an MCP error, create one
+    const mcpError = error && error.category ? error : ErrorService.createError(
+        'unknown',
+        error?.message || error?.toString() || 'Unknown error',
+        'error',
+        error
+    );
+
+    // Extract necessary fields
+    const category = mcpError.category || 'unknown';
+    const message = mcpError.message || 'Unknown error';
+    
+    // Check if we should throttle this error
+    if (!shouldLogError(category)) {
         return;
     }
     
-    const logData = {
-        id: error.id,
-        category: error.category,
-        message: error.message,
-        severity: error.severity,
-        context: error.context || {},
-        timestamp: error.timestamp || new Date().toISOString(),
-        level: 'error'
+    // Format context
+    const context = {
+        ...mcpError.context,
+        error: mcpError.stack || mcpError.toString(),
+        category: mcpError.category,
+        severity: mcpError.severity
     };
     
-    if (error.traceId) {
-        logData.traceId = error.traceId;
-    }
-    
-    // Add to circular buffer
-    logBuffer.add(logData);
-    
-    // Don't emit event for our own logs - only handle events from other services
+    // Generate traceId if not provided
+    const traceId = mcpError.traceId || uuidv4();
+    const userId = mcpError.userId;
+    const deviceId = mcpError.deviceId;
+
+    // Create log data with error details
+    const logData = createLogData('error', message, context, category, traceId, userId, deviceId);
     
     try {
-        logger.error(logData.message, {
-            context: logData.context,
-            category: logData.category,
-            timestamp: logData.timestamp,
-            id: logData.id,
-            pid: logData.pid,
-            hostname: logData.hostname,
-            version: logData.version,
-            traceId: logData.traceId
+        // Log to file
+        logger.error(message, {
+            category,
+            context,
+            traceId,
+            userId,
+            deviceId
         });
-    } catch (err) {
-        console.error(`[MONITORING] Failed to log error: ${err.message}`);
+        
+        // Emit error event
+        if (eventService) {
+            eventService.publish(eventTypes.ERROR, logData);
+        }
+
+        // Persist user-specific logs if userId is provided
+        if (userId) {
+            try {
+                const storage = getStorageService();
+                if (storage) {
+                    // Don't await to avoid blocking - let it run in background
+                    storage.addUserLog(userId, 'error', message, category, context, traceId, deviceId)
+                        .catch(err => {
+                            console.error(`[MCP ERROR] Failed to persist user log: ${err.message}`);
+                        });
+                }
+            } catch (storageError) {
+                console.error(`[MCP ERROR] Error accessing storage for user log: ${storageError.message}`);
+            }
+        }
+    } catch (e) {
+        // Last resort fallback to console
+        console.error(`[MCP ERROR] Failed to log error: ${e.message}`);
+        console.error(`Original error: ${message}`);
     }
 }
 
 /**
  * Logs an error message - maintains same signature as original
  */
-function error(message, context = {}, category = '', traceId = null, userId = null, deviceId = null) {
+async function error(message, context = {}, category = '', traceId = null, userId = null, deviceId = null) {
     if (checkMemoryForEmergency()) {
         return;
     }
@@ -543,6 +591,22 @@ function error(message, context = {}, category = '', traceId = null, userId = nu
                 userId: logData.userId,
                 deviceId: logData.deviceId
             });
+            
+            // Persist user-specific logs if userId is provided
+            if (userId) {
+                try {
+                    const storage = getStorageService();
+                    if (storage) {
+                        // Don't await to avoid blocking - let it run in background
+                        storage.addUserLog(userId, 'error', message, category, context, traceId, deviceId)
+                            .catch(err => {
+                                console.error(`[MCP ERROR] Failed to persist user log: ${err.message}`);
+                            });
+                    }
+                } catch (storageError) {
+                    console.error(`[MCP ERROR] Error accessing storage for user log: ${storageError.message}`);
+                }
+            }
         } catch (err) {
             console.error(`[MONITORING] Failed to log error: ${err.message}`);
         }
@@ -552,7 +616,7 @@ function error(message, context = {}, category = '', traceId = null, userId = nu
 /**
  * Logs an info message - maintains same signature as original
  */
-function info(message, context = {}, category = 'general', traceId = null, userId = null, deviceId = null) {
+async function info(message, context = {}, category = 'general', traceId = null, userId = null, deviceId = null) {
     if (checkMemoryForEmergency()) {
         return;
     }
@@ -583,6 +647,22 @@ function info(message, context = {}, category = 'general', traceId = null, userI
             userId: logData.userId,
             deviceId: logData.deviceId
         });
+        
+        // Persist user-specific logs if userId is provided
+        if (userId) {
+            try {
+                const storage = getStorageService();
+                if (storage) {
+                    // Don't await to avoid blocking - let it run in background
+                    storage.addUserLog(userId, 'info', message, category, context, traceId, deviceId)
+                        .catch(err => {
+                            console.error(`[MCP INFO] Failed to persist user log: ${err.message}`);
+                        });
+                }
+            } catch (storageError) {
+                console.error(`[MCP INFO] Error accessing storage for user log: ${storageError.message}`);
+            }
+        }
     } catch (err) {
         console.error(`[MONITORING] Failed to log info message: ${err.message}`);
     }
@@ -591,7 +671,11 @@ function info(message, context = {}, category = 'general', traceId = null, userI
 /**
  * Logs a warning message - maintains same signature as original
  */
-function warn(message, context = {}, category = 'general', traceId = null, userId = null, deviceId = null) {
+async function warn(message, context = {}, category = 'general', traceId = null, userId = null, deviceId = null) {
+    if (checkMemoryForEmergency()) {
+        return;
+    }
+    
     if (!logger) initLogger();
     
     if (shouldFilterLog('warn', message, category, context)) {
@@ -602,8 +686,6 @@ function warn(message, context = {}, category = 'general', traceId = null, userI
     
     // Add to circular buffer
     logBuffer.add(logData);
-    
-    // Don't emit event for our own logs - only handle events from other services
     
     try {
         logger.warn(logData.message, {
@@ -618,6 +700,22 @@ function warn(message, context = {}, category = 'general', traceId = null, userI
             userId: logData.userId,
             deviceId: logData.deviceId
         });
+        
+        // Persist user-specific logs if userId is provided
+        if (userId) {
+            try {
+                const storage = getStorageService();
+                if (storage) {
+                    // Don't await to avoid blocking - let it run in background
+                    storage.addUserLog(userId, 'warn', message, category, context, traceId, deviceId)
+                        .catch(err => {
+                            console.error(`[MCP WARN] Failed to persist user log: ${err.message}`);
+                        });
+                }
+            } catch (storageError) {
+                console.error(`[MCP WARN] Error accessing storage for user log: ${storageError.message}`);
+            }
+        }
     } catch (err) {
         console.error(`[MONITORING] Failed to log warning message: ${err.message}`);
     }
@@ -626,7 +724,11 @@ function warn(message, context = {}, category = 'general', traceId = null, userI
 /**
  * Logs a debug message - maintains same signature as original
  */
-function debug(message, context = {}, category = 'general', traceId = null, userId = null, deviceId = null) {
+async function debug(message, context = {}, category = 'general', traceId = null, userId = null, deviceId = null) {
+    if (checkMemoryForEmergency()) {
+        return;
+    }
+    
     if (!logger) initLogger();
     
     if (shouldFilterLog('debug', message, category, context)) {
@@ -653,6 +755,22 @@ function debug(message, context = {}, category = 'general', traceId = null, user
             userId: logData.userId,
             deviceId: logData.deviceId
         });
+        
+        // Persist user-specific logs if userId is provided
+        if (userId) {
+            try {
+                const storage = getStorageService();
+                if (storage) {
+                    // Don't await to avoid blocking - let it run in background
+                    storage.addUserLog(userId, 'debug', message, category, context, traceId, deviceId)
+                        .catch(err => {
+                            console.error(`[MCP DEBUG] Failed to persist user log: ${err.message}`);
+                        });
+                }
+            } catch (storageError) {
+                console.error(`[MCP DEBUG] Error accessing storage for user log: ${storageError.message}`);
+            }
+        }
     } catch (err) {
         console.error(`[MONITORING] Failed to log debug message: ${err.message}`);
     }
@@ -661,9 +779,78 @@ function debug(message, context = {}, category = 'general', traceId = null, user
 /**
  * Track a metric
  */
-function trackMetric(name, value, context = {}, userId = null, deviceId = null) {
-    if (checkMemoryForEmergency()) {
+async function trackMetric(name, value, context = {}, userId = null, deviceId = null) {
+    // Skip metrics about storage operations to prevent recursive loops
+    if (name.startsWith('storage_') || context.category === 'storage') {
+        // Just log to console instead of persisting to prevent recursion
+        if (logger) {
+            logger.debug(`[METRIC] ${name}: ${value}`, { 
+                metricName: name, 
+                metricValue: value,
+                ...context
+            });
+        }
         return;
+    }
+
+    // Emergency memory protection
+    if (emergencyLoggingDisabled) return;
+    
+    // Check memory periodically during metric tracking
+    if (Date.now() - lastMemoryCheck > MEMORY_CHECK_INTERVAL_MS) {
+        checkMemoryForEmergency();
+    }
+    
+    // Add to circular buffer
+    const logData = {
+        type: 'metric',
+        name,
+        value,
+        context,
+        timestamp: new Date().toISOString(),
+        userId,
+        deviceId
+    };
+    
+    logBuffer.add(logData);
+    
+    // Log to Winston
+    if (logger) {
+        logger.debug(`[METRIC] ${name}: ${value}`, { 
+            metricName: name, 
+            metricValue: value,
+            ...context
+        });
+    }
+    
+    // Emit metric event if event service is available
+    if (eventService) {
+        try {
+            await eventService.publish(eventTypes.METRIC, logData);
+        } catch (error) {
+            // Don't log this error to avoid potential recursion
+            console.error(`[MCP MONITORING] Failed to publish metric event: ${error.message}`);
+        }
+    }
+    
+    // Store user-specific metrics in database if storage service is available
+    // and we have a user ID
+    if (userId && name !== 'storage_add_user_log_success') {
+        try {
+            const storage = getStorageService();
+            if (storage && typeof storage.addUserLog === 'function') {
+                storage.addUserLog(userId, 'info', `Metric: ${name}`, 'metrics', {
+                    metricName: name,
+                    metricValue: value,
+                    ...context
+                }, null, deviceId)
+                    .catch(err => {
+                        console.error(`[MCP METRIC] Failed to persist user log: ${err.message}`);
+                    });
+            }
+        } catch (storageError) {
+            console.error(`[MCP METRIC] Error accessing storage for user log: ${storageError.message}`);
+        }
     }
     
     if (!logger) initLogger();
@@ -673,7 +860,7 @@ function trackMetric(name, value, context = {}, userId = null, deviceId = null) 
         return;
     }
     
-    const logData = {
+    const metricLogData = {
         level: 'info',
         message: `Metric: ${name}`,
         context: {
@@ -686,24 +873,44 @@ function trackMetric(name, value, context = {}, userId = null, deviceId = null) 
     };
     
     if (userId) {
-        logData.userId = userId;
+        metricLogData.userId = userId;
     }
     
     if (deviceId) {
-        logData.deviceId = deviceId;
+        metricLogData.deviceId = deviceId;
     }
     
     // Add to circular buffer
-    logBuffer.add(logData);
+    logBuffer.add(metricLogData);
     
     // Log to Winston
     logger.info(`Metric: ${name}`, {
-        context: logData.context,
-        category: logData.category,
-        timestamp: logData.timestamp,
-        userId: logData.userId,
-        deviceId: logData.deviceId
+        context: metricLogData.context,
+        category: metricLogData.category,
+        timestamp: metricLogData.timestamp,
+        userId: metricLogData.userId,
+        deviceId: metricLogData.deviceId
     });
+    
+    // Persist user-specific logs if userId is provided
+    if (userId) {
+        try {
+            const storage = getStorageService();
+            if (storage) {
+                // Don't await to avoid blocking - let it run in background
+                storage.addUserLog(userId, 'info', `Metric: ${name}`, 'metrics', {
+                    metricName: name,
+                    metricValue: value,
+                    ...context
+                }, null, deviceId)
+                    .catch(err => {
+                        console.error(`[MCP METRIC] Failed to persist user log: ${err.message}`);
+                    });
+            }
+        } catch (storageError) {
+            console.error(`[MCP METRIC] Error accessing storage for user log: ${storageError.message}`);
+        }
+    }
     
     // Don't emit events for metrics to prevent recursion
 }

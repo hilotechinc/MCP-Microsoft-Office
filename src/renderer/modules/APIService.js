@@ -140,12 +140,18 @@ export class APIService {
     /**
      * Fetch logs from API
      * @param {Object} options - Fetch options
+     * @param {string} [options.scope='user'] - Whether to fetch 'user' or 'global' logs
      * @returns {Promise<Array>} Logs data
      */
     async fetchLogs(options = {}) {
         const startTime = Date.now();
         
         try {
+            // Default to user-specific logs unless explicitly set otherwise
+            if (!options.scope) {
+                options.scope = 'user';
+            }
+
             window.MonitoringService && window.MonitoringService.info('Fetching logs', { 
                 options: this.redactSensitiveData(options),
                 operation: 'logs-fetch'
@@ -163,7 +169,21 @@ export class APIService {
                     }
                 });
                 
-                const response = await fetch(url);
+                // Add headers for authentication and auto-refresh identification
+                const headers = {
+                    'Content-Type': 'application/json'
+                };
+                
+                // Mark as auto-refresh if that's what it is
+                if (options.autoRefresh) {
+                    headers['X-Requested-By'] = 'auto-refresh';
+                }
+                
+                const response = await fetch(url, {
+                    headers,
+                    credentials: 'include' // Include cookies for authentication
+                });
+                
                 if (!response.ok) {
                     throw new Error(`HTTP ${response.status}: ${response.statusText}`);
                 }
@@ -174,6 +194,7 @@ export class APIService {
             window.MonitoringService && window.MonitoringService.trackMetric('logs_fetch_success', executionTime, {
                 method: this.ipcAvailable ? 'ipc' : 'http',
                 logCount: Array.isArray(logs) ? logs.length : 0,
+                scope: options.scope,
                 timestamp: new Date().toISOString()
             });
             
@@ -184,6 +205,7 @@ export class APIService {
             window.MonitoringService && window.MonitoringService.trackMetric('logs_fetch_failure', executionTime, {
                 method: this.ipcAvailable ? 'ipc' : 'http',
                 error: error.message,
+                scope: options.scope,
                 timestamp: new Date().toISOString()
             });
             

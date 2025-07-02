@@ -424,10 +424,83 @@ class MigrationManager {
       }
     });
 
+    // Migration 004: User-specific logging table
+    this.migrations.push({
+      version: 4,
+      name: 'user_logs',
+      description: 'Create user-specific logging table',
+      up: {
+        sqlite: `
+          CREATE TABLE IF NOT EXISTS user_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            level TEXT NOT NULL,
+            message TEXT NOT NULL,
+            category TEXT,
+            context TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            trace_id TEXT,
+            device_id TEXT
+          );
+          
+          CREATE INDEX IF NOT EXISTS idx_user_logs_user_id ON user_logs(user_id);
+          CREATE INDEX IF NOT EXISTS idx_user_logs_timestamp ON user_logs(timestamp);
+          CREATE INDEX IF NOT EXISTS idx_user_logs_category ON user_logs(category);
+          CREATE INDEX IF NOT EXISTS idx_user_logs_level ON user_logs(level);
+        `,
+        postgresql: `
+          CREATE TABLE IF NOT EXISTS user_logs (
+            id SERIAL PRIMARY KEY,
+            user_id VARCHAR(255) NOT NULL,
+            level VARCHAR(50) NOT NULL,
+            message TEXT NOT NULL,
+            category VARCHAR(100),
+            context TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            trace_id VARCHAR(100),
+            device_id VARCHAR(100)
+          );
+          
+          CREATE INDEX IF NOT EXISTS idx_user_logs_user_id ON user_logs(user_id);
+          CREATE INDEX IF NOT EXISTS idx_user_logs_timestamp ON user_logs(timestamp);
+          CREATE INDEX IF NOT EXISTS idx_user_logs_category ON user_logs(category);
+          CREATE INDEX IF NOT EXISTS idx_user_logs_level ON user_logs(level);
+        `,
+        mysql: `
+          CREATE TABLE IF NOT EXISTS user_logs (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id VARCHAR(255) NOT NULL,
+            level VARCHAR(50) NOT NULL,
+            message TEXT NOT NULL,
+            category VARCHAR(100),
+            context TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            trace_id VARCHAR(100),
+            device_id VARCHAR(100)
+          );
+          
+          CREATE INDEX idx_user_logs_user_id ON user_logs(user_id);
+          CREATE INDEX idx_user_logs_timestamp ON user_logs(timestamp);
+          CREATE INDEX idx_user_logs_category ON user_logs(category);
+          CREATE INDEX idx_user_logs_level ON user_logs(level);
+        `
+      },
+      down: {
+        sqlite: `
+          DROP TABLE IF EXISTS user_logs;
+        `,
+        postgresql: `
+          DROP TABLE IF EXISTS user_logs;
+        `,
+        mysql: `
+          DROP TABLE IF EXISTS user_logs;
+        `
+      }
+    });
+
     MonitoringService.info('Loaded database migrations', {
       migrationCount: this.migrations.length,
-      versions: this.migrations.map(m => m.version),
-      timestamp: new Date().toISOString()
+      versions: this.migrations.map(m => m.version)
     }, 'database');
   }
 

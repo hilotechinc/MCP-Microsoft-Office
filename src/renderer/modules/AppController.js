@@ -407,6 +407,16 @@ export class AppController {
                     <div class="card-header-top">
                         <h3 class="card-title">Recent Activity</h3>
                         <div class="card-controls">
+                            <div class="log-scope-selector">
+                                <label class="radio-label">
+                                    <input type="radio" name="log-scope" value="user" checked>
+                                    <span>User Logs</span>
+                                </label>
+                                <label class="radio-label">
+                                    <input type="radio" name="log-scope" value="global">
+                                    <span>Global Logs</span>
+                                </label>
+                            </div>
                             <label class="toggle-switch">
                                 <input type="checkbox" id="auto-refresh-toggle" checked>
                                 <span class="toggle-slider"></span>
@@ -430,12 +440,39 @@ export class AppController {
      */
     async initializeDashboardComponents() {
         try {
-            // Setup auto-refresh toggle
+            // Setup log auto-refresh toggle
             const autoRefreshToggle = document.getElementById('auto-refresh-toggle');
             if (autoRefreshToggle) {
                 autoRefreshToggle.addEventListener('change', () => {
-                    // Implement auto-refresh logic for logs
                     this.handleAutoRefreshToggle(autoRefreshToggle.checked);
+                    
+                    // Initialize auto-refresh if checked
+                    if (autoRefreshToggle.checked) {
+                        this.startLogAutoRefresh();
+                    }
+                });
+                
+                // Initialize auto-refresh if checked
+                if (autoRefreshToggle.checked) {
+                    this.startLogAutoRefresh();
+                }
+            }
+            
+            // Setup log scope selector
+            const logScopeSelectors = document.querySelectorAll('input[name="log-scope"]');
+            if (logScopeSelectors.length > 0) {
+                logScopeSelectors.forEach(radio => {
+                    radio.addEventListener('change', () => {
+                        // When scope changes, fetch logs with the new scope
+                        const scope = radio.value;
+                        this.fetchRecentLogs(true, scope, false);
+                        
+                        // Log the scope change
+                        window.MonitoringService && window.MonitoringService.info('Log scope changed', {
+                            scope: scope,
+                            operation: 'log-scope-change'
+                        }, 'renderer');
+                    });
                 });
             }
             
@@ -443,7 +480,10 @@ export class AppController {
             const clearLogsBtn = document.getElementById('clear-logs-btn');
             if (clearLogsBtn) {
                 clearLogsBtn.addEventListener('click', () => {
-                    this.clearLogs();
+                    // Get the currently selected scope
+                    const scopeSelector = document.querySelector('input[name="log-scope"]:checked');
+                    const scope = scopeSelector ? scopeSelector.value : 'user';
+                    this.clearLogs(scope);
                 });
             }
             
@@ -455,7 +495,7 @@ export class AppController {
             }
             
             // Fetch and display initial logs
-            this.fetchRecentLogs();
+            this.fetchRecentLogs(true, 'user');
             
         } catch (error) {
             window.MonitoringService && window.MonitoringService.error('Error initializing dashboard components', {
@@ -478,16 +518,35 @@ export class AppController {
     }
 
     /**
-     * Start auto-refresh for logs
+     * Start auto-refreshing logs
      */
     startLogAutoRefresh() {
+        // Clear any existing interval
         if (this.logRefreshInterval) {
             clearInterval(this.logRefreshInterval);
         }
         
+        // Set up auto-refresh interval
         this.logRefreshInterval = setInterval(() => {
-            this.fetchRecentLogs(false); // Don't clear existing logs during auto-refresh
+            // Get the currently selected scope from the UI
+            const scopeSelector = document.querySelector('input[name="log-scope"]:checked');
+            const currentScope = scopeSelector ? scopeSelector.value : 'user';
+            
+            // Fetch logs with the current scope, preserving existing logs
+            this.fetchRecentLogs(false, currentScope, true); // Don't clear existing logs during auto-refresh
         }, 10000); // Refresh every 10 seconds
+        
+        // Update UI to show auto-refresh is on
+        const autoRefreshToggle = document.getElementById('auto-refresh-toggle');
+        if (autoRefreshToggle) {
+            autoRefreshToggle.checked = true;
+        }
+        
+        // Log the auto-refresh start
+        window.MonitoringService && window.MonitoringService.info('Started log auto-refresh', {
+            interval: '10s',
+            operation: 'auto-refresh-start'
+        }, 'renderer');
     }
 
     /**
@@ -505,31 +564,62 @@ export class AppController {
      * @param {string} filter - Filter type ('all', 'mail', 'calendar', 'files')
      */
     handleLogFilter(filter) {
-        // Apply filtering to logs
         this.currentLogFilter = filter;
-        this.fetchRecentLogs(true);
+        this.fetchRecentLogs(true, 'user'); // Default to user scope when manually filtering
     }
 
     /**
      * Fetch recent logs and display them
      * @param {boolean} clearExisting - Whether to clear existing logs
+     * @param {string} [scope='user'] - Whether to fetch 'user' or 'global' logs
+     * @param {boolean} [isAutoRefresh=false] - Whether this is an auto-refresh call
      */
-    async fetchRecentLogs(clearExisting = true) {
+    async fetchRecentLogs(clearExisting = true, scope = 'user', isAutoRefresh = false) {
         try {
+            // Get the currently selected scope if not explicitly provided
+            if (!scope && !isAutoRefresh) {
+                const scopeSelector = document.querySelector('input[name="log-scope"]:checked');
+                scope = scopeSelector ? scopeSelector.value : 'user';
+            }
+            
+            // Update the radio button selection to match the scope
+            if (!isAutoRefresh) {
+                const scopeRadio = document.querySelector(`input[name="log-scope"][value="${scope}"]`);
+                if (scopeRadio) {
+                    scopeRadio.checked = true;
+                }
+            }
+            
             const options = {
                 limit: 50,
-                category: this.currentLogFilter !== 'all' ? this.currentLogFilter : undefined
+                category: this.currentLogFilter !== 'all' ? this.currentLogFilter : undefined,
+                scope: scope, // 'user' or 'global'
+                autoRefresh: isAutoRefresh // Add header flag for auto-refresh requests
             };
             
             const logsResponse = await this.apiService.fetchLogs(options);
             
-            // Debug log the response to see what we're getting
-            window.MonitoringService && window.MonitoringService.info('Logs response data', { 
-                logsResponse: logsResponse,
-                type: typeof logsResponse,
-                isArray: Array.isArray(logsResponse),
-                operation: 'log-fetch-debug'
-            }, 'renderer');
+            // Debug log the response only if not an auto-refresh to prevent log spam
+            if (!isAutoRefresh && window.MonitoringService) {
+                try {
+                    // Use info instead of debug if debug is not available
+                    const logMethod = typeof window.MonitoringService.debug === 'function' ? 
+                        window.MonitoringService.debug : 
+                        (typeof window.MonitoringService.info === 'function' ? 
+                            window.MonitoringService.info : null);
+                    
+                    if (logMethod) {
+                        logMethod.call(window.MonitoringService, 'Logs response data', { 
+                            logCount: Array.isArray(logsResponse) ? logsResponse.length : 0,
+                            isArray: Array.isArray(logsResponse),
+                            scope: scope,
+                            operation: 'log-fetch-debug'
+                        }, 'renderer');
+                    }
+                } catch (logError) {
+                    console.log('Error logging to MonitoringService:', logError);
+                }
+            }
             
             // Handle different response formats
             let logs;
@@ -543,21 +633,44 @@ export class AppController {
                 // If it's not an array, create an empty array
                 logs = [];
                 window.MonitoringService && window.MonitoringService.warn('Logs response is not an array', { 
-                    logsResponse: logsResponse,
-                    operation: 'log-fetch-warning'
+                    operation: 'log-fetch-warning',
+                    scope: scope
                 }, 'renderer');
+            }
+            
+            // Update the log scope indicator in the UI
+            let scopeIndicator = document.querySelector('.log-scope-indicator');
+            
+            // If the indicator doesn't exist, create it
+            if (!scopeIndicator) {
+                const cardHeader = document.querySelector('.card-header-top');
+                if (cardHeader) {
+                    scopeIndicator = document.createElement('span');
+                    scopeIndicator.className = `log-scope-indicator ${scope}-scope`;
+                    cardHeader.appendChild(scopeIndicator);
+                }
+            }
+            
+            // Update the indicator text and class
+            if (scopeIndicator) {
+                scopeIndicator.textContent = `Showing ${scope} logs`;
+                scopeIndicator.className = `log-scope-indicator ${scope}-scope`;
             }
             
             this.displayLogs(logs, clearExisting);
         } catch (error) {
             window.MonitoringService && window.MonitoringService.error('Error fetching logs', {
                 error: error.message,
-                operation: 'log-fetch'
+                operation: 'log-fetch',
+                scope: scope
             }, 'renderer');
             
-            const logsContainer = document.getElementById('recent-logs');
-            if (logsContainer) {
-                logsContainer.innerHTML = '<p class="error">Error loading logs: ' + error.message + '</p>';
+            // Only update UI with error if it wasn't an auto-refresh request
+            if (!isAutoRefresh) {
+                const logsContainer = document.getElementById('recent-logs');
+                if (logsContainer) {
+                    logsContainer.innerHTML = '<p class="error">Error loading logs: ' + error.message + '</p>';
+                }
             }
         }
     }
@@ -571,10 +684,12 @@ export class AppController {
         const logsContainer = document.getElementById('recent-logs');
         if (!logsContainer) return;
 
-        if (!logs || logs.length === 0) {
-            if (clearExisting) {
-                logsContainer.innerHTML = '<p>No recent activity to display</p>';
-            }
+        // Initialize logs array if not provided
+        logs = logs || [];
+        
+        // If we're clearing existing logs and there are no new logs, show empty message
+        if (logs.length === 0 && clearExisting) {
+            logsContainer.innerHTML = '<p>No recent activity to display</p>';
             return;
         }
 
@@ -588,6 +703,8 @@ export class AppController {
                 const level = entry.getAttribute('data-level');
                 const category = entry.getAttribute('data-category');
                 const message = entry.querySelector('.log-message')?.textContent;
+                const userId = entry.getAttribute('data-user-id') || '';
+                const deviceId = entry.getAttribute('data-device-id') || '';
                 
                 if (timestamp && level && message) {
                     allLogs.push({
@@ -595,6 +712,8 @@ export class AppController {
                         level,
                         category: category || 'general',
                         message,
+                        userId,
+                        deviceId,
                         id: `existing-${timestamp}-${level}`
                     });
                 }
@@ -649,15 +768,23 @@ export class AppController {
             const message = log.message || '';
             const context = log.context ? JSON.stringify(log.context, null, 2) : '';
             
+            // Extract user context information if available
+            const userId = log.userId || (log.context && log.context.userId) || '';
+            const deviceId = log.deviceId || (log.context && log.context.deviceId) || '';
+            const userBadge = userId ? `<span class="user-badge" title="User ID: ${userId}">${userId.slice(0, 8)}</span>` : '';
+            const deviceBadge = deviceId ? `<span class="device-badge" title="Device ID: ${deviceId}">${deviceId.slice(0, 8)}</span>` : '';
+            
             // Create searchable text content for filtering
-            const searchableContent = `${timestamp} ${level} ${category} ${message} ${context}`.toLowerCase();
+            const searchableContent = `${timestamp} ${level} ${category} ${message} ${context} ${userId} ${deviceId}`.toLowerCase();
             
             logsHtml += `
-                <div class="simple-log-entry" data-level="${level}" data-category="${category}" data-search="${searchableContent}" data-index="${index}">
+                <div class="simple-log-entry" data-level="${level}" data-category="${category}" data-search="${searchableContent}" data-index="${index}" data-user-id="${userId}" data-device-id="${deviceId}">
                     <div class="log-header">
                         <span class="log-timestamp">${timestamp}</span>
                         <span class="log-level level-${level}">${level.toUpperCase()}</span>
                         <span class="log-category">${category}</span>
+                        ${userBadge}
+                        ${deviceBadge}
                         ${log.id ? `<span class="log-id">${log.id.slice(0, 8)}</span>` : ''}
                     </div>
                     <div class="log-message">${message}</div>
@@ -671,7 +798,59 @@ export class AppController {
             `;
         });
 
-        logsHtml += '</div>';
+        logsHtml += `
+            </div>
+            <style>
+                .user-badge, .device-badge {
+                    display: inline-block;
+                    padding: 2px 5px;
+                    border-radius: 3px;
+                    font-size: 11px;
+                    margin-right: 5px;
+                    cursor: default;
+                }
+                .user-badge {
+                    background-color: #e6f7ff;
+                    color: #0070c0;
+                    border: 1px solid #91d5ff;
+                }
+                .device-badge {
+                    background-color: #f6ffed;
+                    color: #52c41a;
+                    border: 1px solid #b7eb8f;
+                }
+                .log-scope-selector {
+                    display: flex;
+                    align-items: center;
+                    margin-right: 15px;
+                }
+                .radio-label {
+                    display: flex;
+                    align-items: center;
+                    margin-right: 10px;
+                    font-size: 12px;
+                    cursor: pointer;
+                }
+                .radio-label input {
+                    margin-right: 4px;
+                }
+                .log-scope-indicator {
+                    font-size: 0.8em;
+                    color: #6c757d;
+                    margin-left: 10px;
+                    padding: 2px 6px;
+                    border-radius: 10px;
+                }
+                .user-scope {
+                    background-color: rgba(0, 123, 255, 0.1);
+                }
+                .global-scope {
+                    background-color: rgba(108, 117, 125, 0.1);
+                }
+            </style>
+        `;
+
+        // Update container with new HTML
         logsContainer.innerHTML = logsHtml;
         
         // Setup simple event listeners
@@ -731,18 +910,31 @@ export class AppController {
 
     /**
      * Clear logs
+     * @param {string} [scope='user'] - Whether to clear 'user' or 'global' logs
      */
-    async clearLogs() {
+    async clearLogs(scope = 'user') {
         try {
-            await this.apiService.clearLogs();
+            // Get the currently selected scope if not provided
+            if (!scope) {
+                const scopeSelector = document.querySelector('input[name="log-scope"]:checked');
+                scope = scopeSelector ? scopeSelector.value : 'user';
+            }
+            
+            await this.apiService.clearLogs({ scope });
             const logsContainer = document.getElementById('recent-logs');
             if (logsContainer) {
                 logsContainer.innerHTML = '<p>No recent activity to display</p>';
             }
+            
+            window.MonitoringService && window.MonitoringService.info('Logs cleared', {
+                scope: scope,
+                operation: 'log-clear'
+            }, 'renderer');
         } catch (error) {
             window.MonitoringService && window.MonitoringService.error('Error clearing logs', {
                 error: error.message,
-                operation: 'log-clear'
+                operation: 'log-clear',
+                scope: scope
             }, 'renderer');
         }
     }
@@ -798,3 +990,6 @@ export class AppController {
 if (typeof window !== 'undefined') {
     window.AppController = AppController;
 }
+
+// Export the controller
+export default AppController;

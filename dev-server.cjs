@@ -20,12 +20,15 @@ const monitoringService = require('./src/core/monitoring-service.cjs');
 const errorService = require('./src/core/error-service.cjs');
 const storageService = require('./src/core/storage-service.cjs');
 
+// Import the server module but don't start it automatically
+const serverModule = require('./src/main/server.cjs');
+
+// Import initialization function for modules
+const { initializeModules } = require('./src/modules/init-modules.cjs');
+
 // Set up dependency injection between services to avoid circular references
 // This is critical to prevent infinite error loops
 errorService.setLoggingService(monitoringService);
-
-// Import the server module but don't start it automatically
-const serverModule = require('./src/main/server.cjs');
 
 // Add global error handlers to prevent crashes
 process.on('uncaughtException', (err) => {
@@ -82,6 +85,19 @@ process.on('unhandledRejection', (reason, promise) => {
 
 async function startDevServer() {
   monitoringService.info('Starting MCP Desktop development server...', {}, 'dev-server');
+  
+  // Initialize database factory and storage service first
+  try {
+    monitoringService.info('Initializing database factory and storage service...', {}, 'dev-server');
+    await initializeModules();
+    monitoringService.info('Database factory and storage service initialized successfully', {}, 'dev-server');
+  } catch (error) {
+    monitoringService.error('Failed to initialize database factory and storage service:', { 
+      error: error.message, 
+      stack: error.stack 
+    }, 'dev-server');
+    throw error;
+  }
   
   // Create a single Express app for both frontend and API
   const app = express();

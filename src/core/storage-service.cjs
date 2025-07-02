@@ -411,6 +411,405 @@ async function getSecure(key, userId) {
     }
 }
 
+/**
+ * Store a user-specific log
+ * @param {string} userId - User ID
+ * @param {string} level - Log level (error, warn, info, debug)
+ * @param {string} message - Log message
+ * @param {string} [category] - Log category
+ * @param {Object} [context] - Additional context for the log
+ * @param {string} [traceId] - Trace ID for request correlation
+ * @param {string} [deviceId] - Device ID that generated the log
+ * @returns {Promise<Object>} The stored log entry
+ */
+async function addUserLog(userId, level, message, category = null, context = null, traceId = null, deviceId = null) {
+  const startTime = Date.now();
+  
+  try {
+    if (!userId) {
+      throw new Error('userId is required for user log storage');
+    }
+
+    const contextStr = context ? JSON.stringify(context) : null;
+    const db = await getConnection();
+    
+    // Use parameterized query to prevent SQL injection
+    const query = `INSERT INTO user_logs (user_id, level, message, category, context, trace_id, device_id) 
+                  VALUES (?, ?, ?, ?, ?, ?, ?)`;
+
+    const params = [userId, level, message, category, contextStr, traceId, deviceId];
+    
+    // Execute query
+    const result = await db.query(query, params);
+    db.release();
+    
+    // Get the inserted row ID (handled differently per database)
+    let logId;
+    if (db.type === 'postgresql') {
+      // PostgreSQL returns the inserted row
+      logId = result.rows[0].id;
+    } else if (db.type === 'sqlite') {
+      // SQLite - use lastID
+      logId = result.lastID;
+    } else {
+      // MySQL - use insertId
+      logId = result.insertId;
+    }
+
+    const executionTime = Date.now() - startTime;
+    // Skip metrics for storage operations to prevent recursive loops
+    if (category !== 'metrics' && level !== 'metric') {
+      MonitoringService.trackMetric('storage_add_user_log_success', executionTime, {
+        userId: userId,
+        level: level,
+        category: category || 'unknown',
+        timestamp: new Date().toISOString()
+      }, 'storage');
+    }
+
+    // Return the created log entry
+    return {
+      id: logId,
+      userId,
+      level,
+      message,
+      category,
+      context,
+      timestamp: new Date(),
+      traceId,
+      deviceId
+    };
+  } catch (error) {
+    const executionTime = Date.now() - startTime;
+    MonitoringService.trackMetric('storage_add_user_log_failure', executionTime, {
+      userId: userId,
+      level: level,
+      category: category || 'unknown',
+      error: error.message,
+      timestamp: new Date().toISOString()
+    }, 'storage');
+
+    const mcpError = ErrorService.createError(
+      ErrorService.CATEGORIES.DATABASE,
+      `Failed to add user log: ${error.message}`,
+      ErrorService.SEVERITIES.ERROR,
+      { userId, level, message, error: error.stack }
+    );
+    MonitoringService.logError(mcpError);
+    throw mcpError;
+  }
+}
+
+/**
+ * Retrieve logs for a specific user
+ * @param {string} userId - User ID
+ * @param {Object} options - Query options
+ * @param {number} [options.limit=100] - Maximum number of logs to retrieve
+ * @param {number} [options.offset=0] - Offset for pagination
+ * @param {string} [options.level] - Filter by log level
+ * @param {string} [options.category] - Filter by category
+ * @param {string} [options.search] - Search term in message
+ * @param {Date} [options.startDate] - Start date for filtering
+ * @param {Date} [options.endDate] - End date for filtering
+ * @returns {Promise<Array>} Array of log entries
+ */
+async function getUserLogs(userId, options = {}) {
+  const startTime = Date.now();
+
+  try {
+    if (!userId) {
+      throw new Error('userId is required for retrieving user logs');
+    }
+
+    const { 
+      limit = 100, 
+      offset = 0, 
+      level = null, 
+      category = null, 
+      search = null,
+      startDate = null,
+      endDate = null
+    } = options;
+    
+    const db = await getConnection();
+    
+    // Build the WHERE clause and params dynamically based on filters
+    let whereConditions = ['user_id = ?'];
+    let params = [userId];
+    
+    if (level) {
+      whereConditions.push('level = ?');
+      params.push(level);
+    }
+    
+    if (category) {
+      whereConditions.push('category = ?');
+      params.push(category);
+    }
+    
+    if (search) {
+      whereConditions.push('message LIKE ?');
+      params.push(`%${search}%`);
+    }
+    
+    if (startDate) {
+      whereConditions.push('timestamp >= ?');
+      params.push(startDate.toISOString());
+    }
+    
+    if (endDate) {
+      whereConditions.push('timestamp <= ?');
+      params.push(endDate.toISOString());
+    }
+    
+    // Create the final WHERE clause
+    const whereClause = whereConditions.join(' AND ');
+    
+    // Create the query with pagination
+    const query = `SELECT * FROM user_logs WHERE ${whereClause} 
+                  ORDER BY timestamp DESC LIMIT ? OFFSET ?`;
+    params.push(limit, offset);
+    
+    const rows = await db.query(query, params);
+    db.release();
+    
+    const executionTime = Date.now() - startTime;
+    MonitoringService.trackMetric('storage_get_user_logs_success', executionTime, {
+      userId: userId,
+      resultCount: rows.length,
+      filters: JSON.stringify(options),
+      timestamp: new Date().toISOString()
+    }, 'storage');
+    
+    // Process the results
+    return rows.map(row => {
+      // Parse context if it exists and is a string
+      let parsedContext = row.context;
+      if (row.context && typeof row.context === 'string') {
+        try {
+          parsedContext = JSON.parse(row.context);
+        } catch (e) {
+          // If parsing fails, keep as string
+        }
+      }
+      
+      return {
+        id: row.id,
+        userId: row.user_id,
+        level: row.level,
+        message: row.message,
+        category: row.category,
+        context: parsedContext,
+        timestamp: new Date(row.timestamp),
+        traceId: row.trace_id,
+        deviceId: row.device_id
+      };
+    });
+  } catch (error) {
+    const executionTime = Date.now() - startTime;
+    MonitoringService.trackMetric('storage_get_user_logs_failure', executionTime, {
+      userId: userId,
+      filters: JSON.stringify(options),
+      error: error.message,
+      timestamp: new Date().toISOString()
+    }, 'storage');
+
+    const mcpError = ErrorService.createError(
+      ErrorService.CATEGORIES.DATABASE,
+      `Failed to get user logs: ${error.message}`,
+      ErrorService.SEVERITIES.ERROR,
+      { userId, options, error: error.stack }
+    );
+    MonitoringService.logError(mcpError);
+    throw mcpError;
+  }
+}
+
+/**
+ * Count total user logs matching filter criteria
+ * @param {string} userId - User ID
+ * @param {Object} options - Filter options
+ * @returns {Promise<number>} Total count of logs
+ */
+async function countUserLogs(userId, options = {}) {
+  const startTime = Date.now();
+
+  try {
+    if (!userId) {
+      throw new Error('userId is required for counting user logs');
+    }
+
+    const { 
+      level = null, 
+      category = null, 
+      search = null,
+      startDate = null,
+      endDate = null
+    } = options;
+    
+    const db = await getConnection();
+    
+    // Build the WHERE clause and params dynamically
+    let whereConditions = ['user_id = ?'];
+    let params = [userId];
+    
+    if (level) {
+      whereConditions.push('level = ?');
+      params.push(level);
+    }
+    
+    if (category) {
+      whereConditions.push('category = ?');
+      params.push(category);
+    }
+    
+    if (search) {
+      whereConditions.push('message LIKE ?');
+      params.push(`%${search}%`);
+    }
+    
+    if (startDate) {
+      whereConditions.push('timestamp >= ?');
+      params.push(startDate.toISOString());
+    }
+    
+    if (endDate) {
+      whereConditions.push('timestamp <= ?');
+      params.push(endDate.toISOString());
+    }
+    
+    // Create the final WHERE clause
+    const whereClause = whereConditions.join(' AND ');
+    
+    // Build the count query
+    const query = `SELECT COUNT(*) as count FROM user_logs WHERE ${whereClause}`;
+    
+    const result = await db.query(query, params);
+    db.release();
+    
+    const executionTime = Date.now() - startTime;
+    MonitoringService.trackMetric('storage_count_user_logs_success', executionTime, {
+      userId: userId,
+      filters: JSON.stringify(options),
+      timestamp: new Date().toISOString()
+    }, 'storage');
+    
+    return parseInt(result[0].count, 10);
+  } catch (error) {
+    const executionTime = Date.now() - startTime;
+    MonitoringService.trackMetric('storage_count_user_logs_failure', executionTime, {
+      userId: userId,
+      filters: JSON.stringify(options),
+      error: error.message,
+      timestamp: new Date().toISOString()
+    }, 'storage');
+
+    const mcpError = ErrorService.createError(
+      ErrorService.CATEGORIES.DATABASE,
+      `Failed to count user logs: ${error.message}`,
+      ErrorService.SEVERITIES.ERROR,
+      { userId, options, error: error.stack }
+    );
+    MonitoringService.logError(mcpError);
+    throw mcpError;
+  }
+}
+
+/**
+ * Clear user logs by criteria
+ * @param {string} userId - User ID
+ * @param {Object} options - Criteria for deletion
+ * @param {Date} [options.olderThan] - Delete logs older than this date
+ * @param {string} [options.level] - Delete logs of this level
+ * @param {string} [options.category] - Delete logs in this category
+ * @returns {Promise<number>} Number of logs deleted
+ */
+async function clearUserLogs(userId, options = {}) {
+  const startTime = Date.now();
+
+  try {
+    if (!userId) {
+      throw new Error('userId is required for clearing user logs');
+    }
+
+    const { 
+      olderThan = null, 
+      level = null, 
+      category = null 
+    } = options;
+    
+    const db = await getConnection();
+    
+    // Build the WHERE clause and params dynamically
+    let whereConditions = ['user_id = ?'];
+    let params = [userId];
+    
+    if (olderThan) {
+      whereConditions.push('timestamp < ?');
+      params.push(olderThan.toISOString());
+    }
+    
+    if (level) {
+      whereConditions.push('level = ?');
+      params.push(level);
+    }
+    
+    if (category) {
+      whereConditions.push('category = ?');
+      params.push(category);
+    }
+    
+    // Create the final WHERE clause
+    const whereClause = whereConditions.join(' AND ');
+    
+    // Build delete query
+    const query = `DELETE FROM user_logs WHERE ${whereClause}`;
+    
+    const result = await db.query(query, params);
+    db.release();
+    
+    // Get number of rows deleted
+    let deletedRows = 0;
+    if (result.changes !== undefined) {
+      // SQLite
+      deletedRows = result.changes;
+    } else if (result.affectedRows !== undefined) {
+      // MySQL
+      deletedRows = result.affectedRows;
+    } else if (result.rowCount !== undefined) {
+      // PostgreSQL
+      deletedRows = result.rowCount;
+    }
+    
+    const executionTime = Date.now() - startTime;
+    MonitoringService.trackMetric('storage_clear_user_logs_success', executionTime, {
+      userId: userId,
+      deletedCount: deletedRows,
+      filters: JSON.stringify(options),
+      timestamp: new Date().toISOString()
+    }, 'storage');
+    
+    return deletedRows;
+  } catch (error) {
+    const executionTime = Date.now() - startTime;
+    MonitoringService.trackMetric('storage_clear_user_logs_failure', executionTime, {
+      userId: userId,
+      filters: JSON.stringify(options),
+      error: error.message,
+      timestamp: new Date().toISOString()
+    }, 'storage');
+
+    const mcpError = ErrorService.createError(
+      ErrorService.CATEGORIES.DATABASE,
+      `Failed to clear user logs: ${error.message}`,
+      ErrorService.SEVERITIES.ERROR,
+      { userId, options, error: error.stack }
+    );
+    MonitoringService.logError(mcpError);
+    throw mcpError;
+  }
+}
+
 async function addHistory(event, payload) {
     const startTime = Date.now();
     
@@ -797,5 +1196,10 @@ module.exports = {
     updateDeviceMetadata,
     getBackupManager,
     getMigrationManager,
-    healthCheck
+    healthCheck,
+    // User log management methods
+    addUserLog,
+    getUserLogs,
+    countUserLogs,
+    clearUserLogs
 };
