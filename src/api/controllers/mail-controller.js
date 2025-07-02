@@ -708,21 +708,53 @@ module.exports = ({ mailModule }) => ({
             // Try to get search results from the module
             let messages = [];
             try {
+                // Log detailed information about the search attempt
+                MonitoringService.debug('Attempting to search emails', {
+                    searchQuery,
+                    limit,
+                    hasSearchEmails: typeof mailModule.searchEmails === 'function',
+                    hasHandleIntent: typeof mailModule.handleIntent === 'function',
+                    timestamp: new Date().toISOString(),
+                    userId,
+                    deviceId
+                }, 'mail', null, userId, deviceId);
+                
                 if (typeof mailModule.searchEmails === 'function') {
+                    MonitoringService.debug('Calling mailModule.searchEmails', {
+                        searchQuery,
+                        limit,
+                        timestamp: new Date().toISOString(),
+                        userId,
+                        deviceId
+                    }, 'mail', null, userId, deviceId);
+                    
                     messages = await mailModule.searchEmails(searchQuery, { limit }, req);
+                    
                     MonitoringService.info('Found emails matching query', {
                         messageCount: messages.length,
                         method: 'searchEmails',
+                        timestamp: new Date().toISOString(),
                         userId,
                         deviceId
                     }, 'mail', null, userId, deviceId);
                 } else if (typeof mailModule.handleIntent === 'function') {
                     // Try using the module's handleIntent method instead
+                    MonitoringService.debug('Calling mailModule.handleIntent for searchMail', {
+                        searchQuery,
+                        limit,
+                        timestamp: new Date().toISOString(),
+                        userId,
+                        deviceId
+                    }, 'mail', null, userId, deviceId);
+                    
                     const result = await mailModule.handleIntent('searchMail', { query: searchQuery, limit }, { req });
                     messages = result && result.items ? result.items : [];
+                    
                     MonitoringService.info('Found emails via handleIntent', {
+                        messageCount: messages ? messages.length : 0,
                         method: 'handleIntent',
                         action: 'searchMail',
+                        timestamp: new Date().toISOString(),
                         userId,
                         deviceId
                     }, 'mail', null, userId, deviceId);
@@ -730,6 +762,21 @@ module.exports = ({ mailModule }) => ({
                     throw new Error('Search method not implemented');
                 }
             } catch (moduleError) {
+                // Enhanced error logging with detailed diagnostic information
+                MonitoringService.error('Error in searchMail operation', {
+                    error: moduleError.message,
+                    stack: moduleError.stack,
+                    code: moduleError.code || moduleError.statusCode,
+                    category: moduleError.category || 'unknown',
+                    graphError: moduleError.body || moduleError.response || null,
+                    operation: 'searchMail',
+                    searchQuery,
+                    timestamp: new Date().toISOString(),
+                    userId,
+                    deviceId
+                }, 'mail', null, userId, deviceId);
+                
+                // Create standardized error object
                 const error = ErrorService.createError(
                     ErrorService.CATEGORIES.API,
                     'Error searching emails',
@@ -737,8 +784,12 @@ module.exports = ({ mailModule }) => ({
                     { 
                         error: moduleError.message, 
                         stack: moduleError.stack,
+                        code: moduleError.code || moduleError.statusCode,
+                        category: moduleError.category || 'unknown',
+                        graphError: moduleError.body || moduleError.response || null,
                         operation: 'searchMail',
                         searchQuery,
+                        timestamp: new Date().toISOString(),
                         userId,
                         deviceId
                     },
@@ -746,8 +797,12 @@ module.exports = ({ mailModule }) => ({
                     userId,
                     deviceId
                 );
-                MonitoringService.info('Falling back to mock search results', {
+                
+                MonitoringService.warn('Falling back to mock search results', {
                     reason: 'search method failed',
+                    errorType: moduleError.constructor.name,
+                    errorMessage: moduleError.message,
+                    timestamp: new Date().toISOString(),
                     userId,
                     deviceId
                 }, 'mail', null, userId, deviceId);

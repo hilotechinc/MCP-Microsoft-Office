@@ -112,14 +112,17 @@ async function getInbox(options = {}, req) {
 async function searchEmails(query, options = {}, req) {
   const startTime = Date.now();
   
-  if (process.env.NODE_ENV === 'development') {
-    MonitoringService.debug('Mail searchEmails operation started', {
-      method: 'searchEmails',
-      queryLength: query ? query.length : 0,
-      optionKeys: Object.keys(options),
-      timestamp: new Date().toISOString()
-    }, 'graph');
-  }
+  // Always log detailed information about the search operation regardless of environment
+  MonitoringService.debug('Mail searchEmails operation started', {
+    method: 'searchEmails',
+    query: query, // Log the actual query for debugging
+    queryLength: query ? query.length : 0,
+    options: JSON.stringify(options),
+    optionKeys: Object.keys(options),
+    hasReq: !!req,
+    hasReqUser: req && !!req.user,
+    timestamp: new Date().toISOString()
+  }, 'graph');
   
   try {
     if (!query || typeof query !== 'string') {
@@ -138,11 +141,31 @@ async function searchEmails(query, options = {}, req) {
       throw mcpError;
     }
     
+    // Log authentication details (safely)
+    MonitoringService.debug('Authentication context for mail search', {
+      hasReq: !!req,
+      hasReqUser: req && !!req.user,
+      userIdFormat: req && req.user ? typeof req.user.userId : 'undefined',
+      timestamp: new Date().toISOString()
+    }, 'graph');
+    
+    // Log the attempt to create a Graph client
+    MonitoringService.debug('Creating Graph client for mail search', {
+      timestamp: new Date().toISOString()
+    }, 'graph');
+    
     const client = await graphClientFactory.createClient(req);
+    
+    MonitoringService.debug('Graph client created successfully', {
+      clientType: client ? typeof client : 'undefined',
+      hasApiMethod: client && typeof client.api === 'function',
+      timestamp: new Date().toISOString()
+    }, 'graph');
+    
     const top = options.top || options.limit || 10;
     
-    // Clean the query for KQL syntax - remove problematic quote wrapping
-    // Microsoft Graph mail search uses KQL and should not wrap the entire query in quotes
+    // Format the query for KQL syntax according to Microsoft Graph API requirements
+    // Microsoft Graph KQL syntax doesn't use colons or equals signs, but uses specific operators
     let cleanQuery = query.trim();
     
     // If the query is wrapped in quotes, remove them to avoid double-wrapping
@@ -150,8 +173,33 @@ async function searchEmails(query, options = {}, req) {
       cleanQuery = cleanQuery.slice(1, -1);
     }
     
+    // Fix common KQL syntax issues
+    // 1. For property:value format, we need to use proper KQL syntax
+    // KQL uses simple terms for most searches, not property:value format
+    // For example, 'from:Christie' should just be 'Christie'
+    
+    // For specific property searches, we need to use proper KQL operators
+    // Extract property:value pairs and convert to proper KQL
+    if (cleanQuery.match(/([\w]+):(\S+)/)) {
+      // For 'from:value', convert to just the value as KQL doesn't use property specifiers in $search
+      cleanQuery = cleanQuery.replace(/from:(\S+)/gi, '$1');
+      
+      // For 'subject:value', convert to just the value
+      cleanQuery = cleanQuery.replace(/subject:(\S+)/gi, '$1');
+      
+      // For date-based searches, we can't use them in $search parameter
+      // Instead, we should use $filter parameter, but for now just simplify
+      cleanQuery = cleanQuery.replace(/received:(\S+)/gi, '$1');
+    }
+    
+    // Log the transformed query
+    MonitoringService.debug('Transformed KQL query', {
+      originalQuery: query,
+      transformedQuery: cleanQuery,
+      timestamp: new Date().toISOString()
+    }, 'graph');
+    
     // Build the search URL with proper KQL syntax
-    // Note: Don't wrap the entire query in quotes - let KQL handle its own syntax
     const searchUrl = `/me/messages?$search=${encodeURIComponent(cleanQuery)}&$top=${top}`;
     
     MonitoringService.debug('Executing mail search with KQL', {
@@ -160,8 +208,24 @@ async function searchEmails(query, options = {}, req) {
       searchUrl: searchUrl.replace(/&/g, '&'), // For logging readability
       timestamp: new Date().toISOString()
     }, 'graph');
+  
+    // Log the API call attempt
+    MonitoringService.debug('Making Graph API call for mail search', {
+      searchUrl,
+      timestamp: new Date().toISOString()
+    }, 'graph');
     
     const res = await client.api(searchUrl).get();
+    
+    // Log the raw response for debugging
+    MonitoringService.debug('Graph API search response received', {
+      status: 'success',
+      hasValue: !!res.value,
+      valueLength: res.value ? res.value.length : 0,
+      responseKeys: Object.keys(res),
+      timestamp: new Date().toISOString()
+    }, 'graph');
+    
     const emails = (res.value || []).map(normalizeEmail);
     
     const executionTime = Date.now() - startTime;
@@ -187,12 +251,28 @@ async function searchEmails(query, options = {}, req) {
   } catch (error) {
     const executionTime = Date.now() - startTime;
     
+    // Enhanced error logging with detailed diagnostic information
+    MonitoringService.error('Mail search operation failed', {
+      errorMessage: error.message,
+      errorName: error.name,
+      errorCode: error.code || error.statusCode,
+      errorBody: error.body || null,
+      errorResponse: error.response || null,
+      query: query,
+      options: JSON.stringify(options),
+      hasReq: !!req,
+      hasReqUser: req && !!req.user,
+      stack: error.stack,
+      timestamp: new Date().toISOString()
+    }, 'graph');
+    
     // If it's already an MCP error, just track metrics and rethrow
     if (error.category) {
       MonitoringService.trackMetric('graph_mail_search_emails_failure', executionTime, {
         service: 'graph-mail-service',
         method: 'searchEmails',
         errorType: error.code || 'validation_error',
+        errorMessage: error.message,
         timestamp: new Date().toISOString()
       });
       throw error;
@@ -207,6 +287,10 @@ async function searchEmails(query, options = {}, req) {
         method: 'searchEmails',
         query,
         requestedTop: options.top || options.limit || 10,
+        errorName: error.name,
+        errorCode: error.code || error.statusCode,
+        errorBody: error.body || null,
+        errorResponse: error.response || null,
         stack: error.stack,
         timestamp: new Date().toISOString()
       }
@@ -217,6 +301,7 @@ async function searchEmails(query, options = {}, req) {
       service: 'graph-mail-service',
       method: 'searchEmails',
       errorType: error.code || 'unknown',
+      errorMessage: error.message,
       timestamp: new Date().toISOString()
     });
     

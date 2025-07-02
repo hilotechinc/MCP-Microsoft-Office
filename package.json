@@ -13,7 +13,9 @@
         "dev:electron": "nodemon --exec electron . --watch src",
         "dev:debug": "./run-electron-debug.sh",
         "lint": "standard",
-        "build": "electron-builder"
+        "build": "electron-builder",
+        "reset-db": "node scripts/reset-database.js",
+        "setup": "npm install && node scripts/reset-database.js"
     },
     "dependencies": {
         "@azure/msal-node": "^2.16.2",

@@ -223,10 +223,13 @@ class MigrationManager {
     this.migrations.push({
       version: 2,
       name: 'oauth_device_flow',
-      description: 'Create devices table with OAuth device flow support',
+      description: 'Update devices table with OAuth device flow support',
       up: {
         sqlite: `
-          CREATE TABLE IF NOT EXISTS devices (
+          -- Drop existing devices table and recreate with new schema
+          DROP TABLE IF EXISTS devices;
+          
+          CREATE TABLE devices (
             device_id TEXT PRIMARY KEY,
             device_secret TEXT NOT NULL,
             device_code TEXT,
@@ -250,7 +253,10 @@ class MigrationManager {
           CREATE INDEX IF NOT EXISTS idx_devices_expires_at ON devices(expires_at);
         `,
         postgresql: `
-          CREATE TABLE IF NOT EXISTS devices (
+          -- Drop existing devices table and recreate with new schema
+          DROP TABLE IF EXISTS devices;
+          
+          CREATE TABLE devices (
             device_id VARCHAR(255) PRIMARY KEY,
             device_secret TEXT NOT NULL,
             device_code VARCHAR(255),
@@ -274,7 +280,10 @@ class MigrationManager {
           CREATE INDEX IF NOT EXISTS idx_devices_expires_at ON devices(expires_at);
         `,
         mysql: `
-          CREATE TABLE IF NOT EXISTS devices (
+          -- Drop existing devices table and recreate with new schema
+          DROP TABLE IF EXISTS devices;
+          
+          CREATE TABLE devices (
             device_id VARCHAR(255) PRIMARY KEY,
             device_secret TEXT NOT NULL,
             device_code VARCHAR(255),
