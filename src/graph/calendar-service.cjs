@@ -1597,16 +1597,30 @@ async function respondToEvent(eventId, responseType, options = {}) {
       
       // Non-retryable error or max retries reached
       if (process.env.NODE_ENV !== 'production') {
-        // Create standardized error object
+        // Check for specific error case: meeting organizer trying to respond to their own meeting
+        const isOrganizerError = error.message && (
+          error.message.includes("You can't respond to this meeting because you're the meeting organizer") ||
+          error.message.includes("meeting organizer") ||
+          error.message.includes("organizer of the event")
+        );
+
+        // Create standardized error object with appropriate message
+        const errorMessage = isOrganizerError
+          ? `Cannot ${responseType} this event because you are the meeting organizer. Meeting organizers cannot respond to their own events.`
+          : `Error responding to event with ${responseType}: ${error.message || 'Unknown error'}`;
+
+        const errorSeverity = isOrganizerError ? 'warning' : 'error';
+        
         const mcpError = ErrorService?.createError(
           'calendar',
-          `Error responding to event with ${responseType}: ${error.message || 'Unknown error'}`,
-          'error',
+          errorMessage,
+          errorSeverity,
           {
             eventId: redactSensitiveData({ eventId }),
             responseType,
             statusCode: error.statusCode || 'unknown',
             errorMessage: error.message || 'No message',
+            isOrganizerError: isOrganizerError || false,
             timestamp: new Date().toISOString()
           }
         );
@@ -1619,15 +1633,30 @@ async function respondToEvent(eventId, responseType, options = {}) {
           responseType,
           statusCode: error.statusCode || 'unknown',
           errorMessage: error.message || 'No message',
+          isOrganizerError: isOrganizerError || false,
           timestamp: new Date().toISOString()
         }, 'calendar');
       }
       
+      // Check for specific error case: meeting organizer trying to respond to their own meeting
+      const isOrganizerError = error.message && (
+        error.message.includes("You can't respond to this meeting because you're the meeting organizer") ||
+        error.message.includes("meeting organizer") ||
+        error.message.includes("organizer of the event")
+      );
+
+      // Create standardized error object with appropriate message
+      const errorMessage = isOrganizerError
+        ? `Cannot ${responseType} this event because you are the meeting organizer. Meeting organizers cannot respond to their own events.`
+        : `Failed to ${responseType} event: ${error.message || 'Unknown error'}`;
+
+      const errorSeverity = isOrganizerError ? 'warning' : 'error';
+      
       // Create standardized error object with ErrorService
       const mcpError = ErrorService.createError(
         'calendar',
-        `Failed to ${responseType} event: ${error.message || 'Unknown error'}`,
-        'error',
+        errorMessage,
+        errorSeverity,
         {
           eventId: redactSensitiveData({ eventId }),
           responseType,
@@ -1636,6 +1665,7 @@ async function respondToEvent(eventId, responseType, options = {}) {
           maxRetries,
           statusCode: error.statusCode || 'unknown',
           errorMessage: error.message || 'No message',
+          isOrganizerError: isOrganizerError || false,
           timestamp: new Date().toISOString()
         }
       );

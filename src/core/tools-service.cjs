@@ -556,7 +556,7 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 };
                 break;
             case 'acceptEvent':
-                toolDef.description = 'Accept a calendar event invitation';
+                toolDef.description = 'Accept a calendar event invitation. Note: This only works for events where the user is an attendee, not the organizer.';
                 toolDef.endpoint = '/api/v1/calendar/events/:id/accept';
                 toolDef.method = 'POST';
                 toolDef.parameters = {
@@ -574,7 +574,7 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 };
                 break;
             case 'declineEvent':
-                toolDef.description = 'Decline a calendar event invitation';
+                toolDef.description = 'Decline a calendar event invitation. Note: This only works for events where the user is an attendee, not the organizer.';
                 toolDef.endpoint = '/api/v1/calendar/events/:id/decline';
                 toolDef.method = 'POST';
                 toolDef.parameters = {
@@ -592,7 +592,7 @@ function createToolsService({ moduleRegistry, logger = console, schemaValidator 
                 };
                 break;
             case 'tentativelyAcceptEvent':
-                toolDef.description = 'Tentatively accept a calendar event invitation';
+                toolDef.description = 'Tentatively accept a calendar event invitation. Note: This only works for events where the user is an attendee, not the organizer.';
                 toolDef.endpoint = '/api/v1/calendar/events/:id/tentativelyAccept';
                 toolDef.method = 'POST';
                 toolDef.parameters = {
