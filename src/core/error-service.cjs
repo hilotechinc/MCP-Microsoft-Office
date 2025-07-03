@@ -6,14 +6,58 @@
 
 const { v4: uuidv4 } = require('uuid');
 
-// Import event service for event-based architecture
-const eventService = require('./event-service.cjs');
+// Use lazy loading for EventService to avoid circular dependency
+let eventService = null;
 
 // Event types based on design in Task 2.2
 const eventTypes = {
   ERROR: 'log:error',
   ERROR_CREATED: 'error:created'
 };
+
+/**
+ * Get EventService instance with safe error handling for circular dependencies
+ * @returns {Object} EventService instance or null
+ */
+function getEventService() {
+  if (eventService) {
+    return eventService;
+  }
+  
+  try {
+    // Create a proxy that will defer method calls until the real EventService is available
+    const eventServiceProxy = new Proxy({}, {
+      get: function(target, prop) {
+        return function(...args) {
+          // Try to load the real EventService if not already loaded
+          if (!eventService) {
+            try {
+              eventService = require('./event-service.cjs');
+            } catch (error) {
+              console.warn(`[ERROR SERVICE] Failed to load EventService for ${prop}:`, error.message);
+              return Promise.resolve(); // Return resolved promise for async methods
+            }
+          }
+          
+          // If the method exists on the real EventService, call it
+          if (eventService && typeof eventService[prop] === 'function') {
+            return eventService[prop](...args);
+          }
+          
+          console.warn(`[ERROR SERVICE] EventService.${prop} is not a function`);
+          return Promise.resolve(); // Return resolved promise for async methods
+        };
+      }
+    });
+    
+    // Try to load the real EventService
+    eventService = require('./event-service.cjs');
+    return eventService;
+  } catch (error) {
+    console.warn('[ERROR SERVICE] EventService not available:', error.message);
+    return null;
+  }
+}
 
 /**
  * Error categories for classification - copied from original.

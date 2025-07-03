@@ -1,7 +1,7 @@
 /**
- * @fileoverview Combined Express server for MCP Electron app.
+ * @fileoverview Combined Express server for MCP Web App.
  * Combines both the API and frontend serving capabilities.
- * Based on the dev-server.cjs approach but for use in Electron.
+ * Based on the dev-server.cjs approach for production use.
  */
 
 // Load environment variables from .env file
@@ -224,7 +224,7 @@ async function startCombinedServer(port = 3000) {
     next();
   });
   
-  // Add CORS headers for Electron web requests
+  // Add CORS headers for web requests
   app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');

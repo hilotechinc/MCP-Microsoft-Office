@@ -1,6 +1,6 @@
 /**
- * @fileoverview API Service for MCP renderer process
- * Handles external API calls and IPC communication
+ * @fileoverview API Service for MCP web application
+ * Handles external API calls via HTTP
  */
 
 // Import utilities  
@@ -26,52 +26,43 @@ export class APIService {
         if (this.initialized) return;
         
         try {
-            window.MonitoringService && window.MonitoringService.info('Initializing API Service', { operation: 'api-init' }, 'renderer');
+            window.MonitoringService && window.MonitoringService.info('Initializing API Service', { operation: 'api-init' }, 'web');
             
-            // Test IPC availability
-            this.ipcAvailable = this.checkIPC();
+            // Web-only version - no IPC available
+            this.ipcAvailable = false;
             
             this.initialized = true;
             window.MonitoringService && window.MonitoringService.info('API Service initialized successfully', { 
-                ipcAvailable: this.ipcAvailable,
+                ipcAvailable: false,
                 operation: 'api-init-complete'
-            }, 'renderer');
+            }, 'web');
         } catch (error) {
             window.MonitoringService && window.MonitoringService.error('Failed to initialize API Service', {
                 error: error.message,
                 stack: error.stack,
                 operation: 'api-init'
-            }, 'renderer');
+            }, 'web');
             throw error;
         }
     }
 
     /**
-     * Check if IPC is available
-     * @returns {boolean} Whether IPC is available
+     * Check if IPC is available - always returns false in web-only version
+     * @returns {boolean} Whether IPC is available (always false)
      */
     checkIPC() {
-        return !!(window.electron?.ipcRenderer?.invoke || window.electron?.ipcRenderer?.send);
+        return false;
     }
 
     /**
-     * Make IPC call with error handling and metrics
+     * Make IPC call - always throws error in web-only version to force HTTP fallback
      * @param {string} channel - IPC channel
      * @param {any} data - Data to send
      * @returns {Promise<any>} Response from main process
      */
     async ipcCall(channel, data = null) {
-        try {
-            return await IPCService.send(channel, data);
-        } catch (error) {
-            // Don't show user notifications for IPC failures - let the caller handle fallback
-            window.MonitoringService && window.MonitoringService.warn('IPC call failed', {
-                channel,
-                error: error.message,
-                operation: 'ipc-call'
-            }, 'renderer');
-            throw error;
-        }
+        // In web-only version, always throw an error to force HTTP fallback
+        throw new Error('IPC not available in web-only version');
     }
 
     /**

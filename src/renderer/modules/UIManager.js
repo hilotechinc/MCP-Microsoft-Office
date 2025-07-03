@@ -514,8 +514,8 @@ export class UIManager {
 
             UINotification.show('Generating MCP token...', 'info');
 
-            // Call the API to generate the token
-            const response = await fetch('/api/auth/device/generate-mcp-token', {
+            // Call the API to generate the token - using web auth endpoint
+            const response = await fetch('/api/auth/generate-mcp-token', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'

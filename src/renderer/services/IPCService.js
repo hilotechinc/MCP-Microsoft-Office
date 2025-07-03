@@ -1,12 +1,14 @@
 /**
- * @fileoverview Centralized IPC communication service for renderer process
- * Provides consistent error handling and performance tracking
+ * @fileoverview Web-only version of the IPC service
+ * This is a stub implementation that always returns false for availability
+ * and throws an error when used, forcing the HTTP fallback to be used
  */
 
 import { UINotification } from '../ui-notification.js';
 
 /**
  * Service for handling IPC communication with proper error handling and metrics
+ * In the web-only version, this service always throws an error to force HTTP fallback
  */
 export class IPCService {
     static instance = null;
@@ -16,7 +18,7 @@ export class IPCService {
             return IPCService.instance;
         }
         
-        this.isAvailable = this.checkAvailability();
+        this.isAvailable = false; // Always false in web-only version
         this.metrics = new Map();
         this.errorCount = 0;
         this.successCount = 0;
@@ -35,10 +37,10 @@ export class IPCService {
     }
 
     /**
-     * Check if IPC is available
+     * Check if IPC is available - always returns false in web-only version
      */
     checkAvailability() {
-        return !!(window.electron?.ipcRenderer?.invoke || window.electron?.ipcRenderer?.send);
+        return false;
     }
 
     /**

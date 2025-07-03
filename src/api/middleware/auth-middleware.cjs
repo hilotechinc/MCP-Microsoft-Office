@@ -1,11 +1,18 @@
 /**
  * @fileoverview Authentication middleware for MCP API routes.
  * Validates user token via AuthService and attaches user context to request.
+ * Uses MSAL for Microsoft 365 authentication and JWT for API authentication.
  */
 
 const authService = require('../../core/auth-service.cjs');
 const MonitoringService = require('../../core/monitoring-service.cjs');
 const ErrorService = require('../../core/error-service.cjs');
+const jwt = require('jsonwebtoken');
+const msalService = require('../../auth/msal-service.cjs');
+
+// JWT Configuration for API authentication
+const JWT_SECRET = process.env.JWT_SECRET || process.env.STATIC_JWT_SECRET || require('crypto').randomBytes(64).toString('hex');
+const MCP_BEARER_TOKEN_EXPIRY = process.env.MCP_BEARER_TOKEN_EXPIRY || '24h';
 
 /**
  * Express middleware to require authentication.
@@ -83,9 +90,8 @@ async function requireAuth(req, res, next) {
                 }).header('WWW-Authenticate', 'Bearer realm="MCP Remote Service"');
             }
 
-            // Validate the access token
-            const DeviceJwtService = require('../../auth/device-jwt.cjs');
-            const token = DeviceJwtService.extractTokenFromHeader(authHeader);
+            // Extract token from Authorization header
+            const token = extractTokenFromHeader(authHeader);
             
             if (!token) {
                 return res.status(401).json({
@@ -93,28 +99,29 @@ async function requireAuth(req, res, next) {
                     message: 'Invalid Authorization header format'
                 }).header('WWW-Authenticate', 'Bearer realm="MCP Remote Service"');
             }
-
-            const decoded = DeviceJwtService.validateAccessToken(token);
             
-            // Set authenticated user context from validated token
-            console.log(`[DEBUG] JWT Token Validated with Microsoft 365 Identity:`, {
-                decodedUserId: decoded.userId,
-                microsoftEmail: decoded.microsoftEmail,
-                deviceId: decoded.deviceId,
-                tokenExp: decoded.exp,
-                timestamp: new Date().toISOString()
-            });
+            // Verify token signature and expiration
+            const decoded = validateAccessToken(token);
             
-            // MICROSOFT 365-CENTRIC AUTH: Use the same Microsoft 365-based user ID
-            // that was used when generating the token to ensure log consistency
+            // Set user context for controllers - handle both userId and sub claims
             req.user = {
-                deviceId: decoded.deviceId,
-                userId: decoded.userId,  // This is ms365:email@domain.com format
-                microsoftEmail: decoded.microsoftEmail,
+                userId: decoded.userId || decoded.sub, // Use sub claim as fallback (JWT standard)
+                deviceId: decoded.deviceId || 'api-client',
                 microsoftName: decoded.microsoftName,
+                microsoftEmail: decoded.microsoftEmail || (decoded.sub && decoded.sub.startsWith('ms365:') ? decoded.sub.substring(6) : undefined),
                 isApiCall: true,
-                tokenExp: decoded.exp
+                tokenExp: decoded.exp,
+                sessionId: decoded.sessionId
             };
+            
+            // Log successful authentication
+            MonitoringService.debug('JWT authentication successful', {
+                userId: req.user.userId,
+                deviceId: req.user.deviceId,
+                path: req.path,
+                tokenType: decoded.type,
+                timestamp: new Date().toISOString()
+            }, 'auth');
 
             if (process.env.NODE_ENV === 'development') {
                 MonitoringService.debug('API call authenticated successfully', {
@@ -212,6 +219,150 @@ async function requireAuth(req, res, next) {
             message: err.message,
             loginUrl: '/api/auth/login' 
         });
+    }
+}
+
+/**
+ * Extract token from Authorization header
+ * @param {string} authHeader - Authorization header value
+ * @returns {string|null} Extracted token or null if not found
+ */
+function extractTokenFromHeader(authHeader) {
+    if (!authHeader) {
+        return null;
+    }
+
+    const match = authHeader.match(/^Bearer\s+(.+)$/);
+    return match ? match[1] : null;
+}
+
+/**
+ * Validate and decode an access token
+ * @param {string} token - JWT token to validate
+ * @returns {Object} Decoded token payload
+ */
+function validateAccessToken(token) {
+    try {
+        if (!token) {
+            throw ErrorService.createError(
+                'auth',
+                'Token is required for validation',
+                'warning',
+                { tokenProvided: !!token }
+            );
+        }
+
+        // Remove Bearer prefix if present
+        const cleanToken = token.replace(/^Bearer\s+/, '');
+
+        // Verify the token with our secret
+        const decoded = jwt.verify(cleanToken, JWT_SECRET, {
+            issuer: 'mcp-remote-service',
+            audience: 'mcp-client'
+        });
+
+        // Validate token type - support both regular access tokens and mcp-bearer tokens
+        if (decoded.type !== 'access' && decoded.type !== 'mcp-bearer') {
+            throw ErrorService.createError(
+                'auth',
+                'Invalid token type. Expected access or mcp-bearer token.',
+                'warning',
+                { tokenType: decoded.type, expected: 'access or mcp-bearer' }
+            );
+        }
+
+        // For mcp-bearer tokens, we have different validation rules
+        if (decoded.type === 'mcp-bearer') {
+            // MCP bearer tokens must have userId (which is the Microsoft 365 identity)
+            if (!decoded.userId && !decoded.sub) {
+                throw ErrorService.createError(
+                    'auth',
+                    'MCP bearer token missing user identity',
+                    'warning',
+                    { hasUserId: !!decoded.userId, hasSub: !!decoded.sub }
+                );
+            }
+            
+            // Use sub as userId if it exists (JWT standard)
+            const userId = decoded.userId || decoded.sub;
+            
+            MonitoringService.debug('MCP bearer token validated successfully', {
+                userId: userId.substring(0, 8) + '...',
+                sessionId: decoded.sessionId || 'direct-generation',
+                exp: decoded.exp,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+            
+            return {
+                deviceId: decoded.deviceId || 'mcp-client',
+                userId: userId,
+                microsoftEmail: decoded.microsoftEmail,
+                microsoftName: decoded.microsoftName,
+                type: decoded.type,
+                iat: decoded.iat,
+                exp: decoded.exp,
+                sessionId: decoded.sessionId
+            };
+        } else {
+            // Regular access tokens validation
+            if (!decoded.deviceId || !decoded.userId) {
+                throw ErrorService.createError(
+                    'auth',
+                    'Token missing required fields',
+                    'warning',
+                    { 
+                        hasDeviceId: !!decoded.deviceId, 
+                        hasUserId: !!decoded.userId 
+                    }
+                );
+            }
+            
+            MonitoringService.debug('Access token validated successfully', {
+                deviceId: decoded.deviceId,
+                userId: decoded.userId.substring(0, 8) + '...',
+                exp: decoded.exp,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+            
+            return {
+                deviceId: decoded.deviceId,
+                userId: decoded.userId,
+                type: decoded.type,
+                iat: decoded.iat,
+                exp: decoded.exp
+            };
+        }
+    } catch (error) {
+        let mcpError;
+        
+        if (error.name === 'TokenExpiredError') {
+            mcpError = ErrorService.createError(
+                'auth',
+                'Access token has expired',
+                'warning',
+                { expiredAt: error.expiredAt }
+            );
+        } else if (error.name === 'JsonWebTokenError') {
+            mcpError = ErrorService.createError(
+                'auth',
+                'Invalid access token format',
+                'warning',
+                { jwtError: error.message }
+            );
+        } else if (error.category) {
+            // Already an MCP error
+            mcpError = error;
+        } else {
+            mcpError = ErrorService.createError(
+                'auth',
+                'Token validation failed',
+                'error',
+                { error: error.message }
+            );
+        }
+
+        MonitoringService.logError(mcpError);
+        throw mcpError;
     }
 }
 

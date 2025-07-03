@@ -1,13 +1,13 @@
 /**
- * @fileoverview Async configuration loader/validator for MCP Desktop.
- * Loads config from environment, .env, and secure storage (keytar),
+ * @fileoverview Async configuration loader/validator for MCP Web App.
+ * Loads config from environment and .env files,
  * validates with Joi, merges with defaults, and exposes getConfig().
  *
  * All operations are async. No blocking calls.
  */
 
 const Joi = require('joi');
-const keytar = require('keytar');
+// No longer using keytar for secrets management
 const fs = require('fs-extra');
 const path = require('path');
 const dotenv = require('dotenv');
@@ -62,7 +62,7 @@ const configSchema = Joi.object({
   MICROSOFT_CLIENT_ID: Joi.string().required(),
   MICROSOFT_TENANT_ID: Joi.string().required(),
   MICROSOFT_REDIRECT_URI: Joi.string().uri().default(DEFAULTS.MICROSOFT_REDIRECT_URI),
-  MICROSOFT_CLIENT_SECRET: Joi.string().allow('').optional(), // Loaded from keytar
+  MICROSOFT_CLIENT_SECRET: Joi.string().allow('').optional(), // Loaded from environment
   MICROSOFT_AUTHORITY: Joi.string().uri().optional(),
   MICROSOFT_SCOPES: Joi.string().optional(),
   
@@ -169,11 +169,14 @@ async function loadDotenv() {
   }
 }
 
-// Async loader for secrets from keytar
+// Async loader for secrets from environment variables
 async function loadSecrets() {
-  // Example: MICROSOFT_CLIENT_SECRET stored in keytar
-  const MICROSOFT_CLIENT_SECRET = await keytar.getPassword('mcp-desktop', 'MICROSOFT_CLIENT_SECRET') || '';
-  return { MICROSOFT_CLIENT_SECRET };
+  // Example: MICROSOFT_CLIENT_SECRET from environment variable
+  const MICROSOFT_CLIENT_SECRET = process.env.MICROSOFT_CLIENT_SECRET || '';
+  
+  return {
+    MICROSOFT_CLIENT_SECRET
+  };
 }
 
 // Production environment validation
@@ -235,7 +238,7 @@ function validateProductionEnvironment(config) {
 }
 
 /**
- * Loads, merges, and validates config from env, .env, and keytar.
+ * Loads, merges, and validates config from env and .env files.
  * @returns {Promise<Object>} Validated config object
  */
 async function getConfig() {

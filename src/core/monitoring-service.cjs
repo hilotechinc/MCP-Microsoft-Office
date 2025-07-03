@@ -10,6 +10,9 @@ const os = require('os');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 
+// Import ErrorService for error creation
+const ErrorService = require('./error-service.cjs');
+
 // Lazy load storage service to avoid circular dependency
 let storageService = null;
 function getStorageService() {
@@ -276,18 +279,23 @@ function startMemoryMonitoring() {
       if (usageRatio > MEMORY_WARNING_THRESHOLD) {
         console.warn(`[MEMORY WARNING] High memory usage: ${Math.round(usageRatio * 100)}% (${Math.round(heapUsed / 1024 / 1024)}MB / ${Math.round(heapTotal / 1024 / 1024)}MB)`);
         
-        // Emit memory warning event if event service is available
-        if (eventService) {
+        // Get EventService with safe error handling
+        const service = getEventService();
+        if (service) {
           try {
-            eventService.emit(eventTypes.SYSTEM_MEMORY_WARNING, {
+            service.emit(eventTypes.SYSTEM_MEMORY_WARNING, {
               usageRatio,
-              heapUsed,
-              heapTotal,
+              heapUsed: heapUsed / 1024 / 1024,
+              heapTotal: heapTotal / 1024 / 1024,
               timestamp: new Date().toISOString()
+            }).catch(err => {
+              console.error('[MEMORY WARNING] Memory warning event promise rejected:', err.message);
             });
-          } catch (error) {
-            // Silently ignore event emission errors
+          } catch (emitError) {
+            console.error('[MEMORY WARNING] Failed to emit memory warning event:', emitError.message);
           }
+        } else {
+          console.warn(`[MEMORY WARNING] Memory usage at ${usageRatio.toFixed(1)}% (${(heapUsed / 1024 / 1024).toFixed(1)} MB / ${(heapTotal / 1024 / 1024).toFixed(1)} MB)`);
         }
         
         if (global.gc) {
@@ -483,28 +491,69 @@ function handleLogEvent(logData) {
 }
 
 /**
+ * Get EventService instance with safe error handling for circular dependencies
+ * @returns {Object} EventService instance or null
+ */
+function getEventService() {
+  if (eventService) {
+    return eventService;
+  }
+  
+  try {
+    // Create a proxy that will defer method calls until the real EventService is available
+    const eventServiceProxy = new Proxy({}, {
+      get: function(target, prop) {
+        return function(...args) {
+          // Try to load the real EventService if not already loaded
+          if (!eventService) {
+            try {
+              eventService = require('./event-service.cjs');
+            } catch (error) {
+              console.warn(`[MONITORING] Failed to load EventService for ${prop}:`, error.message);
+              return Promise.resolve(); // Return resolved promise for async methods
+            }
+          }
+          
+          // If the method exists on the real EventService, call it
+          if (eventService && typeof eventService[prop] === 'function') {
+            return eventService[prop](...args);
+          }
+          
+          console.warn(`[MONITORING] EventService.${prop} is not a function`);
+          return Promise.resolve(); // Return resolved promise for async methods
+        };
+      }
+    });
+    
+    // Try to load the real EventService
+    eventService = require('./event-service.cjs');
+    return eventService;
+  } catch (error) {
+    console.warn('[MONITORING] EventService not available:', error.message);
+    return null;
+  }
+}
+
+/**
  * Initialize event service subscriptions
  */
 async function initialize() {
   subscriptions = [];
   
-  // Lazy load event service to avoid circular dependency
-  if (!eventService) {
-    try {
-      eventService = require('./event-service.cjs');
-    } catch (error) {
-      console.warn('[MONITORING] Event service not available for subscription:', error.message);
-      return;
-    }
+  // Get EventService with safe error handling
+  const service = getEventService();
+  if (!service) {
+    console.warn('[MONITORING] Event service not available for subscription');
+    return;
   }
   
   // Subscribe to log events EXCEPT metrics to prevent recursion
   try {
     subscriptions.push(
-      await eventService.subscribe(eventTypes.ERROR, handleLogEvent),
-      await eventService.subscribe(eventTypes.INFO, handleLogEvent),
-      await eventService.subscribe(eventTypes.WARN, handleLogEvent),
-      await eventService.subscribe(eventTypes.DEBUG, handleLogEvent)
+      await service.subscribe(eventTypes.ERROR, handleLogEvent),
+      await service.subscribe(eventTypes.INFO, handleLogEvent),
+      await service.subscribe(eventTypes.WARN, handleLogEvent),
+      await service.subscribe(eventTypes.DEBUG, handleLogEvent)
       // Removed subscription to METRIC events to prevent recursion
     );
     console.log('[MONITORING] Successfully subscribed to log events (excluding metrics)');
@@ -1030,21 +1079,31 @@ function subscribeToLogs(callback) {
     // For backward compatibility, subscribe to all log events
     const unsubscribeFunctions = [];
     
-    // Lazy load event service if not available
-    if (!eventService) {
-      try {
-        eventService = require('./event-service.cjs');
-      } catch (error) {
-        console.warn('[MONITORING] Event service not available for log subscription:', error.message);
+    // Get EventService with safe error handling
+    const service = getEventService();
+    if (!service) {
+        console.warn('[MONITORING] Event service not available for log subscription');
         return () => {}; // Return no-op unsubscribe function
-      }
     }
     
+    // Helper to subscribe to a specific event type
     const subscribeToEvent = async (eventType) => {
-        const id = await eventService.subscribe(eventType, callback);
-        return () => eventService.unsubscribe(id);
+        try {
+            const unsubscribeId = await service.subscribe(eventType, callback);
+            return () => {
+                if (service && typeof service.unsubscribe === 'function') {
+                    return service.unsubscribe(unsubscribeId).catch(err => {
+                        console.warn(`[MONITORING] Error unsubscribing from ${eventType}:`, err.message);
+                    });
+                }
+            };
+        } catch (error) {
+            console.warn(`[MONITORING] Failed to subscribe to ${eventType}:`, error.message);
+            return () => {}; // Return no-op unsubscribe function
+        }
     };
     
+    // Subscribe to all log event types
     Promise.all([
         subscribeToEvent(eventTypes.ERROR),
         subscribeToEvent(eventTypes.INFO),
@@ -1058,7 +1117,15 @@ function subscribeToLogs(callback) {
     
     // Return unsubscribe function that cleans up all subscriptions
     return () => {
-        unsubscribeFunctions.forEach(unsub => unsub());
+        unsubscribeFunctions.forEach(unsub => {
+            if (typeof unsub === 'function') {
+                try {
+                    unsub();
+                } catch (error) {
+                    console.warn('[MONITORING] Error during unsubscribe:', error.message);
+                }
+            }
+        });
     };
 }
 
@@ -1068,24 +1135,33 @@ function subscribeToLogs(callback) {
 function subscribeToMetrics(callback) {
     let unsubscribeFunction = null;
     
-    // Lazy load event service if not available
-    if (!eventService) {
-      try {
-        eventService = require('./event-service.cjs');
-      } catch (error) {
-        console.warn('[MONITORING] Event service not available for metrics subscription:', error.message);
+    // Get EventService with safe error handling
+    const service = getEventService();
+    if (!service) {
+        console.warn('[MONITORING] Event service not available for metrics subscription');
         return () => {}; // Return no-op unsubscribe function
-      }
     }
     
-    eventService.subscribe(eventTypes.METRIC, callback).then(id => {
-        unsubscribeFunction = () => eventService.unsubscribe(id);
+    service.subscribe(eventTypes.METRIC, callback).then(id => {
+        unsubscribeFunction = () => {
+            if (service && typeof service.unsubscribe === 'function') {
+                return service.unsubscribe(id).catch(err => {
+                    console.warn('[MONITORING] Error unsubscribing from metrics:', err.message);
+                });
+            }
+        };
     }).catch(error => {
         console.warn('[MONITORING] Failed to subscribe to metric events:', error.message);
     });
     
     return () => {
-        if (unsubscribeFunction) unsubscribeFunction();
+        if (typeof unsubscribeFunction === 'function') {
+            try {
+                unsubscribeFunction();
+            } catch (error) {
+                console.warn('[MONITORING] Error during metrics unsubscribe:', error.message);
+            }
+        }
     };
 }
 

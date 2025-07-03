@@ -24,24 +24,75 @@ class EventService {
     
     /**
      * Lazy load MonitoringService to avoid circular dependency
+     * Returns a guaranteed safe logging interface even during initialization
      */
     _ensureMonitoringService() {
-        if (!MonitoringService) {
-            try {
-                MonitoringService = require('./monitoring-service.cjs');
-            } catch (error) {
-                // MonitoringService not available, use console fallback
-                MonitoringService = {
-                    debug: (message, context, category) => console.debug(`[${category || 'event'}] ${message}`, context ? JSON.stringify(context) : ''),
-                    info: (message, context, category) => console.info(`[${category || 'event'}] ${message}`, context ? JSON.stringify(context) : ''),
-                    warn: (message, context, category) => console.warn(`[${category || 'event'}] ${message}`, context ? JSON.stringify(context) : ''),
-                    error: (message, context, category) => console.error(`[${category || 'event'}] ${message}`, context ? JSON.stringify(context) : ''),
-                    logError: (error) => console.error('[event]', typeof error === 'object' ? JSON.stringify(error) : error),
-                    trackMetric: () => {} // No-op for metrics
+        // Return existing instance if already initialized
+        if (MonitoringService) {
+            return MonitoringService;
+        }
+        
+        // Create a proxy object that will defer method calls until real implementation is available
+        const monitoringServiceProxy = new Proxy({}, {
+            get: function(target, prop) {
+                // If MonitoringService is loaded and has the method, use it
+                if (MonitoringService && typeof MonitoringService[prop] === 'function') {
+                    return MonitoringService[prop];
+                }
+                
+                // Otherwise return a fallback function
+                return function(message, context, category) {
+                    // Try to load MonitoringService if not loaded yet
+                    if (!MonitoringService) {
+                        try {
+                            MonitoringService = require('./monitoring-service.cjs');
+                        } catch (error) {
+                            // Silently fail and use console fallback
+                        }
+                    }
+                    
+                    // If loaded successfully and has the method, use it
+                    if (MonitoringService && typeof MonitoringService[prop] === 'function') {
+                        return MonitoringService[prop](message, context, category);
+                    }
+                    
+                    // Fallback to console
+                    switch(prop) {
+                        case 'debug':
+                            console.debug(`[${category || 'event'}] ${message}`, context ? JSON.stringify(context) : '');
+                            break;
+                        case 'info':
+                            console.info(`[${category || 'event'}] ${message}`, context ? JSON.stringify(context) : '');
+                            break;
+                        case 'warn':
+                            console.warn(`[${category || 'event'}] ${message}`, context ? JSON.stringify(context) : '');
+                            break;
+                        case 'error':
+                            console.error(`[${category || 'event'}] ${message}`, context ? JSON.stringify(context) : '');
+                            break;
+                        case 'logError':
+                            console.error('[event]', typeof message === 'object' ? JSON.stringify(message) : message);
+                            break;
+                        case 'trackMetric':
+                            // No-op for metrics
+                            break;
+                        default:
+                            // Handle any other methods
+                            console.log(`[event] Called unknown method ${prop}`);
+                    }
                 };
             }
+        });
+        
+        // Try to load the real MonitoringService
+        try {
+            MonitoringService = require('./monitoring-service.cjs');
+        } catch (error) {
+            // If we can't load it now, the proxy will try again later
+            console.warn('[EVENT] Could not load MonitoringService, using fallback:', error.message);
         }
-        return MonitoringService;
+        
+        return monitoringServiceProxy;
     }
 
     /**
@@ -197,13 +248,23 @@ class EventService {
         const { userId = null, deviceId = null } = options;
         
         if (process.env.NODE_ENV === 'development') {
-            this._ensureMonitoringService().debug('Event emission started', {
-                event,
-                payloadType: typeof payload,
-                userId,
-                deviceId,
-                timestamp: new Date().toISOString()
-            }, 'events');
+            try {
+                const monitor = this._ensureMonitoringService();
+                if (monitor && typeof monitor.debug === 'function') {
+                    monitor.debug('Event emission started', {
+                        event,
+                        payloadType: typeof payload,
+                        userId,
+                        deviceId,
+                        timestamp: new Date().toISOString()
+                    }, 'events');
+                } else {
+                    console.debug(`[events] Event emission started: ${event}`);
+                }
+            } catch (logError) {
+                // Silently handle any logging errors to prevent cascading failures
+                console.debug(`[events] Event emission started: ${event}`);
+            }
         }
         
         try {

@@ -10,6 +10,7 @@ const calendarControllerFactory = require('./controllers/calendar-controller.js'
 const filesControllerFactory = require('./controllers/files-controller.js');
 const peopleControllerFactory = require('./controllers/people-controller.cjs');
 const logController = require('./controllers/log-controller.cjs');
+const authController = require('./controllers/auth-controller.cjs');
 const deviceAuthController = require('./controllers/device-auth-controller.cjs');
 const adapterController = require('./controllers/adapter-controller.cjs');
 const ErrorService = require('../core/error-service.cjs');
@@ -182,25 +183,31 @@ function registerRoutes(router) {
     logRouter.delete('/', placeholderRateLimit, logController.clearLogEntries); // /v1/logs
     v1.use('/logs', logRouter); // Mounted at /v1/logs
 
-    // --- Device Authentication Router --- (OAuth2 Device Flow)
-    const deviceAuthRouter = express.Router();
-    // Apply controller logger middleware
-    deviceAuthRouter.use(controllerLogger());
+    // --- Auth Router ---
+    const authRouter = express.Router();
+    authRouter.use(controllerLogger());
     
-    // Device flow endpoints - no authentication required for registration and polling
-    deviceAuthRouter.post('/register', deviceAuthController.registerDevice); // /api/auth/device/register
-    deviceAuthRouter.post('/authorize', deviceAuthController.authorizeDevice); // /api/auth/device/authorize  
-    deviceAuthRouter.post('/token', deviceAuthController.pollForToken); // /api/auth/device/token
-    deviceAuthRouter.post('/refresh', deviceAuthController.refreshToken); // /api/auth/device/refresh
+    // Web-based authentication endpoints
+    authRouter.get('/status', authController.getAuthStatus);
+    authRouter.get('/login', authController.login);
+    authRouter.get('/callback', authController.handleCallback);
+    authRouter.post('/logout', authController.logout);
     
-    // MCP token generation - requires authentication
-    deviceAuthRouter.post('/generate-mcp-token', requireAuth, deviceAuthController.generateMcpToken); // /api/auth/device/generate-mcp-token
+    // Device authentication endpoints (don't require authentication as they're part of the auth flow)
+    authRouter.post('/device/register', deviceAuthController.registerDevice);
+    authRouter.post('/device/authorize', deviceAuthController.authorizeDevice);
+    authRouter.post('/device/token', deviceAuthController.pollForToken);
+    authRouter.post('/device/refresh', deviceAuthController.refreshToken);
     
-    // Mount device auth routes at /auth/device (since router is already mounted at /api)
-    router.use('/auth/device', deviceAuthRouter);
+    // MCP token generation endpoint - requires authentication
+    authRouter.post('/generate-mcp-token', requireAuth, deviceAuthController.generateMcpToken);
     
-    // OAuth2 Resource Server Discovery endpoint
-    router.get('/.well-known/oauth-protected-resource', deviceAuthController.getResourceServerInfo);
+    // OAuth 2.0 discovery endpoint
+    authRouter.get('/.well-known/oauth-protected-resource', deviceAuthController.getResourceServerInfo);
+    
+    // Register auth router at both /auth and /api/auth for compatibility
+    router.use('/auth', authRouter);
+    router.use('/api/auth', authRouter);
 
     // --- Adapter Router --- 
     const adapterRouter = express.Router();
