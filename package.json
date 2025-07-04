@@ -7,8 +7,6 @@
         "dev:web": "node dev-server.cjs",
         "dev:api": "node src/main/server.cjs",
         "start": "NODE_ENV=production MCP_SILENT_MODE=true node dev-server.cjs",
-        "server": "node src/main/combined-server.cjs",
-        "lint": "standard",
         "reset-db": "node scripts/reset-database.js",
         "setup": "npm install && node scripts/reset-database.js"
     },
@@ -27,6 +25,7 @@
         "joi": "^17.13.3",
         "jsonwebtoken": "^9.0.2",
         "lru-cache": "^10.0.1",
+        "memorystore": "^1.6.7",
         "moment": "^2.29.4",
         "morgan": "^1.10.0",
         "mysql2": "^3.11.0",

@@ -173,26 +173,45 @@ function createError(category, message, severity, context = {}, traceId = null, 
   // NEW: Emit events through event service instead of calling monitoring directly
   setImmediate(async () => {
     try {
-      // Emit error created event for error tracking
-      await eventService.emit(eventTypes.ERROR_CREATED, errorObj);
+      // Get the event service properly before using it
+      const service = getEventService();
       
-      // Emit log error event for monitoring service to catch
-      await eventService.emit(eventTypes.ERROR, {
-        id: errorObj.id,
-        level: 'error',
-        category: errorObj.category,
-        message: errorObj.message,
-        context: errorObj.context,
-        timestamp: errorObj.timestamp,
-        traceId: errorObj.traceId,
-        severity: errorObj.severity,
-        source: 'error-service',
-        userId: errorObj.userId,
-        deviceId: errorObj.deviceId
-      });
+      // Only emit events if we have a valid event service
+      if (service) {
+        // Emit error created event for error tracking
+        await service.emit(eventTypes.ERROR_CREATED, errorObj);
+        
+        // Emit log error event for monitoring service to catch
+        await service.emit(eventTypes.ERROR, {
+          id: errorObj.id,
+          level: 'error',
+          category: errorObj.category,
+          message: errorObj.message,
+          context: errorObj.context,
+          timestamp: errorObj.timestamp,
+          traceId: errorObj.traceId,
+          severity: errorObj.severity,
+          source: 'error-service',
+          userId: errorObj.userId,
+          deviceId: errorObj.deviceId
+        });
+      } else if (loggingService && typeof loggingService.logError === 'function') {
+        // Fallback to direct logging service if event service is not available
+        loggingService.logError(errorObj);
+      }
     } catch (e) {
       // Fail silently if event emission fails
       console.error(`[ERROR SERVICE] Failed to emit error events: ${e.message}`);
+      
+      // Try fallback to direct logging if available
+      if (loggingService && typeof loggingService.logError === 'function') {
+        try {
+          loggingService.logError(errorObj);
+        } catch (logError) {
+          // Last resort - log to console
+          console.error('[ERROR SERVICE] Both event emission and direct logging failed:', e.message, logError.message);
+        }
+      }
     }
   });
   

@@ -862,12 +862,22 @@ async function warn(message, context = {}, category = 'general', traceId = null,
  * Logs a debug message - maintains same signature as original
  */
 async function debug(message, context = {}, category = 'general', traceId = null, userId = null, deviceId = null) {
-    if (checkMemoryForEmergency()) {
+    // Skip if emergency logging is disabled
+    if (emergencyLoggingDisabled) return;
+    
+    // Skip debug logs in production silent mode
+    const isProduction = process.env.NODE_ENV === 'production';
+    const isSilentMode = process.env.MCP_SILENT_MODE === 'true';
+    if (isProduction && isSilentMode) {
         return;
     }
     
-    if (!logger) initLogger();
+    // Skip infrastructure logs in production
+    if (isInfrastructureLog(message, category)) {
+        return;
+    }
     
+    // Skip if this log should be filtered
     if (shouldFilterLog('debug', message, category, context)) {
         return;
     }

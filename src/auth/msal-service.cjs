@@ -169,6 +169,33 @@ async function getLoginUrl(req) {
     // Store PKCE verifier in session (simple approach)
     req.session.pkceCodeVerifier = codeVerifier;
     
+    // Force session save to ensure code verifier is persisted immediately
+    await new Promise((resolve, reject) => {
+        req.session.save(err => {
+            if (err) {
+                MonitoringService.error('Failed to save session with PKCE code verifier', {
+                    error: err.message,
+                    sessionId: req.session?.id,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+                reject(err);
+            } else {
+                // Only log in development mode
+                if (process.env.NODE_ENV !== 'production') {
+                    MonitoringService.debug('Session saved with PKCE code verifier', {
+                        sessionId: req.session?.id,
+                        hasCodeVerifier: !!req.session.pkceCodeVerifier,
+                        timestamp: new Date().toISOString()
+                    }, 'auth');
+                }
+                resolve();
+            }
+        });
+    }).catch(err => {
+        // Log but continue even if save fails
+        MonitoringService.error('Error saving session', { error: err.message }, 'auth');
+    });
+    
     const authCodeUrlParameters = {
         scopes: SCOPES,
         redirectUri: REDIRECT_URI,
@@ -239,15 +266,20 @@ async function login(req, res) {
  * @param {Object} res - Express response object
  */
 async function handleAuthCallback(req, res) {
-    // Debug: log env vars and PKCE verifier (only in development)
-    if (process.env.NODE_ENV === 'development') {
+    // Debug: log session and PKCE verifier status only in development mode
+    if (process.env.NODE_ENV !== 'production') {
         MonitoringService.debug('Auth callback processing', {
             clientIdSet: !!CLIENT_ID,
             tenantId: TENANT_ID,
             redirectUri: REDIRECT_URI,
+            sessionId: req.session?.id,
+            hasSession: !!req.session,
+            hasCodeVerifier: !!req.session?.pkceCodeVerifier,
+            environment: process.env.NODE_ENV || 'development',
             timestamp: new Date().toISOString()
         }, 'auth');
     }
+
     
     // Get code verifier from session
     const codeVerifier = req.session.pkceCodeVerifier;

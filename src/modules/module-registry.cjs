@@ -19,11 +19,10 @@ class ModuleRegistry {
         /** @type {Map<string, Date>} */
         this.registrationTimestamps = new Map(); // module.id -> registration time
         
-        // Log initialization with proper optional chaining and fallback
+        // Log initialization with proper optional chaining
         MonitoringService?.info('ModuleRegistry initialized', { 
             timestamp: new Date().toISOString() 
-        }, 'module') || 
-            console.info('[MCP MODULE] ModuleRegistry initialized');
+        }, 'module');
     }
 
     /**
@@ -52,8 +51,7 @@ class ModuleRegistry {
                 context: { moduleType: typeof module }
             };
             
-            MonitoringService?.logError(error) || 
-                console.error('[MCP MODULE] Invalid module object or missing ID');
+            MonitoringService.logError(error);
             
             throw error;
         }
@@ -76,8 +74,7 @@ class ModuleRegistry {
                 context: { moduleId: module.id }
             };
             
-            MonitoringService?.logError(error) || 
-                console.error(`[MCP MODULE] Module with ID '${module.id}' already registered`);
+            MonitoringService.logError(error);
             
             throw error;
         }
@@ -120,8 +117,7 @@ class ModuleRegistry {
                     }
                 };
                 
-                MonitoringService?.logError(error) || 
-                    console.error(`[MCP MODULE] Module '${module.id}' missing or invalid required property '${prop}'`);
+                MonitoringService.logError(error);
                 
                 throw error;
             }
@@ -130,15 +126,14 @@ class ModuleRegistry {
         // Check optional properties
         for (const prop in optionalProps) {
             if (module.hasOwnProperty(prop) && typeof module[prop] !== optionalProps[prop]) {
-                MonitoringService?.warn(`Module has optional property with incorrect type`, { 
+                MonitoringService.warn(`Module has optional property with incorrect type`, { 
                     moduleId: module.id,
                     moduleName: module.name,
                     property: prop,
                     expectedType: optionalProps[prop],
                     actualType: typeof module[prop],
                     timestamp: new Date().toISOString()
-                }, 'module') || 
-                    console.warn(`[MCP MODULE] Module '${module.id}' has optional property '${prop}' with incorrect type`);
+                }, 'module');
             }
         }
 
@@ -158,24 +153,23 @@ class ModuleRegistry {
         }
         
         // Log successful registration
-        MonitoringService?.info('Module registered successfully', { 
+        MonitoringService.info(`Module '${module.id}' registered successfully`, { 
             moduleId: module.id,
             moduleName: module.name,
             capabilities: Array.isArray(module.capabilities) ? module.capabilities.length : 0,
             timestamp: new Date().toISOString()
-        }, 'module') || 
-            console.info(`[MCP MODULE] Module '${module.id}' registered successfully`);
+        }, 'module');
         
         // Track performance metric
         const elapsedTime = Date.now() - startTime;
-        MonitoringService?.trackMetric('module_registration_time', elapsedTime, {
+        MonitoringService.trackMetric('module_registration_time', elapsedTime, {
             moduleId: module.id,
             timestamp: new Date().toISOString()
         });
         
         // Emit event for real-time UI updates if logEmitter is available
         try {
-            if (MonitoringService?.logEmitter && typeof MonitoringService.logEmitter.emit === 'function') {
+            if (MonitoringService.logEmitter && typeof MonitoringService.logEmitter.emit === 'function') {
                 MonitoringService.logEmitter.emit('moduleRegistered', {
                     event: 'moduleRegistered',
                     data: {
@@ -205,7 +199,7 @@ class ModuleRegistry {
         const { strict = false } = options;
         
         // Log the request
-        MonitoringService?.debug('Getting module by ID', { 
+        MonitoringService.debug('Getting module by ID', { 
             moduleId: id, 
             strict,
             timestamp: new Date().toISOString()
@@ -215,7 +209,7 @@ class ModuleRegistry {
 
         if (!module && strict) {
             // Create standardized error for module not found
-            const error = ErrorService?.createError(
+            const error = ErrorService.createError(
                 'module',
                 `Module with ID '${id}' not found (strict mode enabled)`,
                 'error',
@@ -224,28 +218,22 @@ class ModuleRegistry {
                     strict,
                     timestamp: new Date().toISOString()
                 }
-            ) || {
-                category: 'module',
-                message: `Module with ID '${id}' not found (strict mode enabled)`,
-                severity: 'error',
-                context: { moduleId: id, strict }
-            };
+            );
             
-            MonitoringService?.logError(error) || 
-                console.error(`[MCP MODULE] Module with ID '${id}' not found (strict mode enabled)`);
+            MonitoringService.logError(error);
             
             throw error;
         }
         
         // Log the result
         if (module) {
-            MonitoringService?.debug('Module found', { 
+            MonitoringService.debug('Module found', { 
                 moduleId: id, 
                 moduleName: module.name,
                 timestamp: new Date().toISOString()
             }, 'module');
         } else {
-            MonitoringService?.debug('Module not found', { 
+            MonitoringService.debug('Module not found', { 
                 moduleId: id, 
                 strict: false, // If we got here, strict must be false
                 timestamp: new Date().toISOString()
@@ -254,7 +242,7 @@ class ModuleRegistry {
         
         // Track performance metric
         const elapsedTime = Date.now() - startTime;
-        MonitoringService?.trackMetric('module_lookup_time', elapsedTime, {
+        MonitoringService.trackMetric('module_lookup_time', elapsedTime, {
             moduleId: id,
             found: !!module,
             timestamp: new Date().toISOString()
@@ -271,12 +259,11 @@ class ModuleRegistry {
         const modules = Array.from(this.modules.values());
         
         // Log the request and result
-        MonitoringService?.debug('Getting all modules', { 
+        MonitoringService.debug('Getting all modules', { 
             count: modules.length,
             moduleIds: modules.map(m => m.id),
             timestamp: new Date().toISOString()
-        }, 'module') || 
-            console.debug(`[MCP MODULE] Getting all modules (${modules.length})`);
+        }, 'module');
         
         return modules;
     }
@@ -291,7 +278,7 @@ class ModuleRegistry {
         const startTime = Date.now();
         
         // Log the request
-        MonitoringService?.debug('Finding modules for intent', { 
+        MonitoringService.debug('Finding modules for intent', { 
             intent: capability,
             timestamp: new Date().toISOString()
         }, 'module');
@@ -299,15 +286,14 @@ class ModuleRegistry {
         const ids = this.capabilityMap.get(capability);
         if (!ids || ids.size === 0) {
             // Log no modules found
-            MonitoringService?.info('No modules found for intent', { 
+            MonitoringService.info('No modules found for intent', { 
                 intent: capability,
                 timestamp: new Date().toISOString()
-            }, 'module') || 
-                console.info(`[MCP MODULE] No modules found for intent: ${capability}`);
+            }, 'module');
             
             // Track performance metric
             const elapsedTime = Date.now() - startTime;
-            MonitoringService?.trackMetric('intent_lookup_time', elapsedTime, {
+            MonitoringService.trackMetric('intent_lookup_time', elapsedTime, {
                 intent: capability,
                 found: false,
                 count: 0,
@@ -326,17 +312,16 @@ class ModuleRegistry {
         modules.sort((a, b) => (b.priority || 0) - (a.priority || 0));
 
         // Log the result
-        MonitoringService?.info('Found modules for intent', { 
+        MonitoringService.info('Found modules for intent', { 
             intent: capability,
             count: modules.length,
             moduleIds: modules.map(m => m.id),
             timestamp: new Date().toISOString()
-        }, 'module') || 
-            console.info(`[MCP MODULE] Found ${modules.length} module(s) for intent: ${capability}`);
+        }, 'module');
         
         // Track performance metric
         const elapsedTime = Date.now() - startTime;
-        MonitoringService?.trackMetric('intent_lookup_time', elapsedTime, {
+        MonitoringService.trackMetric('intent_lookup_time', elapsedTime, {
             intent: capability,
             found: true,
             count: modules.length,
@@ -345,7 +330,7 @@ class ModuleRegistry {
         
         // Emit event for real-time UI updates if logEmitter is available
         try {
-            if (MonitoringService?.logEmitter && typeof MonitoringService.logEmitter.emit === 'function') {
+            if (MonitoringService.logEmitter && typeof MonitoringService.logEmitter.emit === 'function') {
                 MonitoringService.logEmitter.emit('modulesFoundForIntent', {
                     event: 'modulesFoundForIntent',
                     data: {
@@ -374,12 +359,11 @@ class ModuleRegistry {
         const capabilities = Array.from(this.capabilityMap.keys()).sort();
         
         // Log the request and result
-        MonitoringService?.debug('Listing all capabilities', { 
+        MonitoringService.debug('Listing all capabilities', { 
             count: capabilities.length,
             capabilities,
             timestamp: new Date().toISOString()
-        }, 'module') || 
-            console.debug(`[MCP MODULE] Listing all capabilities (${capabilities.length})`);
+        }, 'module');
         
         return capabilities;
     }
@@ -392,7 +376,7 @@ class ModuleRegistry {
      */
     getRegistrationInfo(moduleId) {
         // Log the request
-        MonitoringService?.debug('Getting module registration info', { 
+        MonitoringService.debug('Getting module registration info', { 
             moduleId,
             timestamp: new Date().toISOString()
         }, 'module');
@@ -400,11 +384,10 @@ class ModuleRegistry {
         const registrationTime = this.registrationTimestamps.get(moduleId);
         if (!registrationTime) {
             // Log warning for module not found
-            MonitoringService?.warn('No registration timestamp found', { 
+            MonitoringService.warn('No registration timestamp found', { 
                 moduleId,
                 timestamp: new Date().toISOString()
-            }, 'module') || 
-                console.warn(`[MCP MODULE] No registration timestamp found for module ID '${moduleId}'`);
+            }, 'module');
             
             return null;
         }
@@ -415,12 +398,11 @@ class ModuleRegistry {
         };
         
         // Log the result
-        MonitoringService?.debug('Retrieved module registration timestamp', { 
+        MonitoringService.debug('Retrieved module registration timestamp', { 
             moduleId,
             registeredAt: registrationTime,
             timestamp: new Date().toISOString()
-        }, 'module') || 
-            console.debug(`[MCP MODULE] Retrieved registration timestamp for module '${moduleId}'`);
+        }, 'module');
         
         return registrationInfo;
     }

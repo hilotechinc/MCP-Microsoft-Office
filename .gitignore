@@ -87,3 +87,5 @@ Thumbs.db
 # Optional package manager files
 yarn.lock
 pnpm-lock.yaml
+logging-compliance-audit.md
+TODO.MD

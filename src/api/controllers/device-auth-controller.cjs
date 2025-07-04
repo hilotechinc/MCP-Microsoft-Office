@@ -467,14 +467,16 @@ async function generateMcpToken(req, res) {
 
         const mcpToken = DeviceJwtService.generateLongLivedAccessToken(deviceId, userId, tokenPayload);
 
-        // Log the token generation with detailed debugging
-        console.log(`[DEBUG] MCP Token Generated with Microsoft 365 Identity:`, {
-            userId: userId,
-            microsoftEmail: microsoftEmail,
-            sessionId: sessionId,
-            deviceId: deviceId,
-            timestamp: new Date().toISOString()
-        });
+        // Log the token generation with detailed debugging - only in development mode
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('MCP Token Generated with Microsoft 365 Identity', {
+                userId: userId,
+                microsoftEmail: microsoftEmail,
+                sessionId: sessionId,
+                deviceId: deviceId,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
         
         MonitoringService.info('MCP bearer token generated', {
             userId: userId.substring(0, 8) + '...',

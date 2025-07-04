@@ -22,6 +22,7 @@ const { resolveUserId } = require('../../core/user-id-resolver.cjs');
 async function addLogEntry(req, res) {
     try {
         // Log the request for debugging (only in development)
+        // Explicitly check for development mode to ensure we never log in production with silent mode
         if (process.env.NODE_ENV === 'development') {
             MonitoringService.debug('Received log entry request', req.body, 'logs');
         }
@@ -126,13 +127,23 @@ async function getLogEntries(req, res) {
                 };
                 
                 // Get user logs from storage service
-                console.log(`[DEBUG] Fetching user logs for userId: ${userId}`);
+                // Only log in development mode
+                if (process.env.NODE_ENV === 'development') {
+                    MonitoringService.debug(`Fetching user logs for userId: ${userId}`, {}, 'logs');
+                }
+                
                 const userLogs = await StorageService.getUserLogs(userId, options);
-                console.log(`[DEBUG] Found ${userLogs ? userLogs.length : 0} user logs`);
+                
+                if (process.env.NODE_ENV === 'development') {
+                    MonitoringService.debug(`Found ${userLogs ? userLogs.length : 0} user logs`, {}, 'logs');
+                }
                 
                 if (userLogs && userLogs.length > 0) {
                     result = userLogs;
-                    console.log(`[DEBUG] Using ${userLogs.length} user logs from database`);
+                    
+                    if (process.env.NODE_ENV === 'development') {
+                        MonitoringService.debug(`Using ${userLogs.length} user logs from database`, {}, 'logs');
+                    }
                     
                     // Only log detailed info for non-auto-refresh requests
                     if ((req.headers['x-requested-by'] !== 'auto-refresh') && process.env.NODE_ENV === 'development') {
@@ -155,10 +166,17 @@ async function getLogEntries(req, res) {
         
         // If no user logs were found or we're requesting global logs, get from circular buffer
         if (result.length === 0 || scope === 'global') {
-            console.log(`[DEBUG] Falling back to system logs. User logs found: ${result.length}, scope: ${scope}`);
-            // Get logs from monitoring service's circular buffer
+            // Only log in development mode
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug(`Falling back to system logs. User logs found: ${result.length}, scope: ${scope}`, {}, 'logs');
+            }
+            
+            // Get logs from circular buffer
             const logs = MonitoringService.getLogBuffer().getAll();
-            console.log(`[DEBUG] Retrieved ${logs.length} system logs from circular buffer`);
+            
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug(`Retrieved ${logs.length} system logs from circular buffer`, {}, 'logs');
+            }
             
             // Apply filtering based on query parameters
             let filteredLogs = filterLogs(logs, { category, level });
@@ -181,7 +199,12 @@ async function getLogEntries(req, res) {
         }
         
         // Only log detailed info for non-auto-refresh requests to prevent feedback loops
-        if ((req.headers['x-requested-by'] !== 'auto-refresh') && process.env.NODE_ENV === 'development') {
+        // Only log in development mode, never in production with silent mode
+        // Also skip auto-refresh requests to prevent feedback loops
+        const isAutoRefresh = req.headers['x-requested-by'] === 'auto-refresh';
+        const isDevelopment = process.env.NODE_ENV === 'development';
+        
+        if (!isAutoRefresh && isDevelopment) {
             MonitoringService.debug('Returning log entries', { 
                 requestedLimit: parsedLimit,
                 returnedCount: result.length,

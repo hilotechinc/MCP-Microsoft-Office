@@ -14,6 +14,9 @@ const session = require('express-session');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const path = require('path');
 const http = require('http');
+const https = require('https');
+const fs = require('fs');
+const helmet = require('helmet');
 
 // Import services
 const monitoringService = require('./src/core/monitoring-service.cjs');
@@ -86,6 +89,11 @@ process.on('unhandledRejection', (reason, promise) => {
 async function startDevServer() {
   // Starting development server
   
+  // Define environment variables early so they're available throughout the function
+  const isProduction = process.env.NODE_ENV === 'production';
+  const isHttps = process.env.ENABLE_HTTPS === 'true';
+  const isSilentMode = process.env.MCP_SILENT_MODE === 'true';
+  
   // Initialize database factory and storage service first
   try {
     await initializeModules();
@@ -99,6 +107,22 @@ async function startDevServer() {
   
   // Create a single Express app for both frontend and API
   const app = express();
+  
+  // Configure HTTP request logging (Morgan) based on environment
+  // Using the environment variables defined at the start of the function
+  
+  // Only log HTTP requests in development mode, NEVER in production with silent mode
+  if (!isProduction) {
+    const morgan = require('morgan');
+    app.use(morgan('dev', {
+      // Skip logging for static assets in any mode to reduce noise
+      skip: (req) => req.url.includes('.') && !req.url.endsWith('.html')
+    }));
+    monitoringService.info('HTTP request logging enabled in development mode', {}, 'server');
+  } else {
+    // In production, we don't use morgan at all when silent mode is enabled
+    monitoringService.info('HTTP request logging disabled in production mode', {}, 'server');
+  }
   const HOST = process.env.HOST || 'localhost';
   const PORT = process.env.PORT || 3000;
   
@@ -114,13 +138,81 @@ async function startDevServer() {
   // Set up middleware from the server module
   serverModule.setupMiddleware(app);
   
+  // Add helmet middleware for security headers
+  monitoringService.info('Configuring security headers with Helmet...', {}, 'security');
+  app.use(helmet({
+    // Content Security Policy
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+        fontSrc: ["'self'", "https://fonts.gstatic.com"],
+        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"], // unsafe-eval needed for some frameworks
+        imgSrc: ["'self'", "data:", "https:"],
+        connectSrc: ["'self'", "https://graph.microsoft.com", "https://login.microsoftonline.com"],
+        frameSrc: ["'none'"],
+        objectSrc: ["'none'"],
+        baseUri: ["'self'"]
+      }
+    },
+    // HTTP Strict Transport Security (HSTS)
+    hsts: {
+      maxAge: 31536000, // 1 year
+      includeSubDomains: true,
+      preload: true
+    },
+    // X-Frame-Options
+    frameguard: { action: 'deny' },
+    // X-Content-Type-Options
+    noSniff: true,
+    // X-XSS-Protection
+    xssFilter: true,
+    // Referrer Policy
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+    // Hide X-Powered-By header
+    hidePoweredBy: true,
+    // DNS Prefetch Control
+    dnsPrefetchControl: { allow: false },
+    // IE No Open
+    ieNoOpen: true
+  }));
+  
   // Set up session middleware for authentication
+  monitoringService.info('Setting up session middleware...', {}, 'server');
+  
+  // Create session store with proper garbage collection
+  const MemoryStore = require('memorystore')(session);
+  
+  // Configure session middleware
   app.use(session({
-    secret: 'mcp-session-secret',
+    secret: process.env.SESSION_SECRET || 'mcp-session-secret',
     resave: false,
     saveUninitialized: true,
-    cookie: { secure: false } // Set to true if using HTTPS
+    cookie: { 
+      // Only use secure cookies when HTTPS is enabled
+      // This is critical for authentication to work on HTTP in development
+      secure: isProduction && isHttps,
+      
+      // Use 'lax' for both environments to ensure cookies are sent with navigation
+      // This is important for the PKCE flow to work properly
+      sameSite: 'lax',
+      
+      maxAge: 24 * 60 * 60 * 1000, // 24 hours
+      httpOnly: true // Prevent client-side JavaScript from accessing cookies
+    },
+    // Use a more reliable memory store with proper garbage collection
+    store: new MemoryStore({
+      checkPeriod: 86400000 // Prune expired entries every 24h
+    })
   }));
+  
+  // Log session configuration but redact sensitive data
+  monitoringService.debug('Session middleware configured', {
+    secureCookie: isProduction,
+    sameSite: isProduction ? 'strict' : 'lax',
+    usingEnvSecret: !!process.env.SESSION_SECRET,
+    environment: process.env.NODE_ENV || 'development'
+  }, 'server');
   
   // Register API routes directly
   app.use('/api/status', statusRouter);
@@ -240,8 +332,68 @@ async function startDevServer() {
   });
   
   // Start the server
-  const server = app.listen(PORT, HOST, () => {
-    console.log(`🚀 Server running at http://${HOST}:${PORT}`);
+  const startTime = Date.now();
+  
+  // Check if HTTPS should be enabled
+  const useHttps = process.env.ENABLE_HTTPS === 'true';
+  const sslKeyPath = process.env.SSL_KEY_PATH;
+  const sslCertPath = process.env.SSL_CERT_PATH;
+  
+  let serverInstance;
+  let protocol = 'http';
+  
+  if (useHttps && sslKeyPath && sslCertPath) {
+    try {
+      // Check if SSL certificate files exist
+      if (fs.existsSync(sslKeyPath) && fs.existsSync(sslCertPath)) {
+        const sslOptions = {
+          key: fs.readFileSync(sslKeyPath),
+          cert: fs.readFileSync(sslCertPath)
+        };
+        serverInstance = https.createServer(sslOptions, app);
+        protocol = 'https';
+        monitoringService.info('HTTPS enabled with SSL certificates', { 
+          keyPath: sslKeyPath, 
+          certPath: sslCertPath 
+        }, 'server');
+      } else {
+        monitoringService.warn('SSL certificate files not found, falling back to HTTP', { 
+          keyPath: sslKeyPath, 
+          certPath: sslCertPath 
+        }, 'server');
+        serverInstance = http.createServer(app);
+      }
+    } catch (error) {
+      monitoringService.error('Failed to load SSL certificates, falling back to HTTP', { 
+        error: error.message,
+        keyPath: sslKeyPath, 
+        certPath: sslCertPath 
+      }, 'server');
+      serverInstance = http.createServer(app);
+    }
+  } else {
+    serverInstance = http.createServer(app);
+    if (useHttps) {
+      monitoringService.warn('HTTPS requested but SSL paths not configured, using HTTP', {
+        enableHttps: useHttps,
+        sslKeyPath,
+        sslCertPath
+      }, 'server');
+    }
+  }
+  
+  const server = serverInstance.listen(PORT, HOST, () => {
+    const startupTime = Date.now() - startTime;
+    const serverUrl = `${protocol}://${HOST}:${PORT}`;
+    
+    console.log(`🚀 Server running at ${serverUrl}`);
+    monitoringService.info(`Enhanced dev server running at ${serverUrl}`, { 
+      startupTime, 
+      port: PORT, 
+      protocol,
+      production: process.env.NODE_ENV === 'production',
+      silentMode: process.env.MCP_SILENT_MODE === 'true'
+    }, 'server');
   });
   
   // Handle server shutdown gracefully
