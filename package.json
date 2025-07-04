@@ -4,7 +4,7 @@
     "version": "0.1.0",
     "description": "Microsoft Cloud Platform Web Client",
     "scripts": {
-        "dev:web": "node dev-server.cjs",
+        "dev:web": "NODE_ENV=development node dev-server.cjs",
         "dev:api": "node src/main/server.cjs",
         "start": "NODE_ENV=production MCP_SILENT_MODE=true node dev-server.cjs",
         "reset-db": "node scripts/reset-database.js",

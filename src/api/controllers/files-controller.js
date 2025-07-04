@@ -56,24 +56,44 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
         // Start tracking execution time
         const startTime = Date.now();
         
-        // Log the request with user context
-        monitoringService.info(`Processing ${req.method} ${req.path}`, {
-            method: req.method,
-            path: req.path,
-            parentId: req.query.parentId || 'root',
-            ip: req.ip,
-            userId,
-            deviceId
-        }, 'files', null, userId, deviceId);
-        
         try {
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                monitoringService.debug('Files listing requested', {
+                    parentId: req.query.parentId || 'root',
+                    sessionId: req.session?.id,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString(),
+                    userId,
+                    deviceId
+                }, 'files');
+            }
+            
             // Call the module method directly with req as separate parameter
             const files = await filesModule.listFiles(req.query.parentId, req);
             
             // Calculate execution time
             const executionTime = Date.now() - startTime;
             
-            // Log success metrics
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                monitoringService.info('Files listing completed successfully', {
+                    fileCount: Array.isArray(files) ? files.length : 0,
+                    parentId: req.query.parentId || 'root',
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files', null, userId);
+            } else if (req.session?.id) {
+                monitoringService.info('Files listing completed with session', {
+                    sessionId: req.session.id,
+                    fileCount: Array.isArray(files) ? files.length : 0,
+                    parentId: req.query.parentId || 'root',
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
+            
+            // Track success metrics
             monitoringService.trackMetric('files_list_api_success', executionTime, {
                 fileCount: Array.isArray(files) ? files.length : 0,
                 parentId: req.query.parentId || 'root',
@@ -82,40 +102,43 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                 deviceId
             });
             
-            // Log success with result summary
-            monitoringService.info('Files listing API completed successfully', {
-                fileCount: Array.isArray(files) ? files.length : 0,
-                parentId: req.query.parentId || 'root',
-                executionTimeMs: executionTime,
-                timestamp: new Date().toISOString(),
-                userId,
-                deviceId
-            }, 'files', null, userId, deviceId);
-            
             res.json(files);
         } catch (err) {
             // Calculate execution time even for failures
             const executionTime = Date.now() - startTime;
             
-            // Create standardized error
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.API, 
-                `Files listing API error: ${err.message}`, 
-                ErrorService.SEVERITIES.ERROR, 
+                'files',
+                `Files listing error: ${err.message}`,
+                'error',
                 { 
+                    endpoint: '/api/files',
                     parentId: req.query.parentId || 'root',
+                    error: err.message,
                     stack: err.stack,
                     timestamp: new Date().toISOString(),
                     userId,
                     deviceId
-                },
-                null,
-                userId,
-                deviceId
+                }
             );
-            
-            // Log the error
             monitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                monitoringService.error('Files listing failed', {
+                    error: err.message,
+                    parentId: req.query.parentId || 'root',
+                    timestamp: new Date().toISOString()
+                }, 'files', null, userId);
+            } else if (req.session?.id) {
+                monitoringService.error('Files listing failed', {
+                    sessionId: req.session.id,
+                    error: err.message,
+                    parentId: req.query.parentId || 'root',
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
             
             // Track failure metrics
             monitoringService.trackMetric('files_list_api_failure', executionTime, {
@@ -126,9 +149,8 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
             });
             
             res.status(500).json({ 
-                error: 'Internal error', 
-                message: err.message,
-                errorId: mcpError.id
+                error: 'FILES_LIST_FAILED',
+                error_description: 'Failed to retrieve files list'
             });
         }
     },
@@ -155,38 +177,54 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
         try {
             // Validate input
             const schema = Joi.object({
-                name: Joi.string().min(1).max(255).pattern(/^[^<>:"/\\|?*]+$/).required(),
+                name: Joi.string().min(1).max(255).pattern(/^[^\u003c\u003e:"/\\|?*]+$/).required(),
                 content: Joi.string().min(1).max(10485760).required() // 10MB limit
             });
             
             const { error, value } = schema.validate(req.body);
             if (error) {
+                // Pattern 3: Infrastructure Error Logging
                 const mcpError = ErrorService.createError(
-                    ErrorService.CATEGORIES.API,
-                    'Invalid request',
-                    ErrorService.SEVERITIES.WARNING,
+                    'files',
+                    'File upload validation failed',
+                    'error',
                     { 
-                        timestamp: new Date().toISOString(),
-                        validationError: 'invalid_request',
-                        requestId: req.id,
-                        userId,
-                        deviceId
+                        endpoint: '/api/files/upload',
+                        error: 'Invalid request parameters',
+                        validationDetails: error.details,
+                        timestamp: new Date().toISOString()
                     }
                 );
                 monitoringService.logError(mcpError);
-                return res.status(400).json({ error: 'Invalid request', details: error.details });
+                
+                // Pattern 4: User Error Tracking
+                if (userId) {
+                    monitoringService.error('File upload validation failed', {
+                        error: 'Invalid request parameters',
+                        timestamp: new Date().toISOString()
+                    }, 'files', null, userId);
+                } else if (req.session?.id) {
+                    monitoringService.error('File upload validation failed', {
+                        sessionId: req.session.id,
+                        error: 'Invalid request parameters',
+                        timestamp: new Date().toISOString()
+                    }, 'files');
+                }
+                
+                return res.status(400).json({ 
+                    error: 'FILE_UPLOAD_INVALID_REQUEST',
+                    error_description: 'Invalid file upload parameters'
+                });
             }
             
-            // Log the request (only in development)
+            // Pattern 1: Development Debug Logs
             if (process.env.NODE_ENV === 'development') {
                 monitoringService.debug('File upload requested', { 
                     fileName: value.name,
                     fileSize: value.content.length,
-                    timestamp: new Date().toISOString(),
-                    source: 'files-controller.uploadFile',
-                    requestId: req.id,
-                    userId,
-                    deviceId
+                    sessionId: req.session?.id,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString()
                 }, 'files');
             }
             
@@ -196,7 +234,27 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
             // Calculate execution time
             const executionTime = Date.now() - startTime;
             
-            // Log success metrics
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                monitoringService.info('File upload completed successfully', {
+                    fileName: value.name,
+                    fileSize: value.content.length,
+                    fileId: result.id,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files', null, userId);
+            } else if (req.session?.id) {
+                monitoringService.info('File upload completed with session', {
+                    sessionId: req.session.id,
+                    fileName: value.name,
+                    fileSize: value.content.length,
+                    fileId: result.id,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
+            
+            // Track success metrics
             monitoringService.trackMetric('files_upload_api_success', executionTime, {
                 fileName: value.name,
                 fileSize: value.content.length,
@@ -205,39 +263,42 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                 deviceId
             });
             
-            // Log success with result summary
-            monitoringService.info('File upload API completed successfully', {
-                fileName: value.name,
-                fileSize: value.content.length,
-                fileId: result.id,
-                executionTimeMs: executionTime,
-                timestamp: new Date().toISOString(),
-                userId,
-                deviceId
-            }, 'files', null, userId, deviceId);
-            
             res.json(result);
         } catch (err) {
             // Calculate execution time even for failures
             const executionTime = Date.now() - startTime;
             
-            // Create standardized error
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.API, 
-                `File upload API error: ${err.message}`, 
-                ErrorService.SEVERITIES.ERROR, 
+                'files',
+                `File upload error: ${err.message}`,
+                'error',
                 { 
+                    endpoint: '/api/files/upload',
                     fileName: req.body?.name,
                     fileSize: req.body?.content?.length,
+                    error: err.message,
                     stack: err.stack,
-                    timestamp: new Date().toISOString(),
-                    userId,
-                    deviceId
+                    timestamp: new Date().toISOString()
                 }
             );
-            
-            // Log the error
             monitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                monitoringService.error('File upload failed', {
+                    error: err.message,
+                    fileName: req.body?.name,
+                    timestamp: new Date().toISOString()
+                }, 'files', null, userId);
+            } else if (req.session?.id) {
+                monitoringService.error('File upload failed', {
+                    sessionId: req.session.id,
+                    error: err.message,
+                    fileName: req.body?.name,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
             
             // Track failure metrics
             monitoringService.trackMetric('files_upload_api_failure', executionTime, {
@@ -247,7 +308,10 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                 deviceId
             });
             
-            res.status(500).json({ error: 'Internal error', message: err.message });
+            res.status(500).json({ 
+                error: 'FILE_UPLOAD_FAILED',
+                error_description: 'Failed to upload file'
+            });
         }
     },
     /**
@@ -261,46 +325,51 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
         // Start tracking execution time
         const startTime = Date.now();
         
-        // Log the request with user context
-        monitoringService.info(`Processing ${req.method} ${req.path}`, {
-            method: req.method,
-            path: req.path,
-            query: req.query.q,
-            ip: req.ip,
-            userId,
-            deviceId
-        }, 'files', null, userId, deviceId);
-        
         try {
             // Validate input
             if (!req.query.q) {
-                const err = ErrorService.createError(
-                    ErrorService.CATEGORIES.API,
-                    'Search query is required',
-                    ErrorService.SEVERITIES.WARNING,
+                // Pattern 3: Infrastructure Error Logging
+                const mcpError = ErrorService.createError(
+                    'files',
+                    'Files search validation failed',
+                    'error',
                     { 
-                        timestamp: new Date().toISOString(),
-                        validationError: 'missing_query',
-                        requestId: req.id,
-                        userId,
-                        deviceId
+                        endpoint: '/api/files/search',
+                        error: 'Search query is required',
+                        timestamp: new Date().toISOString()
                     }
                 );
-                monitoringService.logError(err);
-                return res.status(400).json({ error: 'Search query is required' });
+                monitoringService.logError(mcpError);
+                
+                // Pattern 4: User Error Tracking
+                if (userId) {
+                    monitoringService.error('Files search validation failed', {
+                        error: 'Search query is required',
+                        timestamp: new Date().toISOString()
+                    }, 'files', null, userId);
+                } else if (req.session?.id) {
+                    monitoringService.error('Files search validation failed', {
+                        sessionId: req.session.id,
+                        error: 'Search query is required',
+                        timestamp: new Date().toISOString()
+                    }, 'files');
+                }
+                
+                return res.status(400).json({ 
+                    error: 'FILES_SEARCH_INVALID_REQUEST',
+                    error_description: 'Search query is required'
+                });
             }
             
             const query = req.query.q;
             
-            // Log the request (only in development)
+            // Pattern 1: Development Debug Logs
             if (process.env.NODE_ENV === 'development') {
                 monitoringService.debug('Files search requested', { 
                     query,
-                    timestamp: new Date().toISOString(),
-                    source: 'files-controller.searchFiles',
-                    requestId: req.id,
-                    userId,
-                    deviceId
+                    sessionId: req.session?.id,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString()
                 }, 'files');
             }
             
@@ -310,7 +379,25 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
             // Calculate execution time
             const executionTime = Date.now() - startTime;
             
-            // Log success metrics with user context
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                monitoringService.info('Files search completed successfully', {
+                    query: req.query.q,
+                    resultCount: Array.isArray(files) ? files.length : 0,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files', null, userId);
+            } else if (req.session?.id) {
+                monitoringService.info('Files search completed with session', {
+                    sessionId: req.session.id,
+                    query: req.query.q,
+                    resultCount: Array.isArray(files) ? files.length : 0,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
+            
+            // Track success metrics
             monitoringService.trackMetric('files_search_api_success', executionTime, {
                 query: req.query.q,
                 resultCount: Array.isArray(files) ? files.length : 0,
@@ -319,39 +406,43 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                 deviceId
             });
             
-            // Log success with result summary and user context
-            monitoringService.info('Files search API completed successfully', {
-                query: req.query.q,
-                resultCount: Array.isArray(files) ? files.length : 0,
-                executionTimeMs: executionTime,
-                timestamp: new Date().toISOString(),
-                userId,
-                deviceId
-            }, 'files', null, userId, deviceId);
-            
             res.json(files);
         } catch (err) {
             // Calculate execution time even for failures
             const executionTime = Date.now() - startTime;
             
-            // Create standardized error with user context
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.API, 
-                `Files search error: ${err.message}`, 
-                ErrorService.SEVERITIES.ERROR, 
+                'files',
+                `Files search error: ${err.message}`,
+                'error',
                 { 
+                    endpoint: '/api/files/search',
                     query: req.query.q,
+                    error: err.message,
                     stack: err.stack,
-                    timestamp: new Date().toISOString(),
-                    userId,
-                    deviceId
+                    timestamp: new Date().toISOString()
                 }
             );
-            
-            // Log the error
             monitoringService.logError(mcpError);
             
-            // Track failure metrics with user context
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                monitoringService.error('Files search failed', {
+                    error: err.message,
+                    query: req.query.q,
+                    timestamp: new Date().toISOString()
+                }, 'files', null, userId);
+            } else if (req.session?.id) {
+                monitoringService.error('Files search failed', {
+                    sessionId: req.session.id,
+                    error: err.message,
+                    query: req.query.q,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
+            
+            // Track failure metrics
             monitoringService.trackMetric('files_search_api_failure', executionTime, {
                 errorType: err.code || 'unknown',
                 timestamp: new Date().toISOString(),
@@ -359,7 +450,10 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                 deviceId
             });
             
-            res.status(500).json({ error: 'Internal error', message: err.message });
+            res.status(500).json({ 
+                error: 'FILES_SEARCH_FAILED',
+                error_description: 'Failed to search files'
+            });
         }
     },
     /**
@@ -372,60 +466,64 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
         // Start tracking execution time
         const startTime = Date.now();
         
-        // Log the request with user context
-        monitoringService.info(`Processing ${req.method} ${req.path}`, {
-            method: req.method,
-            path: req.path,
-            fileId: req.query.id,
-            ip: req.ip,
-            userId,
-            deviceId
-        }, 'files', null, userId, deviceId);
-        
         try {
             // Validate input
             if (!req.query.id) {
-                const err = ErrorService.createError(
-                    ErrorService.CATEGORIES.API,
-                    'File ID is required',
-                    ErrorService.SEVERITIES.WARNING,
+                // Pattern 3: Infrastructure Error Logging
+                const mcpError = ErrorService.createError(
+                    'files',
+                    'File download validation failed',
+                    'error',
                     { 
-                        timestamp: new Date().toISOString(),
-                        validationError: 'missing_file_id',
-                        requestId: req.id,
-                        userId,
-                        deviceId
+                        endpoint: '/api/files/download',
+                        error: 'File ID is required',
+                        timestamp: new Date().toISOString()
                     }
                 );
-                monitoringService.logError(err);
-                return res.status(400).json({ error: 'File ID is required' });
+                monitoringService.logError(mcpError);
+                
+                // Pattern 4: User Error Tracking
+                if (userId) {
+                    monitoringService.error('File download validation failed', {
+                        error: 'File ID is required',
+                        timestamp: new Date().toISOString()
+                    }, 'files', null, userId);
+                } else if (req.session?.id) {
+                    monitoringService.error('File download validation failed', {
+                        sessionId: req.session.id,
+                        error: 'File ID is required',
+                        timestamp: new Date().toISOString()
+                    }, 'files');
+                }
+                
+                return res.status(400).json({ 
+                    error: 'FILES_DOWNLOAD_INVALID_REQUEST',
+                    error_description: 'File ID is required'
+                });
             }
             
             const fileId = req.query.id;
             
-            // Log the request (only in development)
-            monitoringService.debug('File download requested', { 
-                fileId,
-                timestamp: new Date().toISOString(),
-                source: 'files-controller.downloadFile',
-                requestId: req.id,
-                userId,
-                deviceId
-            }, 'files', null, userId, deviceId);
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                monitoringService.debug('File download requested', { 
+                    fileId,
+                    sessionId: req.session?.id,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
             
             // Check if metadata only is requested
             const metadataOnly = req.query.metadataOnly === 'true';
             
             // Log if metadata only is requested
-            if (metadataOnly) {
+            if (metadataOnly && process.env.NODE_ENV === 'development') {
                 monitoringService.debug('File metadata only requested', { 
                     fileId,
-                    timestamp: new Date().toISOString(),
-                    source: 'files-controller.downloadFile',
-                    requestId: req.id,
-                    userId,
-                    deviceId
-                }, 'files', null, userId, deviceId);
+                    sessionId: req.session?.id,
+                    timestamp: new Date().toISOString()
+                }, 'files');
             }
             
             // Create options object for downloadFile
@@ -570,46 +668,53 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
         // Start tracking execution time
         const startTime = Date.now();
         
-        // Log the request with user context
-        monitoringService.info(`Processing ${req.method} ${req.path}`, {
-            method: req.method,
-            path: req.path,
-            fileId: req.query.id,
-            ip: req.ip,
-            userId,
-            deviceId
-        }, 'files', null, userId, deviceId);
-        
         try {
             // Validate input
             if (!req.query.id) {
-                const err = ErrorService.createError(
-                    ErrorService.CATEGORIES.API,
-                    'File ID is required',
-                    ErrorService.SEVERITIES.WARNING,
+                // Pattern 3: Infrastructure Error Logging
+                const mcpError = ErrorService.createError(
+                    'files',
+                    'File metadata validation failed',
+                    'error',
                     { 
-                        timestamp: new Date().toISOString(),
-                        validationError: 'missing_file_id',
-                        requestId: req.id,
-                        userId,
-                        deviceId
+                        endpoint: '/api/files/metadata',
+                        error: 'File ID is required',
+                        timestamp: new Date().toISOString()
                     }
                 );
-                monitoringService.logError(err);
-                return res.status(400).json({ error: 'File ID is required' });
+                monitoringService.logError(mcpError);
+                
+                // Pattern 4: User Error Tracking
+                if (userId) {
+                    monitoringService.error('File metadata validation failed', {
+                        error: 'File ID is required',
+                        timestamp: new Date().toISOString()
+                    }, 'files', null, userId);
+                } else if (req.session?.id) {
+                    monitoringService.error('File metadata validation failed', {
+                        sessionId: req.session.id,
+                        error: 'File ID is required',
+                        timestamp: new Date().toISOString()
+                    }, 'files');
+                }
+                
+                return res.status(400).json({ 
+                    error: 'FILES_METADATA_INVALID_REQUEST',
+                    error_description: 'File ID is required'
+                });
             }
             
             const fileId = req.query.id;
             
-            // Log the request (only in development)
-            monitoringService.debug('File metadata requested', { 
-                fileId,
-                timestamp: new Date().toISOString(),
-                source: 'files-controller.getFileMetadata',
-                requestId: req.id,
-                userId,
-                deviceId
-            }, 'files', null, userId, deviceId);
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                monitoringService.debug('File metadata requested', { 
+                    fileId,
+                    sessionId: req.session?.id,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
             
             // Call the module method directly with req as separate parameter
             const metadata = await filesModule.getFileMetadata(fileId, req);
@@ -617,7 +722,25 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
             // Calculate execution time
             const executionTime = Date.now() - startTime;
             
-            // Log success metrics with user context
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                monitoringService.info('File metadata retrieval completed successfully', {
+                    fileId: fileId,
+                    fileName: metadata?.name,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files', null, userId);
+            } else if (req.session?.id) {
+                monitoringService.info('File metadata retrieval completed with session', {
+                    sessionId: req.session.id,
+                    fileId: fileId,
+                    fileName: metadata?.name,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
+            
+            // Track success metrics
             monitoringService.trackMetric('files_metadata_api_success', executionTime, {
                 fileId: fileId,
                 timestamp: new Date().toISOString(),
@@ -625,39 +748,43 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                 deviceId
             });
             
-            // Log success with result summary and user context
-            monitoringService.info('Files metadata API completed successfully', {
-                fileId: fileId,
-                fileName: metadata?.name,
-                executionTimeMs: executionTime,
-                timestamp: new Date().toISOString(),
-                userId,
-                deviceId
-            }, 'files', null, userId, deviceId);
-            
             res.json(metadata);
         } catch (err) {
             // Calculate execution time even for failures
             const executionTime = Date.now() - startTime;
             
-            // Create standardized error with user context
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.API, 
-                `Files metadata error: ${err.message}`, 
-                ErrorService.SEVERITIES.ERROR, 
+                'files',
+                `File metadata error: ${err.message}`,
+                'error',
                 { 
+                    endpoint: '/api/files/metadata',
                     fileId: req.query.id,
+                    error: err.message,
                     stack: err.stack,
-                    timestamp: new Date().toISOString(),
-                    userId,
-                    deviceId
+                    timestamp: new Date().toISOString()
                 }
             );
-            
-            // Log the error
             monitoringService.logError(mcpError);
             
-            // Track failure metrics with user context
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                monitoringService.error('File metadata retrieval failed', {
+                    error: err.message,
+                    fileId: req.query.id,
+                    timestamp: new Date().toISOString()
+                }, 'files', null, userId);
+            } else if (req.session?.id) {
+                monitoringService.error('File metadata retrieval failed', {
+                    sessionId: req.session.id,
+                    error: err.message,
+                    fileId: req.query.id,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
+            
+            // Track failure metrics
             monitoringService.trackMetric('files_metadata_api_failure', executionTime, {
                 errorType: err.code || 'unknown',
                 timestamp: new Date().toISOString(),
@@ -665,121 +792,15 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                 deviceId
             });
             
-            res.status(500).json({ error: 'Internal error', message: err.message });
+            res.status(500).json({ 
+                error: 'FILES_METADATA_FAILED',
+                error_description: 'Failed to retrieve file metadata'
+            });
         }
     },
+
     /**
-     * GET /api/files/content
-     * Gets the content of a file by ID
-     */
-    async getFileContent(req, res) {
-        // Extract user context from auth middleware
-        const { userId = null, deviceId = null } = req.user || {};
-        
-        // Start tracking execution time
-        const startTime = Date.now();
-        
-        // Log the request with user context
-        monitoringService.info(`Processing ${req.method} ${req.path}`, {
-            method: req.method,
-            path: req.path,
-            fileId: req.query.id,
-            ip: req.ip,
-            userId,
-            deviceId
-        }, 'files', null, userId, deviceId);
-        
-        try {
-            // Validate input
-            if (!req.query.id) {
-                const err = ErrorService.createError(
-                    ErrorService.CATEGORIES.API,
-                    'File ID is required',
-                    ErrorService.SEVERITIES.WARNING,
-                    { 
-                        timestamp: new Date().toISOString(),
-                        validationError: 'missing_file_id',
-                        requestId: req.id,
-                        userId,
-                        deviceId
-                    }
-                );
-                monitoringService.logError(err);
-                return res.status(400).json({ error: 'File ID is required' });
-            }
-            
-            const fileId = req.query.id;
-            
-            // Log the request (only in development)
-            monitoringService.debug('File content requested', { 
-                fileId,
-                timestamp: new Date().toISOString(),
-                source: 'files-controller.getFileContent',
-                requestId: req.id,
-                userId,
-                deviceId
-            }, 'files', null, userId, deviceId);
-            
-            // Call the module method directly with req as separate parameter
-            const fileContent = await filesModule.getFileContent(fileId, req);
-            
-            // Calculate execution time
-            const executionTime = Date.now() - startTime;
-            
-            // Log success metrics with user context
-            monitoringService.trackMetric('files_content_api_success', executionTime, {
-                fileId: fileId,
-                contentLength: fileContent?.content?.length || 0,
-                timestamp: new Date().toISOString(),
-                userId,
-                deviceId
-            });
-            
-            // Log success with result summary and user context
-            monitoringService.info('Files content API completed successfully', {
-                fileId: fileId,
-                contentLength: fileContent?.content?.length || 0,
-                executionTimeMs: executionTime,
-                timestamp: new Date().toISOString(),
-                userId,
-                deviceId
-            }, 'files', null, userId, deviceId);
-            
-            res.json(fileContent);
-        } catch (err) {
-            // Calculate execution time even for failures
-            const executionTime = Date.now() - startTime;
-            
-            // Create standardized error with user context
-            const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.API, 
-                `Files content error: ${err.message}`, 
-                ErrorService.SEVERITIES.ERROR, 
-                { 
-                    fileId: req.query.id,
-                    stack: err.stack,
-                    timestamp: new Date().toISOString(),
-                    userId,
-                    deviceId
-                }
-            );
-            
-            // Log the error
-            monitoringService.logError(mcpError);
-            
-            // Track failure metrics with user context
-            monitoringService.trackMetric('files_content_api_failure', executionTime, {
-                errorType: err.code || 'unknown',
-                timestamp: new Date().toISOString(),
-                userId,
-                deviceId
-            });
-            
-            res.status(500).json({ error: 'Internal error', message: err.message });
-        }
-    },
-    /**
-     * POST /api/files/content
+     * PUT /api/files/content
      */
     async setFileContent(req, res) {
         // Extract user context from auth middleware
@@ -788,111 +809,145 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
         // Start tracking execution time
         const startTime = Date.now();
         
-        // Log the request with user context
-        monitoringService.info(`Processing ${req.method} ${req.path}`, {
-            method: req.method,
-            path: req.path,
-            fileId: req.body?.fileId,
-            ip: req.ip,
-            userId,
-            deviceId
-        }, 'files', null, userId, deviceId);
-        
         try {
             // Validate input
             const schema = Joi.object({
-                fileId: Joi.string().min(1).max(255).required(),
-                content: Joi.string().min(1).max(10485760).required() // 10MB limit
+                fileId: Joi.string().required(),
+                content: Joi.string().required()
             });
             
             const { error, value } = schema.validate(req.body);
             if (error) {
+                // Pattern 3: Infrastructure Error Logging
                 const mcpError = ErrorService.createError(
-                    ErrorService.CATEGORIES.API,
-                    'Invalid request',
-                    ErrorService.SEVERITIES.WARNING,
+                    'files',
+                    'File content validation failed',
+                    'error',
                     { 
-                        details: error.details,
-                        timestamp: new Date().toISOString(),
-                        requestId: req.id,
-                        userId,
-                        deviceId
+                        endpoint: '/api/files/content',
+                        error: error.details[0].message,
+                        timestamp: new Date().toISOString()
                     }
                 );
                 monitoringService.logError(mcpError);
-                return res.status(400).json({ error: 'Invalid request', details: error.details });
+                
+                // Pattern 4: User Error Tracking
+                if (userId) {
+                    monitoringService.error('File content validation failed', {
+                        error: error.details[0].message,
+                        timestamp: new Date().toISOString()
+                    }, 'files', null, userId);
+                } else if (req.session?.id) {
+                    monitoringService.error('File content validation failed', {
+                        sessionId: req.session.id,
+                        error: error.details[0].message,
+                        timestamp: new Date().toISOString()
+                    }, 'files');
+                }
+                
+                return res.status(400).json({ 
+                    error: 'FILES_CONTENT_INVALID_REQUEST',
+                    error_description: error.details[0].message
+                });
             }
             
-            // Log the request (only in development)
-            monitoringService.debug('Set file content requested', { 
-                fileId: value.fileId,
-                timestamp: new Date().toISOString(),
-                source: 'files-controller.setFileContent',
-                requestId: req.id,
-                userId,
-                deviceId
-            }, 'files');
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                monitoringService.debug('File content update requested', { 
+                    fileId: value.fileId,
+                    contentLength: value.content.length,
+                    sessionId: req.session?.id,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
             
-            // Call the module method directly with req as separate parameter
+            // Call the module method
             const result = await filesModule.setFileContent(value.fileId, value.content, req);
             
             // Calculate execution time
             const executionTime = Date.now() - startTime;
             
-            // Log success metrics with user context
-            monitoringService.trackMetric('files_set_content_api_success', executionTime, {
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                monitoringService.info('File content update completed successfully', {
+                    fileId: value.fileId,
+                    contentLength: value.content.length,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files', null, userId);
+            } else if (req.session?.id) {
+                monitoringService.info('File content update completed with session', {
+                    sessionId: req.session.id,
+                    fileId: value.fileId,
+                    contentLength: value.content.length,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
+            
+            // Track success metrics
+            monitoringService.trackMetric('files_content_set_api_success', executionTime, {
                 fileId: value.fileId,
                 contentLength: value.content.length,
                 timestamp: new Date().toISOString(),
                 userId,
                 deviceId
             });
-            
-            // Log success with result summary and user context
-            monitoringService.info('Files set content API completed successfully', {
-                fileId: value.fileId,
-                contentLength: value.content.length,
-                executionTimeMs: executionTime,
-                timestamp: new Date().toISOString(),
-                userId,
-                deviceId
-            }, 'files', null, userId, deviceId);
             
             res.json(result);
         } catch (err) {
             // Calculate execution time even for failures
             const executionTime = Date.now() - startTime;
             
-            // Create standardized error with user context
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.API, 
-                `Files set content error: ${err.message}`, 
-                ErrorService.SEVERITIES.ERROR, 
+                'files',
+                `File content update error: ${err.message}`,
+                'error',
                 { 
+                    endpoint: '/api/files/content',
                     fileId: req.body?.fileId,
+                    error: err.message,
                     stack: err.stack,
-                    timestamp: new Date().toISOString(),
-                    userId,
-                    deviceId
+                    timestamp: new Date().toISOString()
                 }
             );
-            
-            // Log the error
             monitoringService.logError(mcpError);
             
-            // Track failure metrics with user context
-            monitoringService.trackMetric('files_set_content_api_failure', executionTime, {
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                monitoringService.error('File content update failed', {
+                    error: err.message,
+                    fileId: req.body?.fileId,
+                    timestamp: new Date().toISOString()
+                }, 'files', null, userId);
+            } else if (req.session?.id) {
+                monitoringService.error('File content update failed', {
+                    sessionId: req.session.id,
+                    error: err.message,
+                    fileId: req.body?.fileId,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
+            
+            // Track failure metrics
+            monitoringService.trackMetric('files_content_set_api_failure', executionTime, {
                 errorType: err.code || 'unknown',
                 timestamp: new Date().toISOString(),
                 userId,
                 deviceId
             });
             
-            res.status(500).json({ error: 'Internal error', message: err.message });
+            res.status(500).json({ 
+                error: 'FILES_CONTENT_UPDATE_FAILED',
+                error_description: 'Failed to update file content'
+            });
         }
     },
+
     /**
-     * POST /api/files/content/update
+     * PATCH /api/files/content
      */
     async updateFileContent(req, res) {
         // Extract user context from auth middleware
@@ -901,111 +956,145 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
         // Start tracking execution time
         const startTime = Date.now();
         
-        // Log the request with user context
-        monitoringService.info(`Processing ${req.method} ${req.path}`, {
-            method: req.method,
-            path: req.path,
-            fileId: req.body?.fileId,
-            ip: req.ip,
-            userId,
-            deviceId
-        }, 'files', null, userId, deviceId);
-        
         try {
             // Validate input
             const schema = Joi.object({
-                fileId: Joi.string().min(1).max(255).required(),
-                content: Joi.string().min(1).max(10485760).required() // 10MB limit
+                fileId: Joi.string().required(),
+                content: Joi.string().required()
             });
             
             const { error, value } = schema.validate(req.body);
             if (error) {
+                // Pattern 3: Infrastructure Error Logging
                 const mcpError = ErrorService.createError(
-                    ErrorService.CATEGORIES.API,
-                    'Invalid request',
-                    ErrorService.SEVERITIES.WARNING,
+                    'files',
+                    'File content update validation failed',
+                    'error',
                     { 
-                        details: error.details,
-                        timestamp: new Date().toISOString(),
-                        requestId: req.id,
-                        userId,
-                        deviceId
+                        endpoint: '/api/files/content',
+                        error: error.details[0].message,
+                        timestamp: new Date().toISOString()
                     }
                 );
                 monitoringService.logError(mcpError);
-                return res.status(400).json({ error: 'Invalid request', details: error.details });
+                
+                // Pattern 4: User Error Tracking
+                if (userId) {
+                    monitoringService.error('File content update validation failed', {
+                        error: error.details[0].message,
+                        timestamp: new Date().toISOString()
+                    }, 'files', null, userId);
+                } else if (req.session?.id) {
+                    monitoringService.error('File content update validation failed', {
+                        sessionId: req.session.id,
+                        error: error.details[0].message,
+                        timestamp: new Date().toISOString()
+                    }, 'files');
+                }
+                
+                return res.status(400).json({ 
+                    error: 'FILES_CONTENT_UPDATE_INVALID_REQUEST',
+                    error_description: error.details[0].message
+                });
             }
             
-            // Log the request (only in development)
-            monitoringService.debug('Update file content requested', { 
-                fileId: value.fileId,
-                timestamp: new Date().toISOString(),
-                source: 'files-controller.updateFileContent',
-                requestId: req.id,
-                userId,
-                deviceId
-            }, 'files');
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                monitoringService.debug('File content update requested', { 
+                    fileId: value.fileId,
+                    contentLength: value.content.length,
+                    sessionId: req.session?.id,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
             
-            // Call the module method directly with req as separate parameter
+            // Call the module method
             const result = await filesModule.updateFileContent(value.fileId, value.content, req);
             
             // Calculate execution time
             const executionTime = Date.now() - startTime;
             
-            // Log success metrics with user context
-            monitoringService.trackMetric('files_update_content_api_success', executionTime, {
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                monitoringService.info('File content update completed successfully', {
+                    fileId: value.fileId,
+                    contentLength: value.content.length,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files', null, userId);
+            } else if (req.session?.id) {
+                monitoringService.info('File content update completed with session', {
+                    sessionId: req.session.id,
+                    fileId: value.fileId,
+                    contentLength: value.content.length,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
+            
+            // Track success metrics
+            monitoringService.trackMetric('files_content_update_api_success', executionTime, {
                 fileId: value.fileId,
                 contentLength: value.content.length,
                 timestamp: new Date().toISOString(),
                 userId,
                 deviceId
             });
-            
-            // Log success with result summary and user context
-            monitoringService.info('Files update content API completed successfully', {
-                fileId: value.fileId,
-                contentLength: value.content.length,
-                executionTimeMs: executionTime,
-                timestamp: new Date().toISOString(),
-                userId,
-                deviceId
-            }, 'files', null, userId, deviceId);
             
             res.json(result);
         } catch (err) {
             // Calculate execution time even for failures
             const executionTime = Date.now() - startTime;
             
-            // Create standardized error with user context
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.API, 
-                `Files update content error: ${err.message}`, 
-                ErrorService.SEVERITIES.ERROR, 
+                'files',
+                `File content update error: ${err.message}`,
+                'error',
                 { 
+                    endpoint: '/api/files/content',
                     fileId: req.body?.fileId,
+                    error: err.message,
                     stack: err.stack,
-                    timestamp: new Date().toISOString(),
-                    userId,
-                    deviceId
+                    timestamp: new Date().toISOString()
                 }
             );
-            
-            // Log the error
             monitoringService.logError(mcpError);
             
-            // Track failure metrics with user context
-            monitoringService.trackMetric('files_update_content_api_failure', executionTime, {
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                monitoringService.error('File content update failed', {
+                    error: err.message,
+                    fileId: req.body?.fileId,
+                    timestamp: new Date().toISOString()
+                }, 'files', null, userId);
+            } else if (req.session?.id) {
+                monitoringService.error('File content update failed', {
+                    sessionId: req.session.id,
+                    error: err.message,
+                    fileId: req.body?.fileId,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
+            
+            // Track failure metrics
+            monitoringService.trackMetric('files_content_update_api_failure', executionTime, {
                 errorType: err.code || 'unknown',
                 timestamp: new Date().toISOString(),
                 userId,
                 deviceId
             });
             
-            res.status(500).json({ error: 'Internal error', message: err.message });
+            res.status(500).json({ 
+                error: 'FILES_CONTENT_UPDATE_FAILED',
+                error_description: 'Failed to update file content'
+            });
         }
     },
+
     /**
-     * POST /api/files/share
+     * POST /api/files/sharing/link
      */
     async createSharingLink(req, res) {
         // Extract user context from auth middleware
@@ -1014,120 +1103,152 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
         // Start tracking execution time
         const startTime = Date.now();
         
-        // Log the request with user context
-        monitoringService.info(`Processing ${req.method} ${req.path}`, {
-            method: req.method,
-            path: req.path,
-            fileId: req.body?.fileId,
-            ip: req.ip,
-            userId,
-            deviceId
-        }, 'files', null, userId, deviceId);
-        
         try {
             // Validate input
             const schema = Joi.object({
-                fileId: Joi.string().min(1).max(255).required(),
+                fileId: Joi.string().required(),
                 type: Joi.string().valid('view', 'edit').default('view'),
-                scope: Joi.string().valid('anonymous', 'organization').default('organization')
+                scope: Joi.string().valid('anonymous', 'organization').default('anonymous')
             });
             
             const { error, value } = schema.validate(req.body);
             if (error) {
-                // Create validation error with user context
-                const validationError = ErrorService.createError(
-                    ErrorService.CATEGORIES.API,
-                    'Invalid sharing link request',
-                    ErrorService.SEVERITIES.ERROR,
-                    {
-                        details: error.details,
-                        timestamp: new Date().toISOString(),
-                        requestId: req.id,
-                        userId,
-                        deviceId
+                // Pattern 3: Infrastructure Error Logging
+                const mcpError = ErrorService.createError(
+                    'files',
+                    'Sharing link creation validation failed',
+                    'error',
+                    { 
+                        endpoint: '/api/files/sharing/link',
+                        error: error.details[0].message,
+                        timestamp: new Date().toISOString()
                     }
                 );
+                monitoringService.logError(mcpError);
                 
-                // Log validation error
-                monitoringService.logError(validationError);
+                // Pattern 4: User Error Tracking
+                if (userId) {
+                    monitoringService.error('Sharing link creation validation failed', {
+                        error: error.details[0].message,
+                        timestamp: new Date().toISOString()
+                    }, 'files', null, userId);
+                } else if (req.session?.id) {
+                    monitoringService.error('Sharing link creation validation failed', {
+                        sessionId: req.session.id,
+                        error: error.details[0].message,
+                        timestamp: new Date().toISOString()
+                    }, 'files');
+                }
                 
-                return res.status(400).json({ error: 'Invalid request', details: error.details });
+                return res.status(400).json({ 
+                    error: 'FILES_SHARING_INVALID_REQUEST',
+                    error_description: error.details[0].message
+                });
             }
             
-            // Log the request (only in development)
+            // Pattern 1: Development Debug Logs
             if (process.env.NODE_ENV === 'development') {
-                monitoringService.debug('Files sharing link creation requested', { 
+                monitoringService.debug('Sharing link creation requested', { 
                     fileId: value.fileId,
-                    timestamp: new Date().toISOString(),
-                    source: 'files-controller.createSharingLink',
-                    requestId: req.id,
-                    userId,
-                    deviceId
+                    type: value.type,
+                    scope: value.scope,
+                    sessionId: req.session?.id,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString()
                 }, 'files');
             }
             
-            // Call the module method directly with req as separate parameter
+            // Call the module method
             const result = await filesModule.createSharingLink(value.fileId, value.type, req);
             
             // Calculate execution time
             const executionTime = Date.now() - startTime;
             
-            // Log success metrics with user context
-            monitoringService.trackMetric('files_create_sharing_api_success', executionTime, {
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                monitoringService.info('Sharing link creation completed successfully', {
+                    fileId: value.fileId,
+                    type: value.type,
+                    scope: value.scope,
+                    linkId: result?.id,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files', null, userId);
+            } else if (req.session?.id) {
+                monitoringService.info('Sharing link creation completed with session', {
+                    sessionId: req.session.id,
+                    fileId: value.fileId,
+                    type: value.type,
+                    scope: value.scope,
+                    linkId: result?.id,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
+            
+            // Track success metrics
+            monitoringService.trackMetric('files_sharing_link_create_api_success', executionTime, {
                 fileId: value.fileId,
-                linkType: value.type,
-                linkScope: value.scope,
+                type: value.type,
+                scope: value.scope,
                 timestamp: new Date().toISOString(),
                 userId,
                 deviceId
             });
-            
-            // Log success with result summary and user context
-            monitoringService.info('Files create sharing link API completed successfully', {
-                fileId: value.fileId,
-                linkType: value.type,
-                linkScope: value.scope,
-                executionTimeMs: executionTime,
-                timestamp: new Date().toISOString(),
-                userId,
-                deviceId
-            }, 'files', null, userId, deviceId);
             
             res.json(result);
         } catch (err) {
             // Calculate execution time even for failures
             const executionTime = Date.now() - startTime;
             
-            // Create standardized error with user context
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.API, 
-                `Files create sharing link error: ${err.message}`, 
-                ErrorService.SEVERITIES.ERROR, 
+                'files',
+                `Sharing link creation error: ${err.message}`,
+                'error',
                 { 
+                    endpoint: '/api/files/sharing/link',
                     fileId: req.body?.fileId,
+                    error: err.message,
                     stack: err.stack,
-                    timestamp: new Date().toISOString(),
-                    userId,
-                    deviceId
+                    timestamp: new Date().toISOString()
                 }
             );
-            
-            // Log the error
             monitoringService.logError(mcpError);
             
-            // Track failure metrics with user context
-            monitoringService.trackMetric('files_create_sharing_api_failure', executionTime, {
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                monitoringService.error('Sharing link creation failed', {
+                    error: err.message,
+                    fileId: req.body?.fileId,
+                    timestamp: new Date().toISOString()
+                }, 'files', null, userId);
+            } else if (req.session?.id) {
+                monitoringService.error('Sharing link creation failed', {
+                    sessionId: req.session.id,
+                    error: err.message,
+                    fileId: req.body?.fileId,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
+            
+            // Track failure metrics
+            monitoringService.trackMetric('files_sharing_link_create_api_failure', executionTime, {
                 errorType: err.code || 'unknown',
                 timestamp: new Date().toISOString(),
                 userId,
                 deviceId
             });
             
-            res.status(500).json({ error: 'Internal error', message: err.message });
+            res.status(500).json({ 
+                error: 'FILES_SHARING_LINK_CREATE_FAILED',
+                error_description: 'Failed to create sharing link'
+            });
         }
     },
+
     /**
-     * GET /api/files/sharing
+     * GET /api/files/sharing/links
      */
     async getSharingLinks(req, res) {
         // Extract user context from auth middleware
@@ -1136,101 +1257,140 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
         // Start tracking execution time
         const startTime = Date.now();
         
-        // Log the request with user context
-        monitoringService.info(`Processing ${req.method} ${req.path}`, {
-            method: req.method,
-            path: req.path,
-            fileId: req.query.fileId || req.query.id,
-            ip: req.ip,
-            userId,
-            deviceId
-        }, 'files', null, userId, deviceId);
-        
         try {
-            // Validate input (accept both fileId and id for compatibility)
-            const fileId = req.query.fileId || req.query.id;
-            if (!fileId) {
-                // Create validation error with user context
-                const validationError = ErrorService.createError(
-                    ErrorService.CATEGORIES.API,
-                    'Missing file ID for sharing links request',
-                    ErrorService.SEVERITIES.ERROR,
-                    {
-                        timestamp: new Date().toISOString(),
-                        validationError: 'missing_file_id',
-                        requestId: req.id,
-                        userId,
-                        deviceId
+            // Validate input
+            if (!req.query.fileId) {
+                // Pattern 3: Infrastructure Error Logging
+                const mcpError = ErrorService.createError(
+                    'files',
+                    'Get sharing links validation failed',
+                    'error',
+                    { 
+                        endpoint: '/api/files/sharing/links',
+                        error: 'File ID is required',
+                        timestamp: new Date().toISOString()
                     }
                 );
+                monitoringService.logError(mcpError);
                 
-                // Log validation error
-                monitoringService.logError(validationError);
+                // Pattern 4: User Error Tracking
+                if (userId) {
+                    monitoringService.error('Get sharing links validation failed', {
+                        error: 'File ID is required',
+                        timestamp: new Date().toISOString()
+                    }, 'files', null, userId);
+                } else if (req.session?.id) {
+                    monitoringService.error('Get sharing links validation failed', {
+                        sessionId: req.session.id,
+                        error: 'File ID is required',
+                        timestamp: new Date().toISOString()
+                    }, 'files');
+                }
                 
-                return res.status(400).json({ error: 'File ID is required' });
+                return res.status(400).json({ 
+                    error: 'FILES_SHARING_INVALID_REQUEST',
+                    error_description: 'File ID is required'
+                });
             }
             
-            // Call the module method directly with req as separate parameter
-            const links = await filesModule.getSharingLinks(fileId, req);
+            const fileId = req.query.fileId;
+            
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                monitoringService.debug('Get sharing links requested', { 
+                    fileId,
+                    sessionId: req.session?.id,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
+            
+            // Call the module method
+            const result = await filesModule.getSharingLinks(fileId, req);
             
             // Calculate execution time
             const executionTime = Date.now() - startTime;
             
-            // Log success metrics with user context
-            monitoringService.trackMetric('files_sharing_links_api_success', executionTime, {
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                monitoringService.info('Get sharing links completed successfully', {
+                    fileId: fileId,
+                    linksCount: result?.length || 0,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files', null, userId);
+            } else if (req.session?.id) {
+                monitoringService.info('Get sharing links completed with session', {
+                    sessionId: req.session.id,
+                    fileId: fileId,
+                    linksCount: result?.length || 0,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
+            
+            // Track success metrics
+            monitoringService.trackMetric('files_sharing_links_get_api_success', executionTime, {
                 fileId: fileId,
-                linkCount: Array.isArray(links) ? links.length : 0,
+                linksCount: result?.length || 0,
                 timestamp: new Date().toISOString(),
                 userId,
                 deviceId
             });
             
-            // Log success with result summary and user context
-            monitoringService.info('Files sharing links API completed successfully', {
-                fileId: fileId,
-                linkCount: Array.isArray(links) ? links.length : 0,
-                executionTimeMs: executionTime,
-                timestamp: new Date().toISOString(),
-                userId,
-                deviceId
-            }, 'files', null, userId, deviceId);
-            
-            res.json(links);
+            res.json(result);
         } catch (err) {
             // Calculate execution time even for failures
             const executionTime = Date.now() - startTime;
             
-            // Create standardized error with user context
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.API, 
-                `Files sharing links retrieval error: ${err.message}`, 
-                ErrorService.SEVERITIES.ERROR, 
+                'files',
+                `Get sharing links error: ${err.message}`,
+                'error',
                 { 
-                    fileId: req.query.fileId || req.query.id,
+                    endpoint: '/api/files/sharing/links',
+                    fileId: req.query.fileId,
+                    error: err.message,
                     stack: err.stack,
-                    timestamp: new Date().toISOString(),
-                    userId,
-                    deviceId
+                    timestamp: new Date().toISOString()
                 }
             );
-            
-            // Log the error
             monitoringService.logError(mcpError);
             
-            // Track failure metrics with user context
-            monitoringService.trackMetric('files_sharing_links_api_failure', executionTime, {
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                monitoringService.error('Get sharing links failed', {
+                    error: err.message,
+                    fileId: req.query.fileId,
+                    timestamp: new Date().toISOString()
+                }, 'files', null, userId);
+            } else if (req.session?.id) {
+                monitoringService.error('Get sharing links failed', {
+                    sessionId: req.session.id,
+                    error: err.message,
+                    fileId: req.query.fileId,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
+            
+            // Track failure metrics
+            monitoringService.trackMetric('files_sharing_links_get_api_failure', executionTime, {
                 errorType: err.code || 'unknown',
                 timestamp: new Date().toISOString(),
                 userId,
                 deviceId
             });
             
-            res.status(500).json({ error: 'Internal error', message: err.message });
+            res.status(500).json({ 
+                error: 'FILES_SHARING_LINKS_GET_FAILED',
+                error_description: 'Failed to retrieve sharing links'
+            });
         }
     },
-    
+
     /**
-     * POST /api/files/sharing/remove
+     * DELETE /api/files/sharing/permission
      */
     async removeSharingPermission(req, res) {
         // Extract user context from auth middleware
@@ -1238,16 +1398,6 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
         
         // Start tracking execution time
         const startTime = Date.now();
-        
-        // Log the request with user context
-        monitoringService.info(`Processing ${req.method} ${req.path}`, {
-            method: req.method,
-            path: req.path,
-            fileId: req.body?.fileId,
-            ip: req.ip,
-            userId,
-            deviceId
-        }, 'files', null, userId, deviceId);
         
         try {
             // Validate input
@@ -1258,43 +1408,73 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
             
             const { error, value } = schema.validate(req.body);
             if (error) {
-                // Create validation error with user context
-                const validationError = ErrorService.createError(
-                    ErrorService.CATEGORIES.API,
-                    'Invalid sharing permission removal request',
-                    ErrorService.SEVERITIES.ERROR,
-                    {
-                        details: error.details,
-                        timestamp: new Date().toISOString(),
-                        requestId: req.id,
-                        userId,
-                        deviceId
+                // Pattern 3: Infrastructure Error Logging
+                const mcpError = ErrorService.createError(
+                    'files',
+                    'Remove sharing permission validation failed',
+                    'error',
+                    { 
+                        endpoint: '/api/files/sharing/permission',
+                        error: error.details[0].message,
+                        timestamp: new Date().toISOString()
                     }
                 );
+                monitoringService.logError(mcpError);
                 
-                // Log validation error
-                monitoringService.logError(validationError);
+                // Pattern 4: User Error Tracking
+                if (userId) {
+                    monitoringService.error('Remove sharing permission validation failed', {
+                        error: error.details[0].message,
+                        timestamp: new Date().toISOString()
+                    }, 'files', null, userId);
+                } else if (req.session?.id) {
+                    monitoringService.error('Remove sharing permission validation failed', {
+                        sessionId: req.session.id,
+                        error: error.details[0].message,
+                        timestamp: new Date().toISOString()
+                    }, 'files');
+                }
                 
-                return res.status(400).json({ error: 'Invalid request', details: error.details });
+                return res.status(400).json({ 
+                    error: 'FILES_SHARING_PERMISSION_INVALID_REQUEST',
+                    error_description: error.details[0].message
+                });
             }
             
-            // Log the request (only in development)
+            // Pattern 1: Development Debug Logs
             if (process.env.NODE_ENV === 'development') {
-                monitoringService.debug('Files sharing permission removal requested', { 
+                monitoringService.debug('Remove sharing permission requested', { 
                     fileId: value.fileId,
-                    timestamp: new Date().toISOString(),
-                    source: 'files-controller.removeSharingPermission',
-                    requestId: req.id,
-                    userId,
-                    deviceId
+                    permissionId: value.permissionId,
+                    sessionId: req.session?.id,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString()
                 }, 'files');
             }
             
-            // Call the module method directly with req as separate parameter
+            // Call the module method
             const result = await filesModule.removeSharingPermission(value.fileId, value.permissionId, req);
             
             // Calculate execution time
             const executionTime = Date.now() - startTime;
+            
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                monitoringService.info('Remove sharing permission completed successfully', {
+                    fileId: value.fileId,
+                    permissionId: value.permissionId,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files', null, userId);
+            } else if (req.session?.id) {
+                monitoringService.info('Remove sharing permission completed with session', {
+                    sessionId: req.session.id,
+                    fileId: value.fileId,
+                    permissionId: value.permissionId,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
             
             // Log success metrics with user context
             monitoringService.trackMetric('files_remove_sharing_api_success', executionTime, {
@@ -1304,16 +1484,6 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                 userId,
                 deviceId
             });
-            
-            // Log success with result summary and user context
-            monitoringService.info('Files sharing permission removal API completed successfully', {
-                fileId: value.fileId,
-                permissionId: value.permissionId,
-                executionTimeMs: executionTime,
-                timestamp: new Date().toISOString(),
-                userId,
-                deviceId
-            }, 'files', null, userId, deviceId);
             
             res.json(result);
         } catch (err) {
@@ -1334,9 +1504,25 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
                     deviceId
                 }
             );
-            
-            // Log the error
             monitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                monitoringService.error('Remove sharing permission failed', {
+                    error: err.message,
+                    fileId: req.body?.fileId,
+                    permissionId: req.body?.permissionId,
+                    timestamp: new Date().toISOString()
+                }, 'files', null, userId);
+            } else if (req.session?.id) {
+                monitoringService.error('Remove sharing permission failed', {
+                    sessionId: req.session.id,
+                    error: err.message,
+                    fileId: req.body?.fileId,
+                    permissionId: req.body?.permissionId,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
             
             // Track failure metrics with user context
             monitoringService.trackMetric('files_remove_sharing_api_failure', executionTime, {
@@ -1349,4 +1535,5 @@ module.exports = ({ filesModule, errorService = ErrorService, monitoringService 
             res.status(500).json({ error: 'Internal error', message: err.message });
         }
     }
-};}
+    };
+};

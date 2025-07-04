@@ -74,9 +74,30 @@ const refreshTokenSchema = Joi.object({
  */
 async function registerDevice(req, res) {
     try {
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Device registration request received', {
+                sessionId: req.session?.id,
+                userAgent: req.get('User-Agent'),
+                clientId: req.body?.client_id,
+                deviceName: req.body?.device_name,
+                deviceType: req.body?.device_type,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
+
         // Validate request
         const { error, value } = validateRequest(req, deviceRegistrationSchema, '/api/auth/device/register');
         if (error) {
+            // Pattern 4: User Error Tracking
+            if (req.session?.id) {
+                MonitoringService.error('Device registration validation failed', {
+                    sessionId: req.session.id,
+                    validationErrors: error.details.map(d => d.message),
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+            
             return res.status(400).json({
                 error: 'invalid_request',
                 error_description: 'Invalid registration parameters',
@@ -93,12 +114,25 @@ async function registerDevice(req, res) {
             deviceType: value.device_type
         });
 
-        MonitoringService.info('Device registration initiated', {
-            deviceId: deviceRegistration.device_id,
-            userCode: deviceRegistration.user_code,
-            clientId: value.client_id,
-            timestamp: new Date().toISOString()
-        }, 'auth');
+        // Pattern 2: User Activity Logs
+        if (req.session?.id) {
+            MonitoringService.info('Device registration completed successfully', {
+                sessionId: req.session.id,
+                deviceId: deviceRegistration.device_id,
+                userCode: deviceRegistration.user_code,
+                clientId: value.client_id,
+                deviceName: value.device_name,
+                deviceType: value.device_type,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        } else {
+            MonitoringService.info('Device registration completed', {
+                deviceId: deviceRegistration.device_id,
+                userCode: deviceRegistration.user_code,
+                clientId: value.client_id,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
 
         // Return OAuth2-compliant device registration response
         res.json({
@@ -111,16 +145,29 @@ async function registerDevice(req, res) {
         });
 
     } catch (error) {
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
             'auth',
             'Device registration failed',
             'error',
             { 
                 endpoint: '/api/auth/device/register',
-                error: error.message 
+                error: error.message,
+                deviceName: req.body?.device_name,
+                deviceType: req.body?.device_type,
+                timestamp: new Date().toISOString()
             }
         );
         MonitoringService.logError(mcpError);
+
+        // Pattern 4: User Error Tracking
+        if (req.session?.id) {
+            MonitoringService.error('Device registration failed', {
+                sessionId: req.session.id,
+                error: error.message,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
 
         res.status(500).json({
             error: 'server_error',
@@ -135,9 +182,35 @@ async function registerDevice(req, res) {
  */
 async function authorizeDevice(req, res) {
     try {
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Device authorization request received', {
+                sessionId: req.session?.id,
+                userAgent: req.get('User-Agent'),
+                userCode: req.body?.user_code,
+                userId: req.body?.user_id,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
+
         // Validate request
         const { error, value } = validateRequest(req, deviceAuthorizationSchema, '/api/auth/device/authorize');
         if (error) {
+            // Pattern 4: User Error Tracking
+            const userId = req?.user?.userId;
+            if (userId) {
+                MonitoringService.error('Device authorization validation failed', {
+                    validationErrors: error.details.map(d => d.message),
+                    timestamp: new Date().toISOString()
+                }, 'auth', null, userId);
+            } else if (req.session?.id) {
+                MonitoringService.error('Device authorization validation failed', {
+                    sessionId: req.session.id,
+                    validationErrors: error.details.map(d => d.message),
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+            
             return res.status(400).json({
                 error: 'invalid_request',
                 error_description: 'Invalid authorization parameters',
@@ -150,6 +223,14 @@ async function authorizeDevice(req, res) {
         if (userId === 'current_session') {
             // Check if user is authenticated in current session
             if (!req.session?.msUser?.username) {
+                // Pattern 4: User Error Tracking
+                if (req.session?.id) {
+                    MonitoringService.error('Device authorization failed - no Microsoft 365 session', {
+                        sessionId: req.session.id,
+                        timestamp: new Date().toISOString()
+                    }, 'auth');
+                }
+                
                 return res.status(401).json({
                     error: 'unauthorized',
                     error_description: 'Microsoft 365 authentication required to authorize device'
@@ -163,10 +244,22 @@ async function authorizeDevice(req, res) {
         // Find device by user code
         const device = await DeviceRegistry.getDeviceByUserCode(value.user_code);
         if (!device) {
-            MonitoringService.debug('Device authorization failed - invalid user code', {
-                userCode: value.user_code,
-                timestamp: new Date().toISOString()
-            }, 'auth');
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Device authorization failed - invalid user code', {
+                    userCode: value.user_code,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+
+            // Pattern 4: User Error Tracking
+            if (req.session?.id) {
+                MonitoringService.error('Device authorization failed - invalid user code', {
+                    sessionId: req.session.id,
+                    userCode: value.user_code,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
 
             return res.status(400).json({
                 error: 'invalid_grant',
@@ -176,6 +269,15 @@ async function authorizeDevice(req, res) {
 
         // Check if device is already authorized
         if (device.is_authorized) {
+            // Pattern 4: User Error Tracking
+            if (req.session?.id) {
+                MonitoringService.error('Device authorization failed - already authorized', {
+                    sessionId: req.session.id,
+                    deviceId: device.device_id,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+            
             return res.status(400).json({
                 error: 'invalid_grant',
                 error_description: 'Device already authorized'
@@ -185,13 +287,25 @@ async function authorizeDevice(req, res) {
         // Authorize the device
         await DeviceRegistry.authorizeDevice(value.user_code, userId);
 
-        MonitoringService.info('Device authorized successfully', {
-            deviceId: device.device_id,
-            userId: userId.substring(0, 8) + '...',
-            userCode: value.user_code,
-            sessionBased: value.user_id === 'current_session',
-            timestamp: new Date().toISOString()
-        }, 'auth');
+        // Pattern 2: User Activity Logs
+        if (req.session?.id) {
+            MonitoringService.info('Device authorized successfully', {
+                sessionId: req.session.id,
+                deviceId: device.device_id,
+                userId: userId.substring(0, 8) + '...',
+                userCode: value.user_code,
+                sessionBased: value.user_id === 'current_session',
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        } else {
+            MonitoringService.info('Device authorized successfully', {
+                deviceId: device.device_id,
+                userId: userId.substring(0, 8) + '...',
+                userCode: value.user_code,
+                sessionBased: value.user_id === 'current_session',
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
 
         res.json({
             success: true,
@@ -199,6 +313,7 @@ async function authorizeDevice(req, res) {
         });
 
     } catch (error) {
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
             'auth',
             'Device authorization failed',
@@ -206,10 +321,26 @@ async function authorizeDevice(req, res) {
             { 
                 endpoint: '/api/auth/device/authorize',
                 userCode: req.body.user_code,
-                error: error.message 
+                error: error.message,
+                timestamp: new Date().toISOString()
             }
         );
         MonitoringService.logError(mcpError);
+
+        // Pattern 4: User Error Tracking
+        const userId = req?.user?.userId;
+        if (userId) {
+            MonitoringService.error('Device authorization failed', {
+                error: error.message,
+                timestamp: new Date().toISOString()
+            }, 'auth', null, userId);
+        } else if (req.session?.id) {
+            MonitoringService.error('Device authorization failed', {
+                sessionId: req.session.id,
+                error: error.message,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
 
         res.status(500).json({
             error: 'server_error',
@@ -224,9 +355,29 @@ async function authorizeDevice(req, res) {
  */
 async function pollForToken(req, res) {
     try {
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Token polling request received', {
+                sessionId: req.session?.id,
+                userAgent: req.get('User-Agent'),
+                deviceCode: req.body?.device_code ? req.body.device_code.substring(0, 8) + '...' : 'undefined',
+                clientId: req.body?.client_id,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
+
         // Validate request
         const { error, value } = validateRequest(req, tokenPollSchema, '/api/auth/device/token');
         if (error) {
+            // Pattern 4: User Error Tracking
+            if (req.session?.id) {
+                MonitoringService.error('Token polling validation failed', {
+                    sessionId: req.session.id,
+                    validationErrors: error.details.map(d => d.message),
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+            
             return res.status(400).json({
                 error: 'invalid_request',
                 error_description: 'Invalid token request parameters',
@@ -237,6 +388,15 @@ async function pollForToken(req, res) {
         // Find device by device code
         const device = await DeviceRegistry.getDeviceByCode(value.device_code);
         if (!device) {
+            // Pattern 4: User Error Tracking
+            if (req.session?.id) {
+                MonitoringService.error('Token polling failed - invalid device code', {
+                    sessionId: req.session.id,
+                    deviceCode: value.device_code.substring(0, 8) + '...',
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+            
             return res.status(400).json({
                 error: 'invalid_grant',
                 error_description: 'Invalid or expired device code'
@@ -245,6 +405,14 @@ async function pollForToken(req, res) {
 
         // Check if device is authorized
         if (!device.is_authorized) {
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Token polling - authorization pending', {
+                    deviceId: device.device_id,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+            
             return res.status(400).json({
                 error: 'authorization_pending',
                 error_description: 'User has not yet authorized the device'
@@ -264,9 +432,12 @@ async function pollForToken(req, res) {
         // Update device last seen
         await DeviceRegistry.updateLastSeen(device.device_id);
 
-        MonitoringService.info('Access tokens issued', {
+        // Pattern 2: User Activity Logs
+        MonitoringService.info('Access tokens issued successfully', {
             deviceId: device.device_id,
             userId: device.user_id.substring(0, 8) + '...',
+            clientId: value.client_id,
+            scope: 'microsoft.graph',
             timestamp: new Date().toISOString()
         }, 'auth');
 
@@ -279,17 +450,28 @@ async function pollForToken(req, res) {
         });
 
     } catch (error) {
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
             'auth',
             'Token polling failed',
             'error',
             { 
                 endpoint: '/api/auth/device/token',
-                deviceCode: req.body.device_code,
-                error: error.message 
+                deviceCode: req.body.device_code ? req.body.device_code.substring(0, 8) + '...' : 'undefined',
+                error: error.message,
+                timestamp: new Date().toISOString()
             }
         );
         MonitoringService.logError(mcpError);
+
+        // Pattern 4: User Error Tracking
+        if (req.session?.id) {
+            MonitoringService.error('Token polling failed', {
+                sessionId: req.session.id,
+                error: error.message,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
 
         res.status(500).json({
             error: 'server_error',
@@ -304,9 +486,28 @@ async function pollForToken(req, res) {
  */
 async function refreshToken(req, res) {
     try {
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Token refresh request received', {
+                sessionId: req.session?.id,
+                userAgent: req.get('User-Agent'),
+                refreshToken: req.body?.refresh_token ? req.body.refresh_token.substring(0, 20) + '...' : 'undefined',
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
+
         // Validate request
         const { error, value } = validateRequest(req, refreshTokenSchema, '/api/auth/device/refresh');
         if (error) {
+            // Pattern 4: User Error Tracking
+            if (req.session?.id) {
+                MonitoringService.error('Token refresh validation failed', {
+                    sessionId: req.session.id,
+                    validationErrors: error.details.map(d => d.message),
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+            
             return res.status(400).json({
                 error: 'invalid_request',
                 error_description: 'Invalid refresh token request',
@@ -320,6 +521,15 @@ async function refreshToken(req, res) {
         // Get device details
         const device = await DeviceRegistry.getDeviceById(decoded.deviceId);
         if (!device || !device.is_authorized) {
+            // Pattern 4: User Error Tracking
+            if (req.session?.id) {
+                MonitoringService.error('Token refresh failed - invalid device', {
+                    sessionId: req.session.id,
+                    deviceId: decoded.deviceId,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+            
             return res.status(400).json({
                 error: 'invalid_grant',
                 error_description: 'Invalid or revoked refresh token'
@@ -339,9 +549,11 @@ async function refreshToken(req, res) {
         // Update device last seen
         await DeviceRegistry.updateLastSeen(device.device_id);
 
-        MonitoringService.info('Access tokens refreshed', {
+        // Pattern 2: User Activity Logs
+        MonitoringService.info('Access tokens refreshed successfully', {
             deviceId: device.device_id,
             userId: device.user_id.substring(0, 8) + '...',
+            originalIat: decoded.iat,
             timestamp: new Date().toISOString()
         }, 'auth');
 
@@ -357,26 +569,55 @@ async function refreshToken(req, res) {
         let errorResponse;
         
         if (error.category === 'auth' && error.message.includes('expired')) {
+            // Pattern 4: User Error Tracking
+            if (req.session?.id) {
+                MonitoringService.error('Token refresh failed - expired token', {
+                    sessionId: req.session.id,
+                    error: error.message,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+            
             errorResponse = {
                 error: 'invalid_grant',
                 error_description: 'Refresh token has expired'
             };
         } else if (error.category === 'auth') {
+            // Pattern 4: User Error Tracking
+            if (req.session?.id) {
+                MonitoringService.error('Token refresh failed - invalid token', {
+                    sessionId: req.session.id,
+                    error: error.message,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+            
             errorResponse = {
                 error: 'invalid_grant',
                 error_description: 'Invalid refresh token'
             };
         } else {
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
                 'auth',
                 'Token refresh failed',
                 'error',
                 { 
                     endpoint: '/api/auth/device/refresh',
-                    error: error.message 
+                    error: error.message,
+                    timestamp: new Date().toISOString()
                 }
             );
             MonitoringService.logError(mcpError);
+
+            // Pattern 4: User Error Tracking
+            if (req.session?.id) {
+                MonitoringService.error('Token refresh failed', {
+                    sessionId: req.session.id,
+                    error: error.message,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
 
             errorResponse = {
                 error: 'server_error',
@@ -394,9 +635,19 @@ async function refreshToken(req, res) {
  */
 async function getResourceServerInfo(req, res) {
     try {
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('OAuth2 resource server info request received', {
+                sessionId: req.session?.id,
+                userAgent: req.get('User-Agent'),
+                host: req.get('host'),
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
+
         const baseUrl = `${req.protocol}://${req.get('host')}`;
         
-        res.json({
+        const resourceInfo = {
             resource: baseUrl,
             authorization_servers: [`${baseUrl}/api/auth/device`],
             scopes_supported: ['microsoft.graph'],
@@ -404,21 +655,47 @@ async function getResourceServerInfo(req, res) {
             resource_documentation: `${baseUrl}/docs/api`,
             protection_policy_uri: `${baseUrl}/privacy`,
             resource_registration: `${baseUrl}/api/auth/device/register`
-        });
+        };
 
-        MonitoringService.debug('OAuth2 resource server info requested', {
-            userAgent: req.get('User-Agent'),
-            timestamp: new Date().toISOString()
-        }, 'auth');
+        res.json(resourceInfo);
+
+        // Pattern 2: User Activity Logs
+        if (req.session?.id) {
+            MonitoringService.info('OAuth2 resource server info provided', {
+                sessionId: req.session.id,
+                baseUrl: baseUrl,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        } else {
+            MonitoringService.info('OAuth2 resource server info provided', {
+                baseUrl: baseUrl,
+                userAgent: req.get('User-Agent'),
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
 
     } catch (error) {
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
             'auth',
             'Failed to provide resource server info',
             'error',
-            { error: error.message }
+            { 
+                endpoint: '/.well-known/oauth-protected-resource',
+                error: error.message,
+                timestamp: new Date().toISOString()
+            }
         );
         MonitoringService.logError(mcpError);
+
+        // Pattern 4: User Error Tracking
+        if (req.session?.id) {
+            MonitoringService.error('OAuth2 resource server info failed', {
+                sessionId: req.session.id,
+                error: error.message,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
 
         res.status(500).json({
             error: 'server_error',
@@ -433,8 +710,26 @@ async function getResourceServerInfo(req, res) {
  */
 async function generateMcpToken(req, res) {
     try {
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('MCP token generation request received', {
+                sessionId: req.session?.id,
+                userAgent: req.get('User-Agent'),
+                userId: req.user?.userId?.substring(0, 8) + '...' || 'undefined',
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
+
         // Ensure user is authenticated (via session or existing token)
         if (!req.user || !req.user.userId) {
+            // Pattern 4: User Error Tracking
+            if (req.session?.id) {
+                MonitoringService.error('MCP token generation failed - no authentication', {
+                    sessionId: req.session.id,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+            
             return res.status(401).json({
                 error: 'authentication_required',
                 error_description: 'User must be authenticated to generate MCP token'
@@ -449,6 +744,19 @@ async function generateMcpToken(req, res) {
         // Ensure we're using Microsoft 365-based userId for consistency
         // This should already be in ms365:email@domain.com format from auth middleware
         if (!userId || !userId.startsWith('ms365:')) {
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('MCP token generation failed - invalid user context', {
+                    userId: userId.substring(0, 8) + '...',
+                    timestamp: new Date().toISOString()
+                }, 'auth', null, userId);
+            } else if (req.session?.id) {
+                MonitoringService.error('MCP token generation failed - invalid user context', {
+                    sessionId: req.session.id,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+            
             return res.status(400).json({
                 error: 'invalid_user_context',
                 error_description: 'User must be authenticated with Microsoft 365 to generate MCP token'
@@ -467,23 +775,35 @@ async function generateMcpToken(req, res) {
 
         const mcpToken = DeviceJwtService.generateLongLivedAccessToken(deviceId, userId, tokenPayload);
 
-        // Log the token generation with detailed debugging - only in development mode
+        // Pattern 1: Development Debug Logs (enhanced)
         if (process.env.NODE_ENV === 'development') {
             MonitoringService.debug('MCP Token Generated with Microsoft 365 Identity', {
                 userId: userId,
                 microsoftEmail: microsoftEmail,
                 sessionId: sessionId,
                 deviceId: deviceId,
+                tokenPayload: tokenPayload,
                 timestamp: new Date().toISOString()
             }, 'auth');
         }
         
-        MonitoringService.info('MCP bearer token generated', {
-            userId: userId.substring(0, 8) + '...',
-            deviceId,
-            expiresIn: '24h',
-            timestamp: new Date().toISOString()
-        }, 'auth');
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('MCP bearer token generated successfully', {
+                userId: userId.substring(0, 8) + '...',
+                deviceId,
+                microsoftEmail: microsoftEmail,
+                expiresIn: '24h',
+                timestamp: new Date().toISOString()
+            }, 'auth', null, userId);
+        } else if (req.session?.id) {
+            MonitoringService.info('MCP bearer token generated successfully', {
+                sessionId: req.session.id,
+                deviceId,
+                expiresIn: '24h',
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
 
         // Return the token with usage instructions
         res.json({
@@ -509,6 +829,7 @@ async function generateMcpToken(req, res) {
         });
 
     } catch (error) {
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
             'auth',
             'Failed to generate MCP token',
@@ -516,10 +837,26 @@ async function generateMcpToken(req, res) {
             { 
                 endpoint: '/api/auth/generate-mcp-token',
                 error: error.message,
-                userId: req.user?.userId?.substring(0, 8) + '...' || 'unknown'
+                userId: req.user?.userId?.substring(0, 8) + '...' || 'unknown',
+                timestamp: new Date().toISOString()
             }
         );
         MonitoringService.logError(mcpError);
+
+        // Pattern 4: User Error Tracking
+        const userId = req?.user?.userId;
+        if (userId) {
+            MonitoringService.error('MCP token generation failed', {
+                error: error.message,
+                timestamp: new Date().toISOString()
+            }, 'auth', null, userId);
+        } else if (req.session?.id) {
+            MonitoringService.error('MCP token generation failed', {
+                sessionId: req.session.id,
+                error: error.message,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
 
         res.status(500).json({
             error: 'server_error',

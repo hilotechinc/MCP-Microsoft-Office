@@ -142,7 +142,7 @@ function registerRoutes(router) {
     filesRouter.post('/upload', placeholderRateLimit, filesController.uploadFile); // /v1/files/upload
     filesRouter.get('/search', filesController.searchFiles);
     filesRouter.get('/metadata', filesController.getFileMetadata);
-    filesRouter.get('/content', filesController.getFileContent);
+    filesRouter.get('/content', filesController.downloadFile);
     // TODO: Apply rate limiting
     filesRouter.post('/content', placeholderRateLimit, filesController.setFileContent);
     // TODO: Apply rate limiting

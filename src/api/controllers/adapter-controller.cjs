@@ -15,6 +15,14 @@ const { getConfig } = require('../../config/index.cjs');
  */
 async function downloadAdapter(req, res) {
     try {
+        // 1. DEVELOPMENT DEBUG - Console only in development
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('MCP adapter download requested', { 
+                deviceId: req.params.deviceId, 
+                userAgent: req.get('User-Agent') 
+            }, 'adapter');
+        }
+
         const { deviceId } = req.params;
         
         if (!deviceId) {
@@ -49,9 +57,19 @@ async function downloadAdapter(req, res) {
             timestamp: new Date().toISOString()
         }, 'adapter');
 
+        // 2. USER ACTIVITY - Always logged to database, user-specific
+        const userId = req?.user?.userId;
+        if (userId) {
+            MonitoringService.userActivity(userId, 'Downloaded MCP adapter', {
+                deviceId,
+                timestamp: new Date().toISOString()
+            });
+        }
+
         res.send(configuredAdapter);
 
     } catch (error) {
+        // 3. INFRASTRUCTURE ERRORS - Always to console for server ops
         const mcpError = ErrorService.createError(
             'api',
             'Failed to generate MCP adapter',
@@ -63,6 +81,16 @@ async function downloadAdapter(req, res) {
             }
         );
         MonitoringService.logError(mcpError);
+        
+        // 4. USER ERROR TRACKING - To database for user visibility
+        const userId = req?.user?.userId;
+        if (userId) {
+            MonitoringService.userActivity(userId, 'MCP adapter download failed', {
+                deviceId: req.params.deviceId,
+                error: error.message,
+                timestamp: new Date().toISOString()
+            });
+        }
 
         res.status(500).json({
             error: 'server_error',
@@ -77,6 +105,14 @@ async function downloadAdapter(req, res) {
  */
 async function downloadPackageJson(req, res) {
     try {
+        // 1. DEVELOPMENT DEBUG - Console only in development
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Package.json download requested', { 
+                deviceId: req.params.deviceId,
+                userAgent: req.get('User-Agent')
+            }, 'adapter');
+        }
+
         const { deviceId } = req.params;
         
         if (!deviceId) {
@@ -112,9 +148,19 @@ async function downloadPackageJson(req, res) {
             timestamp: new Date().toISOString()
         }, 'adapter');
 
+        // 2. USER ACTIVITY - Always logged to database, user-specific
+        const userId = req?.user?.userId;
+        if (userId) {
+            MonitoringService.userActivity(userId, 'Downloaded package.json for MCP adapter', {
+                deviceId,
+                timestamp: new Date().toISOString()
+            });
+        }
+
         res.json(packageJson);
 
     } catch (error) {
+        // 3. INFRASTRUCTURE ERRORS - Always to console for server ops
         const mcpError = ErrorService.createError(
             'api',
             'Failed to generate package.json',
@@ -126,6 +172,16 @@ async function downloadPackageJson(req, res) {
             }
         );
         MonitoringService.logError(mcpError);
+
+        // 4. USER ERROR TRACKING - To database for user visibility
+        const userId = req?.user?.userId;
+        if (userId) {
+            MonitoringService.userActivity(userId, 'Package.json download failed', {
+                deviceId: req.params.deviceId,
+                error: error.message,
+                timestamp: new Date().toISOString()
+            });
+        }
 
         res.status(500).json({
             error: 'server_error',
@@ -140,6 +196,14 @@ async function downloadPackageJson(req, res) {
  */
 async function downloadSetupInstructions(req, res) {
     try {
+        // 1. DEVELOPMENT DEBUG - Console only in development
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Setup instructions download requested', { 
+                deviceId: req.params.deviceId,
+                userAgent: req.get('User-Agent')
+            }, 'adapter');
+        }
+
         const { deviceId } = req.params;
         
         if (!deviceId) {
@@ -230,9 +294,19 @@ For more help, visit: ${serverUrl}
             timestamp: new Date().toISOString()
         }, 'adapter');
 
+        // 2. USER ACTIVITY - Always logged to database, user-specific
+        const userId = req?.user?.userId;
+        if (userId) {
+            MonitoringService.userActivity(userId, 'Downloaded MCP adapter setup instructions', {
+                deviceId,
+                timestamp: new Date().toISOString()
+            });
+        }
+
         res.send(setupInstructions);
 
     } catch (error) {
+        // 3. INFRASTRUCTURE ERRORS - Always to console for server ops
         const mcpError = ErrorService.createError(
             'api',
             'Failed to generate setup instructions',
@@ -244,6 +318,16 @@ For more help, visit: ${serverUrl}
             }
         );
         MonitoringService.logError(mcpError);
+
+        // 4. USER ERROR TRACKING - To database for user visibility
+        const userId = req?.user?.userId;
+        if (userId) {
+            MonitoringService.userActivity(userId, 'Setup instructions download failed', {
+                deviceId: req.params.deviceId,
+                error: error.message,
+                timestamp: new Date().toISOString()
+            });
+        }
 
         res.status(500).json({
             error: 'server_error',

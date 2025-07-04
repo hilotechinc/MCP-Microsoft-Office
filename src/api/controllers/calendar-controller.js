@@ -70,6 +70,21 @@ module.exports = ({ calendarModule }) => ({
             const startTime = Date.now();
             const endpoint = '/api/calendar';
             
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService?.debug('Processing calendar events request', {
+                    sessionId: req.session?.id,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString(),
+                    method: req.method,
+                    path: req.path,
+                    query: req.query,
+                    ip: req.ip,
+                    userId: actualUserId,
+                    deviceId
+                }, 'calendar');
+            }
+            
             // Log request with user context
             MonitoringService?.info(`Processing ${req.method} ${req.path}`, {
                 method: req.method,
@@ -249,6 +264,22 @@ module.exports = ({ calendarModule }) => ({
                 deviceId
             });
             
+            // Pattern 2: User Activity Logs
+            if (actualUserId) {
+                MonitoringService?.info('Calendar events retrieved successfully', {
+                    eventCount: events.length,
+                    hasRawEvents: !!rawEvents,
+                    debugMode: debug,
+                    timestamp: new Date().toISOString()
+                }, 'calendar', null, actualUserId, deviceId);
+            } else if (req.session?.id) {
+                MonitoringService?.info('Calendar events retrieved with session', {
+                    sessionId: req.session.id,
+                    eventCount: events.length,
+                    timestamp: new Date().toISOString()
+                }, 'calendar');
+            }
+            
             if (debug) {
                 res.json({ events, rawEvents, debug: true });
             } else {
@@ -265,18 +296,39 @@ module.exports = ({ calendarModule }) => ({
                 deviceId
             });
             
-            const mcpError = ErrorService?.createError('api', 'Error in getEvents', 'error', { 
-                stack: err.stack,
-                operation: 'getEvents',
-                endpoint: req.path,
-                error: err.message,
-                userId: actualUserId,
-                deviceId
-            }, null, actualUserId, deviceId);
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService?.createError(
+                'calendar',
+                'Failed to retrieve calendar events',
+                'error',
+                {
+                    endpoint: '/api/calendar',
+                    error: err.message,
+                    stack: err.stack,
+                    operation: 'getEvents',
+                    userId: actualUserId,
+                    deviceId
+                }
+            );
+            MonitoringService?.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (actualUserId) {
+                MonitoringService?.error('Calendar events retrieval failed', {
+                    error: err.message,
+                    timestamp: new Date().toISOString()
+                }, 'calendar', null, actualUserId, deviceId);
+            } else if (req.session?.id) {
+                MonitoringService?.error('Calendar events retrieval failed', {
+                    sessionId: req.session.id,
+                    error: err.message,
+                    timestamp: new Date().toISOString()
+                }, 'calendar');
+            }
             
             res.status(500).json({ 
-                error: 'Internal error', 
-                message: err.message,
+                error: 'calendar_events_error',
+                error_description: 'Unable to retrieve calendar events',
                 errorId: mcpError.id
             });
         }
@@ -297,6 +349,21 @@ module.exports = ({ calendarModule }) => ({
             // Start timing for performance tracking
             const startTime = Date.now();
             const endpoint = '/api/calendar/create';
+            
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService?.debug('Processing calendar event creation', {
+                    sessionId: req.session?.id,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString(),
+                    method: req.method,
+                    path: req.path,
+                    hasBody: !!req.body,
+                    bodyKeys: req.body ? Object.keys(req.body) : [],
+                    userId: actualUserId,
+                    deviceId
+                }, 'calendar');
+            }
             
             // Log request with user context
             MonitoringService?.info(`Processing ${req.method} ${req.path}`, {
@@ -448,6 +515,24 @@ module.exports = ({ calendarModule }) => ({
                 };
             }
             
+            // Pattern 2: User Activity Logs
+            if (actualUserId) {
+                MonitoringService?.info('Calendar event created successfully', {
+                    eventId: event.id,
+                    subject: value.subject,
+                    hasAttendees: !!(value.attendees && value.attendees.length > 0),
+                    hasLocation: !!value.location,
+                    timestamp: new Date().toISOString()
+                }, 'calendar', null, actualUserId, deviceId);
+            } else if (req.session?.id) {
+                MonitoringService?.info('Calendar event created with session', {
+                    sessionId: req.session.id,
+                    eventId: event.id,
+                    subject: value.subject,
+                    timestamp: new Date().toISOString()
+                }, 'calendar');
+            }
+            
             // Track performance
             const duration = Date.now() - startTime;
             MonitoringService?.trackMetric('calendar.createEvent.duration', duration, {
@@ -471,18 +556,39 @@ module.exports = ({ calendarModule }) => ({
                 deviceId
             });
             
-            const mcpError = ErrorService?.createError('api', 'Error in createEvent', 'error', { 
-                stack: err.stack,
-                operation: 'createEvent',
-                endpoint: req.path,
-                error: err.message,
-                userId: actualUserId,
-                deviceId
-            }, null, actualUserId, deviceId);
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService?.createError(
+                'calendar',
+                'Failed to create calendar event',
+                'error',
+                {
+                    endpoint: '/api/calendar/create',
+                    error: err.message,
+                    stack: err.stack,
+                    operation: 'createEvent',
+                    userId: actualUserId,
+                    deviceId
+                }
+            );
+            MonitoringService?.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (actualUserId) {
+                MonitoringService?.error('Calendar event creation failed', {
+                    error: err.message,
+                    timestamp: new Date().toISOString()
+                }, 'calendar', null, actualUserId, deviceId);
+            } else if (req.session?.id) {
+                MonitoringService?.error('Calendar event creation failed', {
+                    sessionId: req.session.id,
+                    error: err.message,
+                    timestamp: new Date().toISOString()
+                }, 'calendar');
+            }
             
             res.status(500).json({ 
-                error: 'Internal error', 
-                message: err.message,
+                error: 'calendar_create_error',
+                error_description: 'Unable to create calendar event',
                 errorId: mcpError.id
             });
         }
@@ -504,6 +610,22 @@ module.exports = ({ calendarModule }) => ({
             // Start timing for performance tracking
             const startTime = Date.now();
             const endpoint = '/api/calendar/events/:id';
+            
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService?.debug('Processing calendar event update', {
+                    sessionId: req.session?.id,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString(),
+                    method: req.method,
+                    path: req.path,
+                    eventId: req.params.id,
+                    hasBody: !!req.body,
+                    bodyKeys: req.body ? Object.keys(req.body) : [],
+                    userId: actualUserId,
+                    deviceId
+                }, 'calendar');
+            }
             
             // Get event ID from URL parameters
             const eventId = req.params.id;
@@ -620,6 +742,24 @@ module.exports = ({ calendarModule }) => ({
                 MonitoringService?.info('Generated mock updated event', { eventId }, 'calendar');
             }
             
+            // Pattern 2: User Activity Logs
+            if (actualUserId) {
+                MonitoringService?.info('Calendar event updated successfully', {
+                    eventId: eventId,
+                    subject: updatedEvent.subject,
+                    hasAttendees: !!(value.attendees && value.attendees.length > 0),
+                    hasLocation: !!value.location,
+                    timestamp: new Date().toISOString()
+                }, 'calendar', null, actualUserId, deviceId);
+            } else if (req.session?.id) {
+                MonitoringService?.info('Calendar event updated with session', {
+                    sessionId: req.session.id,
+                    eventId: eventId,
+                    subject: updatedEvent.subject,
+                    timestamp: new Date().toISOString()
+                }, 'calendar');
+            }
+            
             // Track update time
             const duration = Date.now() - startTime;
             MonitoringService?.trackMetric('calendar.updateEvent.duration', duration, { 
@@ -630,13 +770,38 @@ module.exports = ({ calendarModule }) => ({
             
             res.json(updatedEvent);
         } catch (err) {
-            const mcpError = ErrorService?.createError('api', 'Error updating calendar event', 'error', { 
-                stack: err.stack,
-                endpoint: '/api/calendar/events/:id',
-                error: err.message,
-                eventId: req.params?.id
-            });
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService?.createError(
+                'calendar',
+                'Failed to update calendar event',
+                'error',
+                {
+                    endpoint: '/api/calendar/events/:id',
+                    error: err.message,
+                    stack: err.stack,
+                    operation: 'updateEvent',
+                    eventId: req.params?.id,
+                    userId: actualUserId,
+                    deviceId
+                }
+            );
             MonitoringService?.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (actualUserId) {
+                MonitoringService?.error('Calendar event update failed', {
+                    error: err.message,
+                    eventId: req.params?.id,
+                    timestamp: new Date().toISOString()
+                }, 'calendar', null, actualUserId, deviceId);
+            } else if (req.session?.id) {
+                MonitoringService?.error('Calendar event update failed', {
+                    sessionId: req.session.id,
+                    error: err.message,
+                    eventId: req.params?.id,
+                    timestamp: new Date().toISOString()
+                }, 'calendar');
+            }
             
             // Track error metric
             MonitoringService?.trackMetric('calendar.updateEvent.error', 1, { 
@@ -644,7 +809,11 @@ module.exports = ({ calendarModule }) => ({
                 reason: err.message
             });
             
-            res.status(500).json({ error: 'Internal error', message: err.message });
+            res.status(500).json({ 
+                error: 'calendar_update_error',
+                error_description: 'Unable to update calendar event',
+                errorId: mcpError.id
+            });
         }
     },
     
@@ -657,10 +826,30 @@ module.exports = ({ calendarModule }) => ({
      * @param {import('express').Response} res
      */
     async acceptEvent(req, res) {
+        // Extract user context from Express session (for web-based auth) or auth middleware (for device auth)
+        const { userId = null, deviceId = null } = req.user || {};
+        const sessionUserId = req.session?.id ? `user:${req.session.id}` : null;
+        const actualUserId = userId || sessionUserId;
+        
         try {
             // Start timing for performance tracking
             const startTime = Date.now();
             const endpoint = '/api/calendar/events/:id/accept';
+            
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService?.debug('Processing calendar event acceptance', {
+                    sessionId: req.session?.id,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString(),
+                    method: req.method,
+                    path: req.path,
+                    eventId: req.params.id,
+                    hasBody: !!req.body,
+                    userId: actualUserId,
+                    deviceId
+                }, 'calendar');
+            }
             
             // Get event ID from URL parameters
             const eventId = req.params.id;
@@ -723,6 +912,23 @@ module.exports = ({ calendarModule }) => ({
                 MonitoringService?.info('Generated mock event acceptance response', { eventId }, 'calendar');
             }
             
+            // Pattern 2: User Activity Logs
+            if (actualUserId) {
+                MonitoringService?.info('Calendar event accepted successfully', {
+                    eventId: eventId,
+                    hasComment: !!value.comment,
+                    status: result.status,
+                    timestamp: new Date().toISOString()
+                }, 'calendar', null, actualUserId, deviceId);
+            } else if (req.session?.id) {
+                MonitoringService?.info('Calendar event accepted with session', {
+                    sessionId: req.session.id,
+                    eventId: eventId,
+                    status: result.status,
+                    timestamp: new Date().toISOString()
+                }, 'calendar');
+            }
+            
             // Track accept time
             const duration = Date.now() - startTime;
             MonitoringService?.trackMetric('calendar.acceptEvent.duration', duration, { 
@@ -733,13 +939,38 @@ module.exports = ({ calendarModule }) => ({
             
             res.json(result);
         } catch (err) {
-            const mcpError = ErrorService?.createError('api', 'Error accepting calendar event', 'error', { 
-                stack: err.stack,
-                endpoint: '/api/calendar/events/:id/accept',
-                error: err.message,
-                eventId: req.params?.id
-            });
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService?.createError(
+                'calendar',
+                'Failed to accept calendar event',
+                'error',
+                {
+                    endpoint: '/api/calendar/events/:id/accept',
+                    error: err.message,
+                    stack: err.stack,
+                    operation: 'acceptEvent',
+                    eventId: req.params?.id,
+                    userId: actualUserId,
+                    deviceId
+                }
+            );
             MonitoringService?.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (actualUserId) {
+                MonitoringService?.error('Calendar event acceptance failed', {
+                    error: err.message,
+                    eventId: req.params?.id,
+                    timestamp: new Date().toISOString()
+                }, 'calendar', null, actualUserId, deviceId);
+            } else if (req.session?.id) {
+                MonitoringService?.error('Calendar event acceptance failed', {
+                    sessionId: req.session.id,
+                    error: err.message,
+                    eventId: req.params?.id,
+                    timestamp: new Date().toISOString()
+                }, 'calendar');
+            }
             
             // Track error metric
             MonitoringService?.trackMetric('calendar.acceptEvent.error', 1, { 
@@ -747,7 +978,11 @@ module.exports = ({ calendarModule }) => ({
                 reason: err.message
             });
             
-            res.status(500).json({ error: 'Internal error', message: err.message });
+            res.status(500).json({ 
+                error: 'calendar_accept_error',
+                error_description: 'Unable to accept calendar event',
+                errorId: mcpError.id
+            });
         }
     },
     
@@ -760,10 +995,30 @@ module.exports = ({ calendarModule }) => ({
      * @param {import('express').Response} res
      */
     async tentativelyAcceptEvent(req, res) {
+        // Extract user context from Express session (for web-based auth) or auth middleware (for device auth)
+        const { userId = null, deviceId = null } = req.user || {};
+        const sessionUserId = req.session?.id ? `user:${req.session.id}` : null;
+        const actualUserId = userId || sessionUserId;
+        
         try {
             // Start timing for performance tracking
             const startTime = Date.now();
             const endpoint = '/api/calendar/events/:id/tentativelyAccept';
+            
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService?.debug('Processing calendar event tentative acceptance', {
+                    sessionId: req.session?.id,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString(),
+                    method: req.method,
+                    path: req.path,
+                    eventId: req.params.id,
+                    hasBody: !!req.body,
+                    userId: actualUserId,
+                    deviceId
+                }, 'calendar');
+            }
             
             // Get event ID from URL parameters
             const eventId = req.params.id;
@@ -826,6 +1081,23 @@ module.exports = ({ calendarModule }) => ({
                 MonitoringService?.info('Generated mock event tentative acceptance response', { eventId }, 'calendar');
             }
             
+            // Pattern 2: User Activity Logs
+            if (actualUserId) {
+                MonitoringService?.info('Calendar event tentatively accepted successfully', {
+                    eventId: eventId,
+                    hasComment: !!value.comment,
+                    status: result.status,
+                    timestamp: new Date().toISOString()
+                }, 'calendar', null, actualUserId, deviceId);
+            } else if (req.session?.id) {
+                MonitoringService?.info('Calendar event tentatively accepted with session', {
+                    sessionId: req.session.id,
+                    eventId: eventId,
+                    status: result.status,
+                    timestamp: new Date().toISOString()
+                }, 'calendar');
+            }
+            
             // Track tentative accept time
             const duration = Date.now() - startTime;
             MonitoringService?.trackMetric('calendar.tentativelyAcceptEvent.duration', duration, { 
@@ -836,13 +1108,38 @@ module.exports = ({ calendarModule }) => ({
             
             res.json(result);
         } catch (err) {
-            const mcpError = ErrorService?.createError('api', 'Error tentatively accepting calendar event', 'error', { 
-                stack: err.stack,
-                endpoint: '/api/calendar/events/:id/tentativelyAccept',
-                error: err.message,
-                eventId: req.params?.id
-            });
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService?.createError(
+                'calendar',
+                'Failed to tentatively accept calendar event',
+                'error',
+                {
+                    endpoint: '/api/calendar/events/:id/tentativelyAccept',
+                    error: err.message,
+                    stack: err.stack,
+                    operation: 'tentativelyAcceptEvent',
+                    eventId: req.params?.id,
+                    userId: actualUserId,
+                    deviceId
+                }
+            );
             MonitoringService?.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (actualUserId) {
+                MonitoringService?.error('Calendar event tentative acceptance failed', {
+                    error: err.message,
+                    eventId: req.params?.id,
+                    timestamp: new Date().toISOString()
+                }, 'calendar', null, actualUserId, deviceId);
+            } else if (req.session?.id) {
+                MonitoringService?.error('Calendar event tentative acceptance failed', {
+                    sessionId: req.session.id,
+                    error: err.message,
+                    eventId: req.params?.id,
+                    timestamp: new Date().toISOString()
+                }, 'calendar');
+            }
             
             // Track error metric
             MonitoringService?.trackMetric('calendar.tentativelyAcceptEvent.error', 1, { 
@@ -850,7 +1147,11 @@ module.exports = ({ calendarModule }) => ({
                 reason: err.message
             });
             
-            res.status(500).json({ error: 'Internal error', message: err.message });
+            res.status(500).json({ 
+                error: 'calendar_tentative_accept_error',
+                error_description: 'Unable to tentatively accept calendar event',
+                errorId: mcpError.id
+            });
         }
     },
     
@@ -863,10 +1164,30 @@ module.exports = ({ calendarModule }) => ({
      * @param {import('express').Response} res
      */
     async declineEvent(req, res) {
+        // Extract user context from Express session (for web-based auth) or auth middleware (for device auth)
+        const { userId = null, deviceId = null } = req.user || {};
+        const sessionUserId = req.session?.id ? `user:${req.session.id}` : null;
+        const actualUserId = userId || sessionUserId;
+        
         try {
             // Start timing for performance tracking
             const startTime = Date.now();
             const endpoint = '/api/calendar/events/:id/decline';
+            
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService?.debug('Processing calendar event decline', {
+                    sessionId: req.session?.id,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString(),
+                    method: req.method,
+                    path: req.path,
+                    eventId: req.params.id,
+                    hasBody: !!req.body,
+                    userId: actualUserId,
+                    deviceId
+                }, 'calendar');
+            }
             
             // Get event ID from URL parameters
             const eventId = req.params.id;
@@ -929,6 +1250,23 @@ module.exports = ({ calendarModule }) => ({
                 MonitoringService?.info('Generated mock event decline response', { eventId }, 'calendar');
             }
             
+            // Pattern 2: User Activity Logs
+            if (actualUserId) {
+                MonitoringService?.info('Calendar event declined successfully', {
+                    eventId: eventId,
+                    hasComment: !!value.comment,
+                    status: result.status,
+                    timestamp: new Date().toISOString()
+                }, 'calendar', null, actualUserId, deviceId);
+            } else if (req.session?.id) {
+                MonitoringService?.info('Calendar event declined with session', {
+                    sessionId: req.session.id,
+                    eventId: eventId,
+                    status: result.status,
+                    timestamp: new Date().toISOString()
+                }, 'calendar');
+            }
+            
             // Track decline time
             const duration = Date.now() - startTime;
             MonitoringService?.trackMetric('calendar.declineEvent.duration', duration, { 
@@ -939,13 +1277,38 @@ module.exports = ({ calendarModule }) => ({
             
             res.json(result);
         } catch (err) {
-            const mcpError = ErrorService?.createError('api', 'Error declining calendar event', 'error', { 
-                stack: err.stack,
-                endpoint: '/api/calendar/events/:id/decline',
-                error: err.message,
-                eventId: req.params?.id
-            });
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService?.createError(
+                'calendar',
+                'Failed to decline calendar event',
+                'error',
+                {
+                    endpoint: '/api/calendar/events/:id/decline',
+                    error: err.message,
+                    stack: err.stack,
+                    operation: 'declineEvent',
+                    eventId: req.params?.id,
+                    userId: actualUserId,
+                    deviceId
+                }
+            );
             MonitoringService?.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (actualUserId) {
+                MonitoringService?.error('Calendar event decline failed', {
+                    error: err.message,
+                    eventId: req.params?.id,
+                    timestamp: new Date().toISOString()
+                }, 'calendar', null, actualUserId, deviceId);
+            } else if (req.session?.id) {
+                MonitoringService?.error('Calendar event decline failed', {
+                    sessionId: req.session.id,
+                    error: err.message,
+                    eventId: req.params?.id,
+                    timestamp: new Date().toISOString()
+                }, 'calendar');
+            }
             
             // Track error metric
             MonitoringService?.trackMetric('calendar.declineEvent.error', 1, { 
@@ -953,7 +1316,11 @@ module.exports = ({ calendarModule }) => ({
                 reason: err.message
             });
             
-            res.status(500).json({ error: 'Internal error', message: err.message });
+            res.status(500).json({ 
+                error: 'calendar_decline_error',
+                error_description: 'Unable to decline calendar event',
+                errorId: mcpError.id
+            });
         }
     },
     
@@ -975,6 +1342,21 @@ module.exports = ({ calendarModule }) => ({
             // Start timing for performance tracking
             const startTime = Date.now();
             const endpoint = '/api/calendar/events/:id/cancel';
+            
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService?.debug('Processing calendar event cancellation', {
+                    sessionId: req.session?.id,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString(),
+                    method: req.method,
+                    path: req.path,
+                    eventId: req.params.id,
+                    hasBody: !!req.body,
+                    userId: actualUserId,
+                    deviceId
+                }, 'calendar');
+            }
             
             // Get event ID from URL parameters
             const eventId = req.params.id;
@@ -1045,15 +1427,57 @@ module.exports = ({ calendarModule }) => ({
                 isMock: !!result.isMock
             });
             
+            // Pattern 2: User Activity Logs
+            if (actualUserId) {
+                MonitoringService?.info('Calendar event cancelled successfully', {
+                    eventId: eventId,
+                    hasComment: !!value.comment,
+                    status: result.status,
+                    timestamp: new Date().toISOString()
+                }, 'calendar', null, actualUserId, deviceId);
+            } else if (req.session?.id) {
+                MonitoringService?.info('Calendar event cancelled with session', {
+                    sessionId: req.session.id,
+                    eventId: eventId,
+                    status: result.status,
+                    timestamp: new Date().toISOString()
+                }, 'calendar');
+            }
+            
             res.json(result);
         } catch (err) {
-            const mcpError = ErrorService?.createError('api', 'Error cancelling calendar event', 'error', { 
-                stack: err.stack,
-                endpoint: '/api/calendar/events/:id/cancel',
-                error: err.message,
-                eventId: req.params?.id
-            });
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService?.createError(
+                'calendar',
+                'Failed to cancel calendar event',
+                'error',
+                {
+                    endpoint: '/api/calendar/events/:id/cancel',
+                    error: err.message,
+                    stack: err.stack,
+                    operation: 'cancelEvent',
+                    eventId: req.params?.id,
+                    userId: actualUserId,
+                    deviceId
+                }
+            );
             MonitoringService?.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (actualUserId) {
+                MonitoringService?.error('Calendar event cancellation failed', {
+                    error: err.message,
+                    eventId: req.params?.id,
+                    timestamp: new Date().toISOString()
+                }, 'calendar', null, actualUserId, deviceId);
+            } else if (req.session?.id) {
+                MonitoringService?.error('Calendar event cancellation failed', {
+                    sessionId: req.session.id,
+                    error: err.message,
+                    eventId: req.params?.id,
+                    timestamp: new Date().toISOString()
+                }, 'calendar');
+            }
             
             // Track error metric
             MonitoringService?.trackMetric('calendar.cancelEvent.error', 1, { 
@@ -1061,7 +1485,11 @@ module.exports = ({ calendarModule }) => ({
                 reason: err.message
             });
             
-            res.status(500).json({ error: 'Internal error', message: err.message });
+            res.status(500).json({ 
+                error: 'calendar_cancel_error',
+                error_description: 'Unable to cancel calendar event',
+                errorId: mcpError.id
+            });
         }
     },
     
@@ -1072,10 +1500,30 @@ module.exports = ({ calendarModule }) => ({
      * @param {import('express').Response} res
      */
     async getAvailability(req, res) {
+        // Extract user context from Express session (for web-based auth) or auth middleware (for device auth)
+        const { userId = null, deviceId = null } = req.user || {};
+        const sessionUserId = req.session?.id ? `user:${req.session.id}` : null;
+        const actualUserId = userId || sessionUserId;
+        
         try {
             // Start timing for performance tracking
             const startTime = Date.now();
             const endpoint = '/api/calendar/availability';
+            
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService?.debug('Processing calendar availability request', {
+                    sessionId: req.session?.id,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString(),
+                    method: req.method,
+                    path: req.path,
+                    hasBody: !!req.body,
+                    bodyKeys: req.body ? Object.keys(req.body) : [],
+                    userId: actualUserId,
+                    deviceId
+                }, 'calendar');
+            }
             
             // ENHANCED LOGGING: Log the raw request body for debugging
             MonitoringService?.debug('getAvailability raw request body:', { 
@@ -1220,6 +1668,18 @@ module.exports = ({ calendarModule }) => ({
                 }, 'calendar');
             }
 
+            // Pattern 2: User Activity Log - Successful availability retrieval
+            MonitoringService?.info('User successfully retrieved calendar availability', {
+                userId: actualUserId,
+                deviceId,
+                sessionId: req.session?.id,
+                timestamp: new Date().toISOString(),
+                userCount: value.users.length,
+                timeSlotCount: value.timeSlots.length,
+                isMock: !!availabilityData.isMock,
+                duration: Date.now() - startTime
+            }, 'calendar');
+
             // Track time to retrieve availability
             const duration = Date.now() - startTime;
             MonitoringService?.trackMetric('calendar.getAvailability.duration', duration, { 
@@ -1231,20 +1691,46 @@ module.exports = ({ calendarModule }) => ({
             // Send the response (real or mock data)
             res.json(availabilityData);
         } catch (err) {
-            const mcpError = ErrorService?.createError('api', 'Error retrieving calendar availability', 'error', { 
-                stack: err.stack,
-                endpoint,
-                error: err.message
-            });
-            MonitoringService?.logError(mcpError);
+            // Pattern 3: Infrastructure Error Logging
+            const infrastructureError = ErrorService?.createError(
+                'calendar',
+                'Failed to retrieve calendar availability',
+                'error',
+                {
+                    userId: actualUserId,
+                    deviceId,
+                    sessionId: req.session?.id,
+                    timestamp: new Date().toISOString(),
+                    error: err.message,
+                    stack: err.stack,
+                    endpoint: req.originalUrl,
+                    method: req.method,
+                    userAgent: req.get('User-Agent')
+                }
+            );
+            MonitoringService?.logError(infrastructureError);
+            
+            // Pattern 4: User Error Tracking
+            MonitoringService?.warn('User encountered error retrieving calendar availability', {
+                userId: actualUserId,
+                deviceId,
+                sessionId: req.session?.id,
+                timestamp: new Date().toISOString(),
+                errorType: 'availability_retrieval_failed',
+                userMessage: 'Failed to retrieve calendar availability'
+            }, 'calendar');
             
             // Track error metric
             MonitoringService?.trackMetric('calendar.getAvailability.error', 1, { 
-                errorId: mcpError.id,
+                errorId: infrastructureError.id,
                 reason: err.message
             });
             
-            res.status(500).json({ error: 'Internal error', message: err.message });
+            res.status(500).json({ 
+                error: 'AVAILABILITY_RETRIEVAL_FAILED',
+                message: 'Unable to retrieve calendar availability at this time',
+                details: 'Please try again later or contact support if the issue persists'
+            });
         }
     },
     
@@ -1256,6 +1742,11 @@ module.exports = ({ calendarModule }) => ({
      * @param {import('express').Response} res
      */
     async findMeetingTimes(req, res) {
+        // Extract user context for logging and tracking
+        const { userId = null, deviceId = null } = req.user || {};
+        const sessionUserId = req.session?.id ? `user:${req.session.id}` : null;
+        const actualUserId = userId || sessionUserId;
+        
         // Define endpoint at function scope so it's accessible in catch block
         const endpoint = '/api/calendar/findMeetingTimes';
         
@@ -1263,14 +1754,20 @@ module.exports = ({ calendarModule }) => ({
             // Start timing for performance tracking
             const startTime = Date.now();
             
-            // Log incoming request for debugging
-            MonitoringService?.debug('findMeetingTimes request received', {
-                requestBody: req.body,
-                contentType: req.headers['content-type'],
-                method: req.method,
-                endpoint,
-                timestamp: new Date().toISOString()
-            }, 'calendar');
+            // Pattern 1: Development Debug Logs (conditional on NODE_ENV)
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService?.debug('findMeetingTimes request received', {
+                    userId: actualUserId,
+                    deviceId,
+                    sessionId: req.session?.id,
+                    timestamp: new Date().toISOString(),
+                    requestBody: req.body,
+                    contentType: req.headers['content-type'],
+                    method: req.method,
+                    endpoint,
+                    userAgent: req.get('User-Agent')
+                }, 'calendar');
+            }
             
             // Validate request body with backward compatibility for Claude's format
             const optionsSchema = Joi.object({
@@ -1467,6 +1964,18 @@ module.exports = ({ calendarModule }) => ({
                 throw moduleError;
             }
             
+            // Pattern 2: User Activity Log - Successful meeting times found
+            MonitoringService?.info('User successfully found meeting times', {
+                userId: actualUserId,
+                deviceId,
+                sessionId: req.session?.id,
+                timestamp: new Date().toISOString(),
+                attendeeCount: normalizedValue.attendees?.length || 0,
+                suggestionCount: suggestions.meetingTimeSuggestions?.length || 0,
+                meetingDuration: normalizedValue.meetingDuration,
+                duration: Date.now() - startTime
+            }, 'calendar');
+
             // Track find meeting times duration
             const duration = Date.now() - startTime;
             MonitoringService?.trackMetric('calendar.findMeetingTimes.duration', duration, { 
@@ -1477,20 +1986,46 @@ module.exports = ({ calendarModule }) => ({
             
             res.json(suggestions);
         } catch (err) {
-            const mcpError = ErrorService?.createError('api', 'Error finding calendar meeting times', 'error', { 
-                stack: err.stack,
-                endpoint,
-                error: err.message
-            });
-            MonitoringService?.logError(mcpError);
+            // Pattern 3: Infrastructure Error Logging
+            const infrastructureError = ErrorService?.createError(
+                'calendar',
+                'Failed to find meeting times',
+                'error',
+                {
+                    userId: actualUserId,
+                    deviceId,
+                    sessionId: req.session?.id,
+                    timestamp: new Date().toISOString(),
+                    error: err.message,
+                    stack: err.stack,
+                    endpoint: req.originalUrl,
+                    method: req.method,
+                    userAgent: req.get('User-Agent')
+                }
+            );
+            MonitoringService?.logError(infrastructureError);
+            
+            // Pattern 4: User Error Tracking
+            MonitoringService?.warn('User encountered error finding meeting times', {
+                userId: actualUserId,
+                deviceId,
+                sessionId: req.session?.id,
+                timestamp: new Date().toISOString(),
+                errorType: 'meeting_times_search_failed',
+                userMessage: 'Failed to find meeting times'
+            }, 'calendar');
             
             // Track error metric
             MonitoringService?.trackMetric('calendar.findMeetingTimes.error', 1, { 
-                errorId: mcpError.id,
+                errorId: infrastructureError.id,
                 reason: err.message
             });
             
-            res.status(500).json({ error: 'Internal error', message: err.message });
+            res.status(500).json({ 
+                error: 'MEETING_TIMES_SEARCH_FAILED',
+                message: 'Unable to find meeting times at this time',
+                details: 'Please try again later or contact support if the issue persists'
+            });
         }
     },
     
@@ -1501,10 +2036,29 @@ module.exports = ({ calendarModule }) => ({
      * @param {import('express').Response} res
      */
     async getRooms(req, res) {
+        // Extract user context for logging and tracking
+        const { userId = null, deviceId = null } = req.user || {};
+        const sessionUserId = req.session?.id ? `user:${req.session.id}` : null;
+        const actualUserId = userId || sessionUserId;
+        
         try {
             // Start timing for performance tracking
             const startTime = Date.now();
             const endpoint = '/api/calendar/rooms';
+            
+            // Pattern 1: Development Debug Logs (conditional on NODE_ENV)
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService?.debug('getRooms request received', {
+                    userId: actualUserId,
+                    deviceId,
+                    sessionId: req.session?.id,
+                    timestamp: new Date().toISOString(),
+                    query: req.query,
+                    method: req.method,
+                    endpoint,
+                    userAgent: req.get('User-Agent')
+                }, 'calendar');
+            }
             
             // Validate query parameters
             const querySchema = Joi.object({
@@ -1631,6 +2185,18 @@ module.exports = ({ calendarModule }) => ({
             // Extract rooms array from result
             const rooms = result.rooms || [];
             
+            // Pattern 2: User Activity Log - Successful rooms retrieval
+            MonitoringService?.info('User successfully retrieved meeting rooms', {
+                userId: actualUserId,
+                deviceId,
+                sessionId: req.session?.id,
+                timestamp: new Date().toISOString(),
+                roomCount: rooms.length,
+                isMock,
+                queryFilters: Object.keys(value).length,
+                duration: Date.now() - startTime
+            }, 'calendar');
+
             // Track room retrieval time
             const duration = Date.now() - startTime;
             MonitoringService?.trackMetric('calendar.getRooms.duration', duration, { 
@@ -1644,20 +2210,46 @@ module.exports = ({ calendarModule }) => ({
                 fromCache: result.fromCache || false
             });
         } catch (err) {
-            const mcpError = ErrorService?.createError('api', 'Error retrieving meeting rooms', 'error', { 
-                stack: err.stack,
-                endpoint,
-                error: err.message
-            });
-            MonitoringService?.logError(mcpError);
+            // Pattern 3: Infrastructure Error Logging
+            const infrastructureError = ErrorService?.createError(
+                'calendar',
+                'Failed to retrieve meeting rooms',
+                'error',
+                {
+                    userId: actualUserId,
+                    deviceId,
+                    sessionId: req.session?.id,
+                    timestamp: new Date().toISOString(),
+                    error: err.message,
+                    stack: err.stack,
+                    endpoint: req.originalUrl,
+                    method: req.method,
+                    userAgent: req.get('User-Agent')
+                }
+            );
+            MonitoringService?.logError(infrastructureError);
+            
+            // Pattern 4: User Error Tracking
+            MonitoringService?.warn('User encountered error retrieving meeting rooms', {
+                userId: actualUserId,
+                deviceId,
+                sessionId: req.session?.id,
+                timestamp: new Date().toISOString(),
+                errorType: 'rooms_retrieval_failed',
+                userMessage: 'Failed to retrieve meeting rooms'
+            }, 'calendar');
             
             // Track error metric
             MonitoringService?.trackMetric('calendar.getRooms.error', 1, { 
-                errorId: mcpError.id,
+                errorId: infrastructureError.id,
                 reason: err.message
             });
             
-            res.status(500).json({ error: 'Internal error', message: err.message });
+            res.status(500).json({ 
+                error: 'ROOMS_RETRIEVAL_FAILED',
+                message: 'Unable to retrieve meeting rooms at this time',
+                details: 'Please try again later or contact support if the issue persists'
+            });
         }
     },
     
@@ -1668,10 +2260,29 @@ module.exports = ({ calendarModule }) => ({
      * @param {import('express').Response} res
      */
     async getCalendars(req, res) {
+        // Extract user context for logging and tracking
+        const { userId = null, deviceId = null } = req.user || {};
+        const sessionUserId = req.session?.id ? `user:${req.session.id}` : null;
+        const actualUserId = userId || sessionUserId;
+        
         try {
             // Start timing for performance tracking
             const startTime = Date.now();
             const endpoint = '/api/calendar/calendars';
+            
+            // Pattern 1: Development Debug Logs (conditional on NODE_ENV)
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService?.debug('getCalendars request received', {
+                    userId: actualUserId,
+                    deviceId,
+                    sessionId: req.session?.id,
+                    timestamp: new Date().toISOString(),
+                    query: req.query,
+                    method: req.method,
+                    endpoint,
+                    userAgent: req.get('User-Agent')
+                }, 'calendar');
+            }
             
             // Validate query parameters
             const querySchema = Joi.object({
@@ -1772,6 +2383,18 @@ module.exports = ({ calendarModule }) => ({
                 MonitoringService?.info('Generated mock calendars', { count: calendars.length }, 'calendar');
             }
             
+            // Pattern 2: User Activity Log - Successful calendars retrieval
+            MonitoringService?.info('User successfully retrieved calendars', {
+                userId: actualUserId,
+                deviceId,
+                sessionId: req.session?.id,
+                timestamp: new Date().toISOString(),
+                calendarCount: calendars.length,
+                includeShared: value.includeShared,
+                isMock,
+                duration: Date.now() - startTime
+            }, 'calendar');
+
             // Track calendar retrieval time
             const duration = Date.now() - startTime;
             MonitoringService?.trackMetric('calendar.getCalendars.duration', duration, { 
@@ -1781,20 +2404,46 @@ module.exports = ({ calendarModule }) => ({
             
             res.json(calendars);
         } catch (err) {
-            const mcpError = ErrorService?.createError('api', 'Error retrieving user calendars', 'error', { 
-                stack: err.stack,
-                endpoint,
-                error: err.message
-            });
-            MonitoringService?.logError(mcpError);
+            // Pattern 3: Infrastructure Error Logging
+            const infrastructureError = ErrorService?.createError(
+                'calendar',
+                'Failed to retrieve user calendars',
+                'error',
+                {
+                    userId: actualUserId,
+                    deviceId,
+                    sessionId: req.session?.id,
+                    timestamp: new Date().toISOString(),
+                    error: err.message,
+                    stack: err.stack,
+                    endpoint: req.originalUrl,
+                    method: req.method,
+                    userAgent: req.get('User-Agent')
+                }
+            );
+            MonitoringService?.logError(infrastructureError);
+            
+            // Pattern 4: User Error Tracking
+            MonitoringService?.warn('User encountered error retrieving calendars', {
+                userId: actualUserId,
+                deviceId,
+                sessionId: req.session?.id,
+                timestamp: new Date().toISOString(),
+                errorType: 'calendars_retrieval_failed',
+                userMessage: 'Failed to retrieve calendars'
+            }, 'calendar');
             
             // Track error metric
             MonitoringService?.trackMetric('calendar.getCalendars.error', 1, { 
-                errorId: mcpError.id,
+                errorId: infrastructureError.id,
                 reason: err.message
             });
             
-            res.status(500).json({ error: 'Internal error', message: err.message });
+            res.status(500).json({ 
+                error: 'CALENDARS_RETRIEVAL_FAILED',
+                message: 'Unable to retrieve calendars at this time',
+                details: 'Please try again later or contact support if the issue persists'
+            });
         }
     },
     
@@ -1805,10 +2454,30 @@ module.exports = ({ calendarModule }) => ({
      * @param {import('express').Response} res
      */
     async addAttachment(req, res) {
+        // Extract user context for logging and tracking
+        const { userId = null, deviceId = null } = req.user || {};
+        const sessionUserId = req.session?.id ? `user:${req.session.id}` : null;
+        const actualUserId = userId || sessionUserId;
+        
         try {
             // Start timing for performance tracking
             const startTime = Date.now();
             const endpoint = '/api/calendar/events/:id/attachments';
+            
+            // Pattern 1: Development Debug Logs (conditional on NODE_ENV)
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService?.debug('addAttachment request received', {
+                    userId: actualUserId,
+                    deviceId,
+                    sessionId: req.session?.id,
+                    timestamp: new Date().toISOString(),
+                    eventId: req.params.id,
+                    requestBody: req.body,
+                    method: req.method,
+                    endpoint,
+                    userAgent: req.get('User-Agent')
+                }, 'calendar');
+            }
             
             // Get event ID from URL parameters
             const eventId = req.params.id;
@@ -1898,6 +2567,20 @@ module.exports = ({ calendarModule }) => ({
                 }, 'calendar');
             }
             
+            // Pattern 2: User Activity Log - Successful attachment added
+            MonitoringService?.info('User successfully added attachment to calendar event', {
+                userId: actualUserId,
+                deviceId,
+                sessionId: req.session?.id,
+                timestamp: new Date().toISOString(),
+                eventId: req.params.id,
+                attachmentId: attachment.id,
+                attachmentName: attachment.name,
+                contentType: attachment.contentType,
+                isMock: !!attachment.isMock,
+                duration: Date.now() - startTime
+            }, 'calendar');
+
             // Track add attachment time
             const duration = Date.now() - startTime;
             MonitoringService?.trackMetric('calendar.addAttachment.duration', duration, { 
@@ -1909,21 +2592,48 @@ module.exports = ({ calendarModule }) => ({
             
             res.json(attachment);
         } catch (err) {
-            const mcpError = ErrorService?.createError('api', 'Error adding attachment to calendar event', 'error', { 
-                stack: err.stack,
-                endpoint: '/api/calendar/events/:id/attachments',
-                error: err.message,
-                eventId: req.params?.id
-            });
-            MonitoringService?.logError(mcpError);
+            // Pattern 3: Infrastructure Error Logging
+            const infrastructureError = ErrorService?.createError(
+                'calendar',
+                'Failed to add attachment to calendar event',
+                'error',
+                {
+                    userId: actualUserId,
+                    deviceId,
+                    sessionId: req.session?.id,
+                    timestamp: new Date().toISOString(),
+                    eventId: req.params?.id,
+                    error: err.message,
+                    stack: err.stack,
+                    endpoint: req.originalUrl,
+                    method: req.method,
+                    userAgent: req.get('User-Agent')
+                }
+            );
+            MonitoringService?.logError(infrastructureError);
+            
+            // Pattern 4: User Error Tracking
+            MonitoringService?.warn('User encountered error adding attachment to calendar event', {
+                userId: actualUserId,
+                deviceId,
+                sessionId: req.session?.id,
+                timestamp: new Date().toISOString(),
+                eventId: req.params?.id,
+                errorType: 'attachment_add_failed',
+                userMessage: 'Failed to add attachment to calendar event'
+            }, 'calendar');
             
             // Track error metric
             MonitoringService?.trackMetric('calendar.addAttachment.error', 1, { 
-                errorId: mcpError.id,
+                errorId: infrastructureError.id,
                 reason: err.message
             });
             
-            res.status(500).json({ error: 'Internal error', message: err.message });
+            res.status(500).json({ 
+                error: 'ATTACHMENT_ADD_FAILED',
+                message: 'Unable to add attachment to calendar event at this time',
+                details: 'Please try again later or contact support if the issue persists'
+            });
         }
     },
     
@@ -1934,12 +2644,32 @@ module.exports = ({ calendarModule }) => ({
      * @param {import('express').Response} res
      */
     async removeAttachment(req, res) {
+        // Extract user context for logging and tracking
+        const { userId = null, deviceId = null } = req.user || {};
+        const sessionUserId = req.session?.id ? `user:${req.session.id}` : null;
+        const actualUserId = userId || sessionUserId;
+        
         // Define endpoint at function scope so it's accessible in catch block
         const endpoint = '/api/calendar/events/:id/attachments/:attachmentId';
         
         try {
             // Start timing for performance tracking
             const startTime = Date.now();
+            
+            // Pattern 1: Development Debug Logs (conditional on NODE_ENV)
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService?.debug('removeAttachment request received', {
+                    userId: actualUserId,
+                    deviceId,
+                    sessionId: req.session?.id,
+                    timestamp: new Date().toISOString(),
+                    eventId: req.params.id,
+                    attachmentId: req.params.attachmentId,
+                    method: req.method,
+                    endpoint,
+                    userAgent: req.get('User-Agent')
+                }, 'calendar');
+            }
             
             // Get event ID and attachment ID from URL parameters
             const eventId = req.params.id;
@@ -2003,6 +2733,19 @@ module.exports = ({ calendarModule }) => ({
                 throw moduleError;
             }
             
+            // Pattern 2: User Activity Log - Successful attachment removed
+            MonitoringService?.info('User successfully removed attachment from calendar event', {
+                userId: actualUserId,
+                deviceId,
+                sessionId: req.session?.id,
+                timestamp: new Date().toISOString(),
+                eventId: req.params.id,
+                attachmentId: req.params.attachmentId,
+                success: typeof result === 'object' ? result.success : !!result,
+                isMock: typeof result === 'object' ? !!result.isMock : false,
+                duration: Date.now() - startTime
+            }, 'calendar');
+
             // Track remove attachment time
             const duration = Date.now() - startTime;
             MonitoringService?.trackMetric('calendar.removeAttachment.duration', duration, { 
@@ -2014,22 +2757,50 @@ module.exports = ({ calendarModule }) => ({
             
             res.json(typeof result === 'object' ? result : { success: result });
         } catch (err) {
-            const mcpError = ErrorService?.createError('api', 'Error removing attachment from calendar event', 'error', { 
-                stack: err.stack,
-                endpoint,
-                error: err.message,
+            // Pattern 3: Infrastructure Error Logging
+            const infrastructureError = ErrorService?.createError(
+                'calendar',
+                'Failed to remove attachment from calendar event',
+                'error',
+                {
+                    userId: actualUserId,
+                    deviceId,
+                    sessionId: req.session?.id,
+                    timestamp: new Date().toISOString(),
+                    eventId: req.params?.id,
+                    attachmentId: req.params?.attachmentId,
+                    error: err.message,
+                    stack: err.stack,
+                    endpoint: req.originalUrl,
+                    method: req.method,
+                    userAgent: req.get('User-Agent')
+                }
+            );
+            MonitoringService?.logError(infrastructureError);
+            
+            // Pattern 4: User Error Tracking
+            MonitoringService?.warn('User encountered error removing attachment from calendar event', {
+                userId: actualUserId,
+                deviceId,
+                sessionId: req.session?.id,
+                timestamp: new Date().toISOString(),
                 eventId: req.params?.id,
-                attachmentId: req.params?.attachmentId
-            });
-            MonitoringService?.logError(mcpError);
+                attachmentId: req.params?.attachmentId,
+                errorType: 'attachment_remove_failed',
+                userMessage: 'Failed to remove attachment from calendar event'
+            }, 'calendar');
             
             // Track error metric
             MonitoringService?.trackMetric('calendar.removeAttachment.error', 1, { 
-                errorId: mcpError.id,
+                errorId: infrastructureError.id,
                 reason: err.message
             });
             
-            res.status(500).json({ error: 'Internal error', message: err.message });
+            res.status(500).json({ 
+                error: 'ATTACHMENT_REMOVE_FAILED',
+                message: 'Unable to remove attachment from calendar event at this time',
+                details: 'Please try again later or contact support if the issue persists'
+            });
         }
     }
 });
