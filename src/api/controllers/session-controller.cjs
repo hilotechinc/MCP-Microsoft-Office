@@ -11,15 +11,39 @@ const MonitoringService = require('../../core/monitoring-service.cjs');
 /**
  * Helper function to validate requests
  */
-function validateRequest(req, schema, endpoint) {
+function validateRequest(req, schema, endpoint, userContext = {}) {
+    const { userId, sessionId } = userContext;
     const { error, value } = schema.validate(req.body);
+    
     if (error) {
-        MonitoringService.warn('Request validation failed', {
-            endpoint,
-            errors: error.details.map(d => d.message),
-            timestamp: new Date().toISOString()
-        }, 'session');
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('Request validation failed', {
+                endpoint,
+                errors: error.details.map(d => d.message),
+                timestamp: new Date().toISOString()
+            }, 'session', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('Request validation failed', {
+                sessionId,
+                endpoint,
+                errors: error.details.map(d => d.message),
+                timestamp: new Date().toISOString()
+            }, 'session');
+        }
+    } else {
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Request validation successful', {
+                endpoint,
+                sessionId,
+                userId,
+                userAgent: req.get('User-Agent'),
+                timestamp: new Date().toISOString()
+            }, 'session');
+        }
     }
+    
     return { error, value };
 }
 
@@ -42,9 +66,25 @@ const updateTokensSchema = Joi.object({
  * POST /api/session/create
  */
 async function createSession(req, res) {
+    const startTime = Date.now();
+    const sessionId = req.session?.id;
+    const userId = req.user?.userId;
+    
     try {
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Processing session creation request', {
+                method: req.method,
+                path: req.path,
+                sessionId,
+                userAgent: req.get('User-Agent'),
+                timestamp: new Date().toISOString(),
+                userId
+            }, 'session');
+        }
+        
         // Validate request
-        const { error, value } = validateRequest(req, createSessionSchema, '/api/session/create');
+        const { error, value } = validateRequest(req, createSessionSchema, '/api/session/create', { userId, sessionId });
         if (error) {
             return res.status(400).json({
                 error: 'invalid_request',
@@ -63,12 +103,25 @@ async function createSession(req, res) {
             ipAddress
         });
 
-        MonitoringService.info('Session created via API', {
-            sessionId: session.session_id,
-            userAgent,
-            ipAddress,
-            timestamp: new Date().toISOString()
-        }, 'session');
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('Session created successfully', {
+                sessionId: session.session_id,
+                userAgent,
+                ipAddress,
+                duration: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'session', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('Session created with session context', {
+                sessionId: session.session_id,
+                originalSessionId: sessionId,
+                userAgent,
+                ipAddress,
+                duration: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'session');
+        }
 
         res.json({
             session_id: session.session_id,
@@ -77,16 +130,38 @@ async function createSession(req, res) {
         });
 
     } catch (error) {
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
             'session',
             'Session creation failed',
             'error',
             { 
                 endpoint: '/api/session/create',
-                error: error.message 
+                error: error.message,
+                stack: error.stack,
+                operation: 'createSession',
+                userId,
+                sessionId,
+                timestamp: new Date().toISOString()
             }
         );
         MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('Session creation failed', {
+                error: error.message,
+                operation: 'createSession',
+                timestamp: new Date().toISOString()
+            }, 'session', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('Session creation failed', {
+                sessionId,
+                error: error.message,
+                operation: 'createSession',
+                timestamp: new Date().toISOString()
+            }, 'session');
+        }
 
         res.status(500).json({
             error: 'server_error',
@@ -100,9 +175,25 @@ async function createSession(req, res) {
  * POST /api/session/tokens
  */
 async function updateSessionTokens(req, res) {
+    const startTime = Date.now();
+    const sessionId = req.session?.id;
+    const userId = req.user?.userId;
+    
     try {
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Processing session token update request', {
+                method: req.method,
+                path: req.path,
+                sessionId,
+                userAgent: req.get('User-Agent'),
+                timestamp: new Date().toISOString(),
+                userId
+            }, 'session');
+        }
+        
         // Validate request
-        const { error, value } = validateRequest(req, updateTokensSchema, '/api/session/tokens');
+        const { error, value } = validateRequest(req, updateTokensSchema, '/api/session/tokens', { userId, sessionId });
         if (error) {
             return res.status(400).json({
                 error: 'invalid_request',
@@ -126,29 +217,62 @@ async function updateSessionTokens(req, res) {
             });
         }
 
-        MonitoringService.info('Session tokens updated', {
-            sessionId: value.session_id,
-            hasAccessToken: !!value.access_token,
-            hasRefreshToken: !!value.refresh_token,
-            timestamp: new Date().toISOString()
-        }, 'session');
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('Session tokens updated successfully', {
+                sessionId: value.session_id,
+                hasRefreshToken: !!value.refresh_token,
+                duration: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'session', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('Session tokens updated with session context', {
+                sessionId: value.session_id,
+                originalSessionId: sessionId,
+                hasRefreshToken: !!value.refresh_token,
+                duration: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'session');
+        }
 
         res.json({
             success: true,
-            message: 'Tokens updated successfully'
+            message: 'Session tokens updated successfully'
         });
 
     } catch (error) {
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
             'session',
             'Token update failed',
             'error',
             { 
                 endpoint: '/api/session/tokens',
-                error: error.message 
+                error: error.message,
+                stack: error.stack,
+                operation: 'updateSessionTokens',
+                userId,
+                sessionId,
+                timestamp: new Date().toISOString()
             }
         );
         MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('Session token update failed', {
+                error: error.message,
+                operation: 'updateSessionTokens',
+                timestamp: new Date().toISOString()
+            }, 'session', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('Session token update failed', {
+                sessionId,
+                error: error.message,
+                operation: 'updateSessionTokens',
+                timestamp: new Date().toISOString()
+            }, 'session');
+        }
 
         res.status(500).json({
             error: 'server_error',
@@ -162,17 +286,33 @@ async function updateSessionTokens(req, res) {
  * GET /api/session/:sessionId
  */
 async function getSession(req, res) {
+    const startTime = Date.now();
+    const currentSessionId = req.session?.id;
+    const userId = req.user?.userId;
+    const requestedSessionId = req.params.sessionId;
+    
     try {
-        const sessionId = req.params.sessionId;
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Processing session retrieval request', {
+                method: req.method,
+                path: req.path,
+                sessionId: currentSessionId,
+                requestedSessionId,
+                userAgent: req.get('User-Agent'),
+                timestamp: new Date().toISOString(),
+                userId
+            }, 'session');
+        }
         
-        if (!sessionId) {
+        if (!requestedSessionId) {
             return res.status(400).json({
                 error: 'invalid_request',
                 error_description: 'Session ID is required'
             });
         }
 
-        const session = await SessionService.getSession(sessionId);
+        const session = await SessionService.getSession(requestedSessionId);
         
         if (!session) {
             return res.status(404).json({
@@ -194,6 +334,26 @@ async function getSession(req, res) {
             }
         }
 
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('Session retrieved successfully', {
+                requestedSessionId,
+                isActive: session.is_active,
+                hasMicrosoftToken: !!session.microsoft_token,
+                duration: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'session', null, userId);
+        } else if (currentSessionId) {
+            MonitoringService.info('Session retrieved with session context', {
+                sessionId: currentSessionId,
+                requestedSessionId,
+                isActive: session.is_active,
+                hasMicrosoftToken: !!session.microsoft_token,
+                duration: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'session');
+        }
+
         res.json({
             session_id: session.session_id,
             created_at: session.created_at,
@@ -205,16 +365,41 @@ async function getSession(req, res) {
         });
 
     } catch (error) {
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
             'session',
             'Session retrieval failed',
             'error',
             { 
                 endpoint: '/api/session/:sessionId',
-                error: error.message 
+                error: error.message,
+                stack: error.stack,
+                operation: 'getSession',
+                userId,
+                sessionId: currentSessionId,
+                requestedSessionId,
+                timestamp: new Date().toISOString()
             }
         );
         MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('Session retrieval failed', {
+                error: error.message,
+                operation: 'getSession',
+                requestedSessionId,
+                timestamp: new Date().toISOString()
+            }, 'session', null, userId);
+        } else if (currentSessionId) {
+            MonitoringService.error('Session retrieval failed', {
+                sessionId: currentSessionId,
+                error: error.message,
+                operation: 'getSession',
+                requestedSessionId,
+                timestamp: new Date().toISOString()
+            }, 'session');
+        }
 
         res.status(500).json({
             error: 'server_error',
@@ -228,17 +413,33 @@ async function getSession(req, res) {
  * GET /api/session/:sessionId/adapter
  */
 async function generateAdapterCredentials(req, res) {
+    const startTime = Date.now();
+    const currentSessionId = req.session?.id;
+    const userId = req.user?.userId;
+    const requestedSessionId = req.params.sessionId;
+    
     try {
-        const sessionId = req.params.sessionId;
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Processing adapter credentials generation request', {
+                method: req.method,
+                path: req.path,
+                sessionId: currentSessionId,
+                requestedSessionId,
+                userAgent: req.get('User-Agent'),
+                timestamp: new Date().toISOString(),
+                userId
+            }, 'session');
+        }
         
-        if (!sessionId) {
+        if (!requestedSessionId) {
             return res.status(400).json({
                 error: 'invalid_request',
                 error_description: 'Session ID is required'
             });
         }
 
-        const credentials = await SessionService.generateAdapterCredentials(sessionId);
+        const credentials = await SessionService.generateAdapterCredentials(requestedSessionId);
         
         if (!credentials) {
             return res.status(404).json({
@@ -247,24 +448,64 @@ async function generateAdapterCredentials(req, res) {
             });
         }
 
-        MonitoringService.info('MCP adapter credentials generated', {
-            sessionId,
-            timestamp: new Date().toISOString()
-        }, 'session');
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('MCP adapter credentials generated successfully', {
+                requestedSessionId,
+                hasServerUrl: !!credentials.server_url,
+                hasToken: !!credentials.bearer_token,
+                duration: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'session', null, userId);
+        } else if (currentSessionId) {
+            MonitoringService.info('MCP adapter credentials generated with session context', {
+                sessionId: currentSessionId,
+                requestedSessionId,
+                hasServerUrl: !!credentials.server_url,
+                hasToken: !!credentials.bearer_token,
+                duration: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'session');
+        }
 
         res.json(credentials);
 
     } catch (error) {
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
             'session',
             'Adapter credential generation failed',
             'error',
             { 
                 endpoint: '/api/session/:sessionId/adapter',
-                error: error.message 
+                error: error.message,
+                stack: error.stack,
+                operation: 'generateAdapterCredentials',
+                userId,
+                sessionId: currentSessionId,
+                requestedSessionId,
+                timestamp: new Date().toISOString()
             }
         );
         MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('Adapter credential generation failed', {
+                error: error.message,
+                operation: 'generateAdapterCredentials',
+                requestedSessionId,
+                timestamp: new Date().toISOString()
+            }, 'session', null, userId);
+        } else if (currentSessionId) {
+            MonitoringService.error('Adapter credential generation failed', {
+                sessionId: currentSessionId,
+                error: error.message,
+                operation: 'generateAdapterCredentials',
+                requestedSessionId,
+                timestamp: new Date().toISOString()
+            }, 'session');
+        }
 
         res.status(500).json({
             error: 'server_error',
@@ -278,17 +519,33 @@ async function generateAdapterCredentials(req, res) {
  * POST /api/session/:sessionId/logout
  */
 async function logoutSession(req, res) {
+    const startTime = Date.now();
+    const currentSessionId = req.session?.id;
+    const userId = req.user?.userId;
+    const requestedSessionId = req.params.sessionId;
+    
     try {
-        const sessionId = req.params.sessionId;
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Processing session logout request', {
+                method: req.method,
+                path: req.path,
+                sessionId: currentSessionId,
+                requestedSessionId,
+                userAgent: req.get('User-Agent'),
+                timestamp: new Date().toISOString(),
+                userId
+            }, 'session');
+        }
         
-        if (!sessionId) {
+        if (!requestedSessionId) {
             return res.status(400).json({
                 error: 'invalid_request',
                 error_description: 'Session ID is required'
             });
         }
 
-        const success = await SessionService.deactivateSession(sessionId);
+        const success = await SessionService.deactivateSession(requestedSessionId);
         
         if (!success) {
             return res.status(404).json({
@@ -297,10 +554,21 @@ async function logoutSession(req, res) {
             });
         }
 
-        MonitoringService.info('Session logged out', {
-            sessionId,
-            timestamp: new Date().toISOString()
-        }, 'session');
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('Session logged out successfully', {
+                requestedSessionId,
+                duration: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'session', null, userId);
+        } else if (currentSessionId) {
+            MonitoringService.info('Session logged out with session context', {
+                sessionId: currentSessionId,
+                requestedSessionId,
+                duration: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'session');
+        }
 
         res.json({
             success: true,
@@ -308,16 +576,41 @@ async function logoutSession(req, res) {
         });
 
     } catch (error) {
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
             'session',
             'Session logout failed',
             'error',
             { 
                 endpoint: '/api/session/:sessionId/logout',
-                error: error.message 
+                error: error.message,
+                stack: error.stack,
+                operation: 'logoutSession',
+                userId,
+                sessionId: currentSessionId,
+                requestedSessionId,
+                timestamp: new Date().toISOString()
             }
         );
         MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('Session logout failed', {
+                error: error.message,
+                operation: 'logoutSession',
+                requestedSessionId,
+                timestamp: new Date().toISOString()
+            }, 'session', null, userId);
+        } else if (currentSessionId) {
+            MonitoringService.error('Session logout failed', {
+                sessionId: currentSessionId,
+                error: error.message,
+                operation: 'logoutSession',
+                requestedSessionId,
+                timestamp: new Date().toISOString()
+            }, 'session');
+        }
 
         res.status(500).json({
             error: 'server_error',

@@ -110,17 +110,22 @@ module.exports = ({ mailModule }) => ({
         
         // Extract user context from auth middleware
         const { userId = null, deviceId = null } = req.user || {};
+        const sessionId = req.session?.id;
         
         try {
-            // Log request with user context
-            MonitoringService.info(`Processing ${req.method} ${req.path}`, {
-                method: req.method,
-                path: req.path,
-                query: req.query,
-                ip: req.ip,
-                userId,
-                deviceId
-            }, 'mail', null, userId, deviceId);
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Processing getMail request', {
+                    method: req.method,
+                    path: req.path,
+                    query: req.query,
+                    sessionId,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString(),
+                    userId,
+                    deviceId
+                }, 'mail');
+            }
             
             // Ensure content type is set explicitly to prevent any HTML rendering
             res.setHeader('Content-Type', 'application/json');
@@ -339,6 +344,26 @@ module.exports = ({ mailModule }) => ({
                 messages = []; // Ensure we're sending a valid array
             }
             
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                MonitoringService.info('Mail retrieval completed successfully', {
+                    messageCount: messages.length,
+                    hasFilter: !!filter,
+                    debug,
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'mail', null, userId);
+            } else if (sessionId) {
+                MonitoringService.info('Mail retrieval completed with session', {
+                    sessionId,
+                    messageCount: messages.length,
+                    hasFilter: !!filter,
+                    debug,
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'mail');
+            }
+            
             // Track performance
             const duration = Date.now() - startTime;
             MonitoringService.trackMetric('mail.getMail.duration', duration, {
@@ -369,23 +394,43 @@ module.exports = ({ mailModule }) => ({
                 deviceId
             });
             
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.API,
-                err.message,
-                ErrorService.SEVERITIES.ERROR,
+                'mail',
+                'Failed to retrieve mail messages',
+                'error',
                 { 
+                    endpoint: '/api/mail',
+                    error: err.message,
                     stack: err.stack,
                     operation: 'getMail',
-                    endpoint: req.path,
-                    error: err.message,
                     userId,
-                    deviceId
-                },
-                null,
-                userId,
-                deviceId
+                    deviceId,
+                    timestamp: new Date().toISOString()
+                }
             );
-            res.status(500).json({ error: 'Internal error', message: err.message });
+            MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Mail retrieval failed', {
+                    error: err.message,
+                    operation: 'getMail',
+                    timestamp: new Date().toISOString()
+                }, 'mail', null, userId);
+            } else if (sessionId) {
+                MonitoringService.error('Mail retrieval failed', {
+                    sessionId,
+                    error: err.message,
+                    operation: 'getMail',
+                    timestamp: new Date().toISOString()
+                }, 'mail');
+            }
+            
+            res.status(500).json({ 
+                error: 'MAIL_RETRIEVAL_FAILED',
+                error_description: 'Failed to retrieve mail messages'
+            });
         }
     },
     /**
@@ -396,38 +441,30 @@ module.exports = ({ mailModule }) => ({
         
         // Extract user context from auth middleware
         const { userId = null, deviceId = null } = req.user || {};
-        
-        // Log request
-        MonitoringService.info(`Processing ${req.method} ${req.path}`, {
-            method: req.method,
-            path: req.path,
-            query: req.query,
-            ip: req.ip,
-            userId,
-            deviceId
-        }, 'mail', null, userId, deviceId);
-        
-        // Ensure content type is set explicitly to prevent any HTML rendering
-        res.setHeader('Content-Type', 'application/json');
-        
-        MonitoringService.info('Received send mail request', {
-            requestBody: req.body,
-            userId,
-            deviceId
-        }, 'mail', null, userId, deviceId);
+        const sessionId = req.session?.id;
         
         try {
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Processing sendMail request', {
+                    method: req.method,
+                    path: req.path,
+                    sessionId,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString(),
+                    userId,
+                    deviceId
+                }, 'mail');
+            }
+            
+            // Ensure content type is set explicitly to prevent any HTML rendering
+            res.setHeader('Content-Type', 'application/json');
+            
             // Validate request using helper function
             const { error, value } = validateAndLog(req, schemas.sendMail, 'sendMail', { userId, deviceId });
             if (error) {
                 return res.status(400).json({ error: 'Invalid request', details: error.details });
             }
-            
-            MonitoringService.info('Validated mail data', {
-                validatedData: value,
-                userId,
-                deviceId
-            }, 'mail', null, userId, deviceId);
             
             let result;
             try {
@@ -462,6 +499,26 @@ module.exports = ({ mailModule }) => ({
                     userId,
                     deviceId
                 }, 'mail', null, userId, deviceId);
+                
+                // Pattern 2: User Activity Logs
+                if (userId) {
+                    MonitoringService.info('Email sent successfully', {
+                        recipientCount: Array.isArray(value.to) ? value.to.length : 1,
+                        hasAttachments: !!value.attachments,
+                        subject: value.subject,
+                        duration: Date.now() - startTime,
+                        timestamp: new Date().toISOString()
+                    }, 'mail', null, userId);
+                } else if (sessionId) {
+                    MonitoringService.info('Email sent with session', {
+                        sessionId,
+                        recipientCount: Array.isArray(value.to) ? value.to.length : 1,
+                        hasAttachments: !!value.attachments,
+                        subject: value.subject,
+                        duration: Date.now() - startTime,
+                        timestamp: new Date().toISOString()
+                    }, 'mail');
+                }
                 
                 // Track performance
                 const duration = Date.now() - startTime;
@@ -503,23 +560,43 @@ module.exports = ({ mailModule }) => ({
                 deviceId
             });
             
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.API,
-                'Error in sendMail',
-                ErrorService.SEVERITIES.ERROR,
+                'mail',
+                'Failed to send email',
+                'error',
                 { 
+                    endpoint: '/api/mail/send',
+                    error: err.message,
                     stack: err.stack,
                     operation: 'sendMail',
-                    endpoint: req.path,
-                    error: err.message,
                     userId,
-                    deviceId
-                },
-                null,
-                userId,
-                deviceId
+                    deviceId,
+                    timestamp: new Date().toISOString()
+                }
             );
-            res.status(500).json({ error: 'Internal error', message: err.message });
+            MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Email sending failed', {
+                    error: err.message,
+                    operation: 'sendMail',
+                    timestamp: new Date().toISOString()
+                }, 'mail', null, userId);
+            } else if (sessionId) {
+                MonitoringService.error('Email sending failed', {
+                    sessionId,
+                    error: err.message,
+                    operation: 'sendMail',
+                    timestamp: new Date().toISOString()
+                }, 'mail');
+            }
+            
+            res.status(500).json({ 
+                error: 'EMAIL_SEND_FAILED',
+                error_description: 'Failed to send email'
+            });
         }
     },
     
@@ -532,18 +609,22 @@ module.exports = ({ mailModule }) => ({
         
         // Extract user context from auth middleware
         const { userId = null, deviceId = null } = req.user || {};
+        const sessionId = req.session?.id;
         
         try {
-            // Log request
-            MonitoringService.info(`Processing ${req.method} ${req.path}`, {
-                method: req.method,
-                path: req.path,
-                query: req.query,
-                body: req.body,
-                ip: req.ip,
-                userId,
-                deviceId
-            }, 'mail', null, userId, deviceId);
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Processing flagMail request', {
+                    method: req.method,
+                    path: req.path,
+                    body: req.body,
+                    sessionId,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString(),
+                    userId,
+                    deviceId
+                }, 'mail');
+            }
             
             // Ensure content type is set explicitly to prevent any HTML rendering
             res.setHeader('Content-Type', 'application/json');
@@ -609,6 +690,26 @@ module.exports = ({ mailModule }) => ({
                 throw moduleError;
             }
             
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                MonitoringService.info('Email flag operation completed successfully', {
+                    emailId: id,
+                    flag,
+                    action: flag ? 'flagged' : 'unflagged',
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'mail', null, userId);
+            } else if (sessionId) {
+                MonitoringService.info('Email flag operation completed with session', {
+                    sessionId,
+                    emailId: id,
+                    flag,
+                    action: flag ? 'flagged' : 'unflagged',
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'mail');
+            }
+            
             // Track performance
             const duration = Date.now() - startTime;
             MonitoringService.trackMetric('mail.flagMail.duration', duration, {
@@ -631,23 +732,43 @@ module.exports = ({ mailModule }) => ({
                 deviceId
             });
             
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.API,
-                'Error in flagMail',
-                ErrorService.SEVERITIES.ERROR,
+                'mail',
+                'Failed to flag email',
+                'error',
                 { 
+                    endpoint: '/api/mail/flag',
+                    error: err.message,
                     stack: err.stack,
                     operation: 'flagMail',
-                    endpoint: req.path,
-                    error: err.message,
                     userId,
-                    deviceId
-                },
-                null,
-                userId,
-                deviceId
+                    deviceId,
+                    timestamp: new Date().toISOString()
+                }
             );
-            res.status(500).json({ error: 'Internal error', message: err.message });
+            MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Email flag operation failed', {
+                    error: err.message,
+                    operation: 'flagMail',
+                    timestamp: new Date().toISOString()
+                }, 'mail', null, userId);
+            } else if (sessionId) {
+                MonitoringService.error('Email flag operation failed', {
+                    sessionId,
+                    error: err.message,
+                    operation: 'flagMail',
+                    timestamp: new Date().toISOString()
+                }, 'mail');
+            }
+            
+            res.status(500).json({ 
+                error: 'EMAIL_FLAG_FAILED',
+                error_description: 'Failed to flag email'
+            });
         }
     },
     
@@ -660,17 +781,22 @@ module.exports = ({ mailModule }) => ({
         
         // Extract user context from auth middleware
         const { userId = null, deviceId = null } = req.user || {};
+        const sessionId = req.session?.id;
         
         try {
-            // Log request
-            MonitoringService.info(`Processing ${req.method} ${req.path}`, {
-                method: req.method,
-                path: req.path,
-                query: req.query,
-                ip: req.ip,
-                userId,
-                deviceId
-            }, 'mail', null, userId, deviceId);
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Processing searchMail request', {
+                    method: req.method,
+                    path: req.path,
+                    query: req.query,
+                    sessionId,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString(),
+                    userId,
+                    deviceId
+                }, 'mail');
+            }
             
             // Ensure content type is set explicitly to prevent any HTML rendering
             res.setHeader('Content-Type', 'application/json');
@@ -858,6 +984,26 @@ module.exports = ({ mailModule }) => ({
                 messages = []; // Ensure we're sending a valid array
             }
             
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                MonitoringService.info('Mail search completed successfully', {
+                    searchQuery,
+                    resultCount: messages.length,
+                    limit,
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'mail', null, userId);
+            } else if (sessionId) {
+                MonitoringService.info('Mail search completed with session', {
+                    sessionId,
+                    searchQuery,
+                    resultCount: messages.length,
+                    limit,
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'mail');
+            }
+            
             // Track performance
             const duration = Date.now() - startTime;
             MonitoringService.trackMetric('mail.searchMail.duration', duration, {
@@ -881,23 +1027,43 @@ module.exports = ({ mailModule }) => ({
                 deviceId
             });
             
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.API,
-                'Error in searchMail',
-                ErrorService.SEVERITIES.ERROR,
+                'mail',
+                'Failed to search mail',
+                'error',
                 { 
+                    endpoint: '/api/mail/search',
+                    error: err.message,
                     stack: err.stack,
                     operation: 'searchMail',
-                    endpoint: req.path,
-                    error: err.message,
                     userId,
-                    deviceId
-                },
-                null,
-                userId,
-                deviceId
+                    deviceId,
+                    timestamp: new Date().toISOString()
+                }
             );
-            res.status(500).json({ error: 'Internal error', message: err.message });
+            MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Mail search failed', {
+                    error: err.message,
+                    operation: 'searchMail',
+                    timestamp: new Date().toISOString()
+                }, 'mail', null, userId);
+            } else if (sessionId) {
+                MonitoringService.error('Mail search failed', {
+                    sessionId,
+                    error: err.message,
+                    operation: 'searchMail',
+                    timestamp: new Date().toISOString()
+                }, 'mail');
+            }
+            
+            res.status(500).json({ 
+                error: 'MAIL_SEARCH_FAILED',
+                error_description: 'Failed to search mail'
+            });
         }
     },
     
@@ -910,17 +1076,22 @@ module.exports = ({ mailModule }) => ({
         
         // Extract user context from auth middleware
         const { userId = null, deviceId = null } = req.user || {};
+        const sessionId = req.session?.id;
         
         try {
-            // Log request
-            MonitoringService.info(`Processing ${req.method} ${req.path}`, {
-                method: req.method,
-                path: req.path,
-                params: req.params,
-                ip: req.ip,
-                userId,
-                deviceId
-            }, 'mail', null, userId, deviceId);
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Processing getEmailDetails request', {
+                    method: req.method,
+                    path: req.path,
+                    params: req.params,
+                    sessionId,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString(),
+                    userId,
+                    deviceId
+                }, 'mail');
+            }
             
             // Ensure content type is set explicitly to prevent any HTML rendering
             res.setHeader('Content-Type', 'application/json');
@@ -1005,6 +1176,24 @@ module.exports = ({ mailModule }) => ({
                 return res.status(404).json({ error: 'Email not found' });
             }
             
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                MonitoringService.info('Email details retrieved successfully', {
+                    emailId,
+                    hasDetails: !!emailDetails,
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'mail', null, userId);
+            } else if (sessionId) {
+                MonitoringService.info('Email details retrieved with session', {
+                    sessionId,
+                    emailId,
+                    hasDetails: !!emailDetails,
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'mail');
+            }
+            
             // Track performance
             const duration = Date.now() - startTime;
             MonitoringService.trackMetric('mail.getEmailDetails.duration', duration, {
@@ -1027,23 +1216,43 @@ module.exports = ({ mailModule }) => ({
                 deviceId
             });
             
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.API,
-                'Error in getEmailDetails',
-                ErrorService.SEVERITIES.ERROR,
+                'mail',
+                'Failed to retrieve email details',
+                'error',
                 { 
+                    endpoint: '/api/mail/:id',
+                    error: err.message,
                     stack: err.stack,
                     operation: 'getEmailDetails',
-                    endpoint: req.path,
-                    error: err.message,
                     userId,
-                    deviceId
-                },
-                null,
-                userId,
-                deviceId
+                    deviceId,
+                    timestamp: new Date().toISOString()
+                }
             );
-            res.status(500).json({ error: 'Internal error', message: err.message });
+            MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Email details retrieval failed', {
+                    error: err.message,
+                    operation: 'getEmailDetails',
+                    timestamp: new Date().toISOString()
+                }, 'mail', null, userId);
+            } else if (sessionId) {
+                MonitoringService.error('Email details retrieval failed', {
+                    sessionId,
+                    error: err.message,
+                    operation: 'getEmailDetails',
+                    timestamp: new Date().toISOString()
+                }, 'mail');
+            }
+            
+            res.status(500).json({ 
+                error: 'EMAIL_DETAILS_RETRIEVAL_FAILED',
+                error_description: 'Failed to retrieve email details'
+            });
         }
     },
     
@@ -1056,18 +1265,23 @@ module.exports = ({ mailModule }) => ({
         
         // Extract user context from auth middleware
         const { userId = null, deviceId = null } = req.user || {};
+        const sessionId = req.session?.id;
         
         try {
-            // Log request
-            MonitoringService.info(`Processing ${req.method} ${req.path}`, {
-                method: req.method,
-                path: req.path,
-                params: req.params,
-                body: req.body,
-                ip: req.ip,
-                userId,
-                deviceId
-            }, 'mail', null, userId, deviceId);
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Processing markAsRead request', {
+                    method: req.method,
+                    path: req.path,
+                    params: req.params,
+                    body: req.body,
+                    sessionId,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString(),
+                    userId,
+                    deviceId
+                }, 'mail');
+            }
             
             // Ensure content type is set explicitly to prevent any HTML rendering
             res.setHeader('Content-Type', 'application/json');
@@ -1149,6 +1363,26 @@ module.exports = ({ mailModule }) => ({
                 return res.status(404).json({ error: 'Email not found or operation failed' });
             }
             
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                MonitoringService.info('Email read status updated successfully', {
+                    emailId,
+                    isRead,
+                    action: isRead ? 'marked as read' : 'marked as unread',
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'mail', null, userId);
+            } else if (sessionId) {
+                MonitoringService.info('Email read status updated with session', {
+                    sessionId,
+                    emailId,
+                    isRead,
+                    action: isRead ? 'marked as read' : 'marked as unread',
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'mail');
+            }
+            
             // Track performance
             const duration = Date.now() - startTime;
             MonitoringService.trackMetric('mail.markAsRead.duration', duration, {
@@ -1171,23 +1405,43 @@ module.exports = ({ mailModule }) => ({
                 deviceId
             });
             
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.API,
-                'Error in markAsRead',
-                ErrorService.SEVERITIES.ERROR,
+                'mail',
+                'Failed to update email read status',
+                'error',
                 { 
+                    endpoint: '/api/mail/:id/read',
+                    error: err.message,
                     stack: err.stack,
                     operation: 'markAsRead',
-                    endpoint: req.path,
-                    error: err.message,
                     userId,
-                    deviceId
-                },
-                null,
-                userId,
-                deviceId
+                    deviceId,
+                    timestamp: new Date().toISOString()
+                }
             );
-            res.status(500).json({ error: 'Internal error', message: err.message });
+            MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Email read status update failed', {
+                    error: err.message,
+                    operation: 'markAsRead',
+                    timestamp: new Date().toISOString()
+                }, 'mail', null, userId);
+            } else if (sessionId) {
+                MonitoringService.error('Email read status update failed', {
+                    sessionId,
+                    error: err.message,
+                    operation: 'markAsRead',
+                    timestamp: new Date().toISOString()
+                }, 'mail');
+            }
+            
+            res.status(500).json({ 
+                error: 'EMAIL_READ_STATUS_UPDATE_FAILED',
+                error_description: 'Failed to update email read status'
+            });
         }
     },
     
@@ -1200,17 +1454,22 @@ module.exports = ({ mailModule }) => ({
         
         // Extract user context from auth middleware
         const { userId = null, deviceId = null } = req.user || {};
+        const sessionId = req.session?.id;
         
         try {
-            // Log request
-            MonitoringService.info(`Processing ${req.method} ${req.path}`, {
-                method: req.method,
-                path: req.path,
-                query: req.query,
-                ip: req.ip,
-                userId,
-                deviceId
-            }, 'mail', null, userId, deviceId);
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Processing getMailAttachments request', {
+                    method: req.method,
+                    path: req.path,
+                    query: req.query,
+                    sessionId,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString(),
+                    userId,
+                    deviceId
+                }, 'mail');
+            }
             
             // Ensure content type is set explicitly to prevent any HTML rendering
             res.setHeader('Content-Type', 'application/json');
@@ -1397,6 +1656,24 @@ module.exports = ({ mailModule }) => ({
                 attachments = []; // Ensure we're sending a valid array
             }
             
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                MonitoringService.info('Email attachments retrieved successfully', {
+                    emailId: id,
+                    attachmentCount: attachments.length,
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'mail', null, userId);
+            } else if (sessionId) {
+                MonitoringService.info('Email attachments retrieved with session', {
+                    sessionId,
+                    emailId: id,
+                    attachmentCount: attachments.length,
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'mail');
+            }
+            
             // Track performance
             const duration = Date.now() - startTime;
             MonitoringService.trackMetric('mail.getMailAttachments.duration', duration, {
@@ -1419,23 +1696,43 @@ module.exports = ({ mailModule }) => ({
                 deviceId
             });
             
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.API,
-                'Error in getMailAttachments',
-                ErrorService.SEVERITIES.ERROR,
+                'mail',
+                'Failed to retrieve email attachments',
+                'error',
                 { 
+                    endpoint: '/api/mail/attachments',
+                    error: err.message,
                     stack: err.stack,
                     operation: 'getMailAttachments',
-                    endpoint: req.path,
-                    error: err.message,
                     userId,
-                    deviceId
-                },
-                null,
-                userId,
-                deviceId
+                    deviceId,
+                    timestamp: new Date().toISOString()
+                }
             );
-            res.status(500).json({ error: 'Internal error', message: err.message });
+            MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Email attachments retrieval failed', {
+                    error: err.message,
+                    operation: 'getMailAttachments',
+                    timestamp: new Date().toISOString()
+                }, 'mail', null, userId);
+            } else if (sessionId) {
+                MonitoringService.error('Email attachments retrieval failed', {
+                    sessionId,
+                    error: err.message,
+                    operation: 'getMailAttachments',
+                    timestamp: new Date().toISOString()
+                }, 'mail');
+            }
+            
+            res.status(500).json({ 
+                error: 'EMAIL_ATTACHMENTS_RETRIEVAL_FAILED',
+                error_description: 'Failed to retrieve email attachments'
+            });
         }
     },
 
@@ -1448,17 +1745,22 @@ module.exports = ({ mailModule }) => ({
         
         // Extract user context from auth middleware
         const { userId = null, deviceId = null } = req.user || {};
+        const sessionId = req.session?.id;
         
         try {
-            // Log request
-            MonitoringService.info(`Processing ${req.method} ${req.path}`, {
-                method: req.method,
-                path: req.path,
-                params: req.params,
-                ip: req.ip,
-                userId,
-                deviceId
-            }, 'mail', null, userId, deviceId);
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Processing addMailAttachment request', {
+                    method: req.method,
+                    path: req.path,
+                    params: req.params,
+                    sessionId,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString(),
+                    userId,
+                    deviceId
+                }, 'mail');
+            }
             
             // Ensure content type is set explicitly
             res.setHeader('Content-Type', 'application/json');
@@ -1520,15 +1822,25 @@ module.exports = ({ mailModule }) => ({
                 deviceId
             });
             
-            MonitoringService.info('Successfully added attachment to email', {
-                emailId: emailId,
-                attachmentId: result.id,
-                attachmentName: result.name,
-                duration: duration,
-                timestamp: new Date().toISOString(),
-                userId,
-                deviceId
-            }, 'mail', null, userId, deviceId);
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                MonitoringService.info('Email attachment added successfully', {
+                    emailId: emailId,
+                    attachmentId: result.id,
+                    attachmentName: result.name,
+                    duration: duration,
+                    timestamp: new Date().toISOString()
+                }, 'mail', null, userId);
+            } else if (sessionId) {
+                MonitoringService.info('Email attachment added with session', {
+                    sessionId,
+                    emailId: emailId,
+                    attachmentId: result.id,
+                    attachmentName: result.name,
+                    duration: duration,
+                    timestamp: new Date().toISOString()
+                }, 'mail');
+            }
             
             res.status(201).json(result);
             
@@ -1543,28 +1855,45 @@ module.exports = ({ mailModule }) => ({
                 deviceId
             });
             
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.API,
-                'Error in addMailAttachment',
-                ErrorService.SEVERITIES.ERROR,
+                'mail',
+                'Failed to add email attachment',
+                'error',
                 { 
+                    endpoint: '/api/mail/:id/attachments',
+                    error: err.message,
                     stack: err.stack,
                     operation: 'addMailAttachment',
-                    endpoint: req.path,
-                    error: err.message,
                     emailId: req.params.id,
                     userId,
-                    deviceId
-                },
-                null,
-                userId,
-                deviceId
+                    deviceId,
+                    timestamp: new Date().toISOString()
+                }
             );
+            MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Email attachment addition failed', {
+                    error: err.message,
+                    operation: 'addMailAttachment',
+                    emailId: req.params.id,
+                    timestamp: new Date().toISOString()
+                }, 'mail', null, userId);
+            } else if (sessionId) {
+                MonitoringService.error('Email attachment addition failed', {
+                    sessionId,
+                    error: err.message,
+                    operation: 'addMailAttachment',
+                    emailId: req.params.id,
+                    timestamp: new Date().toISOString()
+                }, 'mail');
+            }
             
             res.status(500).json({ 
-                error: 'Failed to add attachment', 
-                message: err.message,
-                errorId: mcpError.id
+                error: 'EMAIL_ATTACHMENT_ADD_FAILED',
+                error_description: 'Failed to add email attachment'
             });
         }
     },
@@ -1578,17 +1907,22 @@ module.exports = ({ mailModule }) => ({
         
         // Extract user context from auth middleware
         const { userId = null, deviceId = null } = req.user || {};
+        const sessionId = req.session?.id;
         
         try {
-            // Log request
-            MonitoringService.info(`Processing ${req.method} ${req.path}`, {
-                method: req.method,
-                path: req.path,
-                params: req.params,
-                ip: req.ip,
-                userId,
-                deviceId
-            }, 'mail', null, userId, deviceId);
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Processing removeMailAttachment request', {
+                    method: req.method,
+                    path: req.path,
+                    params: req.params,
+                    sessionId,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString(),
+                    userId,
+                    deviceId
+                }, 'mail');
+            }
             
             // Ensure content type is set explicitly
             res.setHeader('Content-Type', 'application/json');
@@ -1626,14 +1960,23 @@ module.exports = ({ mailModule }) => ({
                 deviceId
             });
             
-            MonitoringService.info('Successfully removed attachment from email', {
-                emailId: emailId,
-                attachmentId: attachmentId,
-                duration: duration,
-                timestamp: new Date().toISOString(),
-                userId,
-                deviceId
-            }, 'mail', null, userId, deviceId);
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                MonitoringService.info('Email attachment removed successfully', {
+                    emailId: emailId,
+                    attachmentId: attachmentId,
+                    duration: duration,
+                    timestamp: new Date().toISOString()
+                }, 'mail', null, userId);
+            } else if (sessionId) {
+                MonitoringService.info('Email attachment removed with session', {
+                    sessionId,
+                    emailId: emailId,
+                    attachmentId: attachmentId,
+                    duration: duration,
+                    timestamp: new Date().toISOString()
+                }, 'mail');
+            }
             
             res.json(result);
             
@@ -1648,29 +1991,48 @@ module.exports = ({ mailModule }) => ({
                 deviceId
             });
             
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.API,
-                'Error in removeMailAttachment',
-                ErrorService.SEVERITIES.ERROR,
+                'mail',
+                'Failed to remove email attachment',
+                'error',
                 { 
+                    endpoint: '/api/mail/:id/attachments/:attachmentId',
+                    error: err.message,
                     stack: err.stack,
                     operation: 'removeMailAttachment',
-                    endpoint: req.path,
-                    error: err.message,
                     emailId: req.params.id,
                     attachmentId: req.params.attachmentId,
                     userId,
-                    deviceId
-                },
-                null,
-                userId,
-                deviceId
+                    deviceId,
+                    timestamp: new Date().toISOString()
+                }
             );
+            MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Email attachment removal failed', {
+                    error: err.message,
+                    operation: 'removeMailAttachment',
+                    emailId: req.params.id,
+                    attachmentId: req.params.attachmentId,
+                    timestamp: new Date().toISOString()
+                }, 'mail', null, userId);
+            } else if (sessionId) {
+                MonitoringService.error('Email attachment removal failed', {
+                    sessionId,
+                    error: err.message,
+                    operation: 'removeMailAttachment',
+                    emailId: req.params.id,
+                    attachmentId: req.params.attachmentId,
+                    timestamp: new Date().toISOString()
+                }, 'mail');
+            }
             
             res.status(500).json({ 
-                error: 'Failed to remove attachment', 
-                message: err.message,
-                errorId: mcpError.id
+                error: 'EMAIL_ATTACHMENT_REMOVE_FAILED',
+                error_description: 'Failed to remove email attachment'
             });
         }
     }

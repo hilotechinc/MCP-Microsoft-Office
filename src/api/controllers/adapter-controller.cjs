@@ -60,10 +60,10 @@ async function downloadAdapter(req, res) {
         // 2. USER ACTIVITY - Always logged to database, user-specific
         const userId = req?.user?.userId;
         if (userId) {
-            MonitoringService.userActivity(userId, 'Downloaded MCP adapter', {
+            MonitoringService.info('Downloaded MCP adapter', {
                 deviceId,
                 timestamp: new Date().toISOString()
-            });
+            }, 'adapter', null, userId);
         }
 
         res.send(configuredAdapter);
@@ -85,11 +85,11 @@ async function downloadAdapter(req, res) {
         // 4. USER ERROR TRACKING - To database for user visibility
         const userId = req?.user?.userId;
         if (userId) {
-            MonitoringService.userActivity(userId, 'MCP adapter download failed', {
+            MonitoringService.info('MCP adapter download failed', {
                 deviceId: req.params.deviceId,
                 error: error.message,
                 timestamp: new Date().toISOString()
-            });
+            }, 'adapter', null, userId);
         }
 
         res.status(500).json({
@@ -151,10 +151,10 @@ async function downloadPackageJson(req, res) {
         // 2. USER ACTIVITY - Always logged to database, user-specific
         const userId = req?.user?.userId;
         if (userId) {
-            MonitoringService.userActivity(userId, 'Downloaded package.json for MCP adapter', {
+            MonitoringService.info('Downloaded package.json for MCP adapter', {
                 deviceId,
                 timestamp: new Date().toISOString()
-            });
+            }, 'adapter', null, userId);
         }
 
         res.json(packageJson);
@@ -176,11 +176,11 @@ async function downloadPackageJson(req, res) {
         // 4. USER ERROR TRACKING - To database for user visibility
         const userId = req?.user?.userId;
         if (userId) {
-            MonitoringService.userActivity(userId, 'Package.json download failed', {
+            MonitoringService.info('Package.json download failed', {
                 deviceId: req.params.deviceId,
                 error: error.message,
                 timestamp: new Date().toISOString()
-            });
+            }, 'adapter', null, userId);
         }
 
         res.status(500).json({
@@ -297,10 +297,10 @@ For more help, visit: ${serverUrl}
         // 2. USER ACTIVITY - Always logged to database, user-specific
         const userId = req?.user?.userId;
         if (userId) {
-            MonitoringService.userActivity(userId, 'Downloaded MCP adapter setup instructions', {
+            MonitoringService.info('Downloaded MCP adapter setup instructions', {
                 deviceId,
                 timestamp: new Date().toISOString()
-            });
+            }, 'adapter', null, userId);
         }
 
         res.send(setupInstructions);
@@ -322,11 +322,11 @@ For more help, visit: ${serverUrl}
         // 4. USER ERROR TRACKING - To database for user visibility
         const userId = req?.user?.userId;
         if (userId) {
-            MonitoringService.userActivity(userId, 'Setup instructions download failed', {
+            MonitoringService.info('Setup instructions download failed', {
                 deviceId: req.params.deviceId,
                 error: error.message,
                 timestamp: new Date().toISOString()
-            });
+            }, 'adapter', null, userId);
         }
 
         res.status(500).json({

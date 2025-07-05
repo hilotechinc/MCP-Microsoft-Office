@@ -50,10 +50,10 @@ async function getRelevantPeople(options = {}, req) {
     // Log user activity (always logged but only accessible to the user)
     const userId = req?.user?.userId;
     if (userId) {
-      MonitoringService.userActivity(userId, 'Retrieved relevant people', {
+      MonitoringService.info('Retrieved relevant people', {
         count: res.value ? res.value.length : 0,
         timestamp: new Date().toISOString()
-      });
+      }, 'people', null, userId);
     }
     return (res.value || []).map(normalizePerson);
   } catch (error) {
@@ -61,7 +61,7 @@ async function getRelevantPeople(options = {}, req) {
       'graph',
       'Failed to get relevant people',
       'error',
-      { errorMessage: error.message, url }
+      { errorMessage: error.message, endpoint: '/me/people', options }
     );
     MonitoringService.logError(mcpError);
     throw error;
@@ -140,11 +140,11 @@ async function searchPeople(searchQuery, options = {}, req) {
     // Log user activity for the search attempt
     const userId = req?.user?.userId;
     if (userId) {
-      MonitoringService.userActivity(userId, 'People search failed', {
+      MonitoringService.info('People search failed', {
         searchQuery,
         error: error.message,
         timestamp: new Date().toISOString()
-      });
+      }, 'people', null, userId);
     }
     throw error;
   }
@@ -223,11 +223,11 @@ async function getPersonById(personId, req) {
           // Log user activity for successful person retrieval
           const userId = req?.user?.userId;
           if (userId) {
-            MonitoringService.userActivity(userId, 'Retrieved person details', {
+            MonitoringService.info('Retrieved person details', {
               personId,
               endpoint: endpoint.name,
               timestamp: new Date().toISOString()
-            });
+            }, 'people', null, userId);
           }
           return res;
         }
@@ -271,11 +271,11 @@ async function getPersonById(personId, req) {
     // Log user activity for the failed attempt
     const userId = req?.user?.userId;
     if (userId) {
-      MonitoringService.userActivity(userId, 'Person retrieval failed', {
+      MonitoringService.info('Person retrieval failed', {
         personId,
         error: error.message,
         timestamp: new Date().toISOString()
-      });
+      }, 'people', null, userId);
     }
     throw error;
   }

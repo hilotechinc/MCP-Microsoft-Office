@@ -21,24 +21,60 @@ const { resolveUserId } = require('../../core/user-id-resolver.cjs');
  */
 async function addLogEntry(req, res) {
     try {
-        // Log the request for debugging (only in development)
-        // Explicitly check for development mode to ensure we never log in production with silent mode
+        // Extract user context
+        const { userId, deviceId } = req.user || {};
+        
+        // Pattern 1: Development Debug Logs
         if (process.env.NODE_ENV === 'development') {
-            MonitoringService.debug('Received log entry request', req.body, 'logs');
+            MonitoringService.debug('Processing log entry addition request', {
+                sessionId: req.session?.id,
+                userId: userId || 'none',
+                deviceId: deviceId || 'none',
+                userAgent: req.get('User-Agent'),
+                bodySize: JSON.stringify(req.body || {}).length,
+                timestamp: new Date().toISOString()
+            }, 'logs');
         }
         
         const logEntry = req.body;
         
         // Validate log entry
         if (!logEntry) {
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.API,
-                'Invalid log entry format',
-                ErrorService.SEVERITIES.WARNING,
-                { body: req.body, timestamp: new Date().toISOString() }
+                'logs',
+                'Invalid log entry format received',
+                'error',
+                { 
+                    endpoint: '/api/logs',
+                    body: req.body,
+                    userId: userId || 'none',
+                    sessionId: req.session?.id,
+                    timestamp: new Date().toISOString()
+                }
             );
             MonitoringService.logError(mcpError);
-            return res.status(400).json({ error: 'Invalid log entry format' });
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Log entry addition failed - invalid format', {
+                    error: 'Invalid log entry format',
+                    endpoint: '/api/logs',
+                    timestamp: new Date().toISOString()
+                }, 'logs', null, userId);
+            } else if (req.session?.id) {
+                MonitoringService.error('Log entry addition failed - invalid format', {
+                    sessionId: req.session.id,
+                    error: 'Invalid log entry format',
+                    endpoint: '/api/logs',
+                    timestamp: new Date().toISOString()
+                }, 'logs');
+            }
+            
+            return res.status(400).json({ 
+                error: 'INVALID_LOG_ENTRY_FORMAT',
+                error_description: 'Invalid log entry format' 
+            });
         }
         
         // Determine log level
@@ -65,23 +101,72 @@ async function addLogEntry(req, res) {
             );
         }
         
-        if (process.env.NODE_ENV === 'development') {
-            MonitoringService.debug(`Added log entry via monitoring service`, {
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('Log entry added successfully', {
                 level,
-                category: logEntry.category || 'external'
+                category: logEntry.category || 'external',
+                messageLength: (logEntry.message || '').length,
+                timestamp: new Date().toISOString()
+            }, 'logs', null, userId);
+        } else if (req.session?.id) {
+            MonitoringService.info('Log entry added with session', {
+                sessionId: req.session.id,
+                level,
+                category: logEntry.category || 'external',
+                messageLength: (logEntry.message || '').length,
+                timestamp: new Date().toISOString()
+            }, 'logs');
+        }
+        
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Log entry processed successfully', {
+                level,
+                category: logEntry.category || 'external',
+                userId: userId || 'none',
+                timestamp: new Date().toISOString()
             }, 'logs');
         }
         
         res.status(200).json({ success: true });
     } catch (error) {
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.API,
+            'logs',
             `Error adding log entry: ${error.message}`,
-            ErrorService.SEVERITIES.ERROR,
-            { stack: error.stack, timestamp: new Date().toISOString() }
+            'error',
+            { 
+                endpoint: '/api/logs',
+                error: error.message,
+                stack: error.stack,
+                userId: req.user?.userId || 'none',
+                sessionId: req.session?.id,
+                timestamp: new Date().toISOString()
+            }
         );
         MonitoringService.logError(mcpError);
-        res.status(500).json({ error: 'Failed to add log entry' });
+        
+        // Pattern 4: User Error Tracking
+        const userId = req.user?.userId;
+        if (userId) {
+            MonitoringService.error('Log entry addition failed', {
+                error: error.message,
+                endpoint: '/api/logs',
+                timestamp: new Date().toISOString()
+            }, 'logs', null, userId);
+        } else if (req.session?.id) {
+            MonitoringService.error('Log entry addition failed', {
+                sessionId: req.session.id,
+                error: error.message,
+                endpoint: '/api/logs',
+                timestamp: new Date().toISOString()
+            }, 'logs');
+        }
+        
+        res.status(500).json({ 
+            error: 'LOG_ENTRY_ADDITION_FAILED',
+            error_description: 'Failed to add log entry' 
+        });
     }
 }
 
@@ -92,6 +177,9 @@ async function addLogEntry(req, res) {
  */
 async function getLogEntries(req, res) {
     try {
+        // Extract user context
+        const { userId: userIdFromAuth, deviceId } = req.user || {};
+        
         // Get query parameters
         const { limit = '100', category, level, source, scope = 'user' } = req.query;
         const parsedLimit = parseInt(limit, 10) || 100;
@@ -100,15 +188,21 @@ async function getLogEntries(req, res) {
         const userId = resolveUserId(req);
         const isAuthenticated = !!userId;
         
+        // Pattern 1: Development Debug Logs
         // Only log if this is not an auto-refresh request to prevent feedback loops
         if ((req.headers['x-requested-by'] !== 'auto-refresh') && process.env.NODE_ENV === 'development') {
-            MonitoringService.debug('Log entries requested', { 
+            MonitoringService.debug('Processing log entries retrieval request', { 
                 query: req.query,
                 parsedLimit,
                 requestId: req.requestId || 'none',
                 userId: userId || 'none',
+                userIdFromAuth: userIdFromAuth || 'none',
+                deviceId: deviceId || 'none',
                 isAuthenticated,
-                scope
+                scope,
+                userAgent: req.get('User-Agent'),
+                sessionId: req.session?.id,
+                timestamp: new Date().toISOString()
             }, 'logs');
         }
         
@@ -212,20 +306,74 @@ async function getLogEntries(req, res) {
                 scope,
                 oldestEntryTime: result.length > 0 ? result[result.length-1].timestamp : 'none',
                 newestEntryTime: result.length > 0 ? result[0].timestamp : 'none',
-                categories: [...new Set(result.map(entry => entry.category || ''))]
+                categories: [...new Set(result.map(entry => entry.category || ''))],
+                timestamp: new Date().toISOString()
+            }, 'logs');
+        }
+        
+        // Pattern 2: User Activity Logs
+        if (userIdFromAuth) {
+            MonitoringService.info('Log entries retrieved successfully', {
+                entriesCount: result.length,
+                requestedLimit: parsedLimit,
+                scope,
+                category: category || 'all',
+                level: level || 'all',
+                timestamp: new Date().toISOString()
+            }, 'logs', null, userIdFromAuth);
+        } else if (req.session?.id) {
+            MonitoringService.info('Log entries retrieved with session', {
+                sessionId: req.session.id,
+                entriesCount: result.length,
+                requestedLimit: parsedLimit,
+                scope,
+                category: category || 'all',
+                level: level || 'all',
+                timestamp: new Date().toISOString()
             }, 'logs');
         }
         
         res.status(200).json(result);
     } catch (error) {
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.API,
+            'logs',
             `Error getting log entries: ${error.message}`,
-            ErrorService.SEVERITIES.ERROR,
-            { stack: error.stack, timestamp: new Date().toISOString() }
+            'error',
+            { 
+                endpoint: '/api/logs',
+                error: error.message,
+                stack: error.stack,
+                userId: userIdFromAuth || 'none',
+                sessionId: req.session?.id,
+                queryParams: req.query,
+                timestamp: new Date().toISOString()
+            }
         );
         MonitoringService.logError(mcpError);
-        res.status(500).json({ error: 'Failed to get log entries' });
+        
+        // Pattern 4: User Error Tracking
+        if (userIdFromAuth) {
+            MonitoringService.error('Log entries retrieval failed', {
+                error: error.message,
+                endpoint: '/api/logs',
+                queryParams: req.query,
+                timestamp: new Date().toISOString()
+            }, 'logs', null, userIdFromAuth);
+        } else if (req.session?.id) {
+            MonitoringService.error('Log entries retrieval failed', {
+                sessionId: req.session.id,
+                error: error.message,
+                endpoint: '/api/logs',
+                queryParams: req.query,
+                timestamp: new Date().toISOString()
+            }, 'logs');
+        }
+        
+        res.status(500).json({ 
+            error: 'LOG_ENTRIES_RETRIEVAL_FAILED',
+            error_description: 'Failed to get log entries' 
+        });
     }
 }
 
@@ -265,10 +413,27 @@ function filterLogs(logs, filters) {
  */
 async function clearLogEntries(req, res) {
     try {
+        // Extract user context
+        const { userId: userIdFromAuth, deviceId } = req.user || {};
+        
         const { scope = 'user' } = req.query;
         const { resolveUserId } = require('../../core/user-id-resolver.cjs');
         const userId = resolveUserId(req);
         const isAuthenticated = !!userId;
+        
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Processing log entries clearing request', {
+                sessionId: req.session?.id,
+                userId: userId || 'none',
+                userIdFromAuth: userIdFromAuth || 'none',
+                deviceId: deviceId || 'none',
+                scope,
+                isAuthenticated,
+                userAgent: req.get('User-Agent'),
+                timestamp: new Date().toISOString()
+            }, 'logs');
+        }
         
         // If user is authenticated and we're not explicitly clearing global logs,
         // clear only the user's logs
@@ -277,30 +442,118 @@ async function clearLogEntries(req, res) {
                 // Clear the user's logs from the database
                 await StorageService.clearUserLogs(userId);
                 
-                MonitoringService.info('Cleared user logs from database', { userId }, 'logs');
+                if (process.env.NODE_ENV === 'development') {
+                    MonitoringService.debug('User logs cleared from database successfully', {
+                        userId,
+                        scope,
+                        timestamp: new Date().toISOString()
+                    }, 'logs');
+                }
             } catch (storageError) {
-                MonitoringService.error('Failed to clear user logs from database', {
-                    error: storageError.message,
-                    userId
-                }, 'logs');
+                // Pattern 3: Infrastructure Error Logging
+                const mcpError = ErrorService.createError(
+                    'logs',
+                    `Failed to clear user logs from database: ${storageError.message}`,
+                    'error',
+                    {
+                        endpoint: '/api/logs',
+                        error: storageError.message,
+                        userId,
+                        scope,
+                        timestamp: new Date().toISOString()
+                    }
+                );
+                MonitoringService.logError(mcpError);
+                
+                // Pattern 4: User Error Tracking
+                if (userIdFromAuth) {
+                    MonitoringService.error('Failed to clear user logs from database', {
+                        error: storageError.message,
+                        endpoint: '/api/logs',
+                        scope,
+                        timestamp: new Date().toISOString()
+                    }, 'logs', null, userIdFromAuth);
+                } else if (req.session?.id) {
+                    MonitoringService.error('Failed to clear user logs from database', {
+                        sessionId: req.session.id,
+                        error: storageError.message,
+                        endpoint: '/api/logs',
+                        scope,
+                        timestamp: new Date().toISOString()
+                    }, 'logs');
+                }
+                
                 throw storageError; // Re-throw to be caught by the outer catch block
             }
         } else {
             // Clear the global circular buffer in the monitoring service
             MonitoringService.getLogBuffer().clear();
-            MonitoringService.info('Cleared log entries from circular buffer', { scope }, 'logs');
+            
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Global log buffer cleared successfully', {
+                    scope,
+                    timestamp: new Date().toISOString()
+                }, 'logs');
+            }
+        }
+        
+        // Pattern 2: User Activity Logs
+        if (userIdFromAuth) {
+            MonitoringService.info('Log entries cleared successfully', {
+                scope,
+                clearType: isAuthenticated && scope !== 'global' ? 'user_database' : 'global_buffer',
+                timestamp: new Date().toISOString()
+            }, 'logs', null, userIdFromAuth);
+        } else if (req.session?.id) {
+            MonitoringService.info('Log entries cleared with session', {
+                sessionId: req.session.id,
+                scope,
+                clearType: isAuthenticated && scope !== 'global' ? 'user_database' : 'global_buffer',
+                timestamp: new Date().toISOString()
+            }, 'logs');
         }
         
         res.status(200).json({ success: true });
     } catch (error) {
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.API,
+            'logs',
             `Error clearing log entries: ${error.message}`,
-            ErrorService.SEVERITIES.ERROR,
-            { stack: error.stack, timestamp: new Date().toISOString() }
+            'error',
+            { 
+                endpoint: '/api/logs',
+                error: error.message,
+                stack: error.stack,
+                userId: userIdFromAuth || 'none',
+                sessionId: req.session?.id,
+                queryParams: req.query,
+                timestamp: new Date().toISOString()
+            }
         );
         MonitoringService.logError(mcpError);
-        res.status(500).json({ error: 'Failed to clear log entries' });
+        
+        // Pattern 4: User Error Tracking
+        if (userIdFromAuth) {
+            MonitoringService.error('Log entries clearing failed', {
+                error: error.message,
+                endpoint: '/api/logs',
+                queryParams: req.query,
+                timestamp: new Date().toISOString()
+            }, 'logs', null, userIdFromAuth);
+        } else if (req.session?.id) {
+            MonitoringService.error('Log entries clearing failed', {
+                sessionId: req.session.id,
+                error: error.message,
+                endpoint: '/api/logs',
+                queryParams: req.query,
+                timestamp: new Date().toISOString()
+            }, 'logs');
+        }
+        
+        res.status(500).json({ 
+            error: 'LOG_ENTRIES_CLEARING_FAILED',
+            error_description: 'Failed to clear log entries' 
+        });
     }
 }
 

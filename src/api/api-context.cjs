@@ -34,49 +34,126 @@ moduleRegistry.registerModule(peopleModule);
 
 // Simple mock NLU agent for development/testing
 const nluAgent = {
-  processQuery: async ({ query }) => {
-    // Simple intent detection based on keywords
-    let intent = 'unknown';
-    let entities = {};
+  processQuery: async ({ query, sessionId, userId }) => {
+    const startTime = Date.now();
     
-    if (query.toLowerCase().includes('email') || 
-        query.toLowerCase().includes('mail')) {
-      intent = 'readMail';
-      entities = { count: 5 };
-    } else if (query.toLowerCase().includes('calendar') || 
-             query.toLowerCase().includes('event') || 
-             query.toLowerCase().includes('meeting')) {
-      intent = 'readCalendar';
-      entities = { count: 3 };
-    } else if (query.toLowerCase().includes('file') || 
-             query.toLowerCase().includes('document')) {
-      intent = 'listFiles';
-      entities = {};
-    } else if (query.toLowerCase().includes('people') || 
-             query.toLowerCase().includes('person') || 
-             query.toLowerCase().includes('contact') || 
-             query.toLowerCase().includes('find') || 
-             query.toLowerCase().includes('who')) {
-      // Extract name if present (simple extraction)
-      const nameMatch = query.match(/\b(find|who is|about|contact)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b/i);
-      const name = nameMatch ? nameMatch[2] : '';
+    try {
+      // Pattern 1: Development Debug Logs
+      if (process.env.NODE_ENV === 'development') {
+        MonitoringService.debug('Processing NLU query', {
+          query: query?.substring(0, 100), // Truncate for privacy
+          sessionId,
+          timestamp: new Date().toISOString(),
+          userId
+        }, 'api');
+      }
       
-      intent = 'findPeople';
-      entities = { 
-        criteria: { 
-          name: name,
-          query: name || query,
-          limit: 5
-        } 
+      // Simple intent detection based on keywords
+      let intent = 'unknown';
+      let entities = {};
+      
+      if (query.toLowerCase().includes('email') || 
+          query.toLowerCase().includes('mail')) {
+        intent = 'readMail';
+        entities = { count: 5 };
+      } else if (query.toLowerCase().includes('calendar') || 
+               query.toLowerCase().includes('event') || 
+               query.toLowerCase().includes('meeting')) {
+        intent = 'readCalendar';
+        entities = { count: 3 };
+      } else if (query.toLowerCase().includes('file') || 
+               query.toLowerCase().includes('document')) {
+        intent = 'listFiles';
+        entities = {};
+      } else if (query.toLowerCase().includes('people') || 
+               query.toLowerCase().includes('person') || 
+               query.toLowerCase().includes('contact') || 
+               query.toLowerCase().includes('find') || 
+               query.toLowerCase().includes('who')) {
+        // Extract name if present (simple extraction)
+        const nameMatch = query.match(/\b(find|who is|about|contact)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b/i);
+        const name = nameMatch ? nameMatch[2] : '';
+        
+        intent = 'findPeople';
+        entities = { 
+          criteria: { 
+            name: name,
+            query: name || query,
+            limit: 5
+          } 
+        };
+      }
+      
+      const result = {
+        intent,
+        entities,
+        confidence: 0.85,
+        query
+      };
+      
+      // Pattern 2: User Activity Logs
+      if (userId) {
+        MonitoringService.info('NLU query processed successfully', {
+          intent,
+          confidence: 0.85,
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }, 'api', null, userId);
+      } else if (sessionId) {
+        MonitoringService.info('NLU query processed with session', {
+          sessionId,
+          intent,
+          confidence: 0.85,
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }, 'api');
+      }
+      
+      return result;
+      
+    } catch (error) {
+      // Pattern 3: Infrastructure Error Logging
+      const mcpError = ErrorService.createError(
+        'api',
+        'Failed to process NLU query',
+        'error',
+        {
+          operation: 'processQuery',
+          error: error.message,
+          stack: error.stack,
+          query: query?.substring(0, 50), // Truncated for privacy
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }
+      );
+      MonitoringService.logError(mcpError);
+      
+      // Pattern 4: User Error Tracking
+      if (userId) {
+        MonitoringService.error('NLU query processing failed', {
+          error: error.message,
+          operation: 'processQuery',
+          timestamp: new Date().toISOString()
+        }, 'api', null, userId);
+      } else if (sessionId) {
+        MonitoringService.error('NLU query processing failed', {
+          sessionId,
+          error: error.message,
+          operation: 'processQuery',
+          timestamp: new Date().toISOString()
+        }, 'api');
+      }
+      
+      // Return fallback result
+      return {
+        intent: 'unknown',
+        entities: {},
+        confidence: 0.0,
+        query,
+        error: true
       };
     }
-    
-    return {
-      intent,
-      entities,
-      confidence: 0.85,
-      query
-    };
   }
 };
 
@@ -86,12 +163,152 @@ const contextService = {
     sessionId: 'mock-session',
     timestamp: new Date().toISOString()
   },
-  updateContext: async (updates) => {
-    Object.assign(contextService.context, updates);
-    return contextService.context;
+  updateContext: async (updates, sessionId, userId) => {
+    const startTime = Date.now();
+    
+    try {
+      // Pattern 1: Development Debug Logs
+      if (process.env.NODE_ENV === 'development') {
+        MonitoringService.debug('Updating context', {
+          updateKeys: Object.keys(updates || {}),
+          sessionId,
+          timestamp: new Date().toISOString(),
+          userId
+        }, 'api');
+      }
+      
+      // Validate updates parameter
+      if (!updates || typeof updates !== 'object') {
+        throw new Error('Invalid updates parameter: must be an object');
+      }
+      
+      // Update context
+      Object.assign(contextService.context, updates);
+      contextService.context.timestamp = new Date().toISOString();
+      
+      // Pattern 2: User Activity Logs
+      if (userId) {
+        MonitoringService.info('Context updated successfully', {
+          updateKeys: Object.keys(updates),
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }, 'api', null, userId);
+      } else if (sessionId) {
+        MonitoringService.info('Context updated with session', {
+          sessionId,
+          updateKeys: Object.keys(updates),
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }, 'api');
+      }
+      
+      return contextService.context;
+      
+    } catch (error) {
+      // Pattern 3: Infrastructure Error Logging
+      const mcpError = ErrorService.createError(
+        'api',
+        'Failed to update context',
+        'error',
+        {
+          operation: 'updateContext',
+          error: error.message,
+          stack: error.stack,
+          updateKeys: updates ? Object.keys(updates) : [],
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }
+      );
+      MonitoringService.logError(mcpError);
+      
+      // Pattern 4: User Error Tracking
+      if (userId) {
+        MonitoringService.error('Context update failed', {
+          error: error.message,
+          operation: 'updateContext',
+          timestamp: new Date().toISOString()
+        }, 'api', null, userId);
+      } else if (sessionId) {
+        MonitoringService.error('Context update failed', {
+          sessionId,
+          error: error.message,
+          operation: 'updateContext',
+          timestamp: new Date().toISOString()
+        }, 'api');
+      }
+      
+      throw error;
+    }
   },
-  getCurrentContext: async () => {
-    return contextService.context;
+  getCurrentContext: async (sessionId, userId) => {
+    const startTime = Date.now();
+    
+    try {
+      // Pattern 1: Development Debug Logs
+      if (process.env.NODE_ENV === 'development') {
+        MonitoringService.debug('Retrieving current context', {
+          sessionId,
+          timestamp: new Date().toISOString(),
+          userId
+        }, 'api');
+      }
+      
+      const context = { ...contextService.context };
+      
+      // Pattern 2: User Activity Logs
+      if (userId) {
+        MonitoringService.info('Context retrieved successfully', {
+          contextKeys: Object.keys(context),
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }, 'api', null, userId);
+      } else if (sessionId) {
+        MonitoringService.info('Context retrieved with session', {
+          sessionId,
+          contextKeys: Object.keys(context),
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }, 'api');
+      }
+      
+      return context;
+      
+    } catch (error) {
+      // Pattern 3: Infrastructure Error Logging
+      const mcpError = ErrorService.createError(
+        'api',
+        'Failed to retrieve context',
+        'error',
+        {
+          operation: 'getCurrentContext',
+          error: error.message,
+          stack: error.stack,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }
+      );
+      MonitoringService.logError(mcpError);
+      
+      // Pattern 4: User Error Tracking
+      if (userId) {
+        MonitoringService.error('Context retrieval failed', {
+          error: error.message,
+          operation: 'getCurrentContext',
+          timestamp: new Date().toISOString()
+        }, 'api', null, userId);
+      } else if (sessionId) {
+        MonitoringService.error('Context retrieval failed', {
+          sessionId,
+          error: error.message,
+          operation: 'getCurrentContext',
+          timestamp: new Date().toISOString()
+        }, 'api');
+      }
+      
+      throw error;
+    }
   }
 };
 

@@ -11,24 +11,57 @@ const MonitoringService = require('../../core/monitoring-service.cjs');
  * @param {object} req - Express request object
  * @param {object} schema - Joi schema to validate against
  * @param {string} endpoint - Endpoint name for error context
+ * @param {object} userContext - User context with userId, deviceId, sessionId
  * @param {object} [additionalContext] - Additional context for validation errors
  * @returns {object} Object with error and value properties
  */
-const validateAndLog = (req, schema, endpoint, additionalContext = {}) => {
+const validateAndLog = (req, schema, endpoint, userContext = {}, additionalContext = {}) => {
+    const { userId, deviceId, sessionId } = userContext;
     const result = schema.validate(req.body);
     
     if (result.error) {
+        // Pattern 3: Infrastructure Error Logging
         const validationError = ErrorService.createError(
-            ErrorService.CATEGORIES.API,
+            'query',
             `${endpoint} validation error`,
-            ErrorService.SEVERITIES.WARNING,
+            'warning',
             { 
                 details: result.error.details,
                 endpoint,
+                userId,
+                deviceId,
+                timestamp: new Date().toISOString(),
                 ...additionalContext
             }
         );
-        // Note: Error service automatically handles logging via events
+        MonitoringService.logError(validationError);
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error(`${endpoint} validation failed`, {
+                error: result.error.details[0]?.message || 'Validation failed',
+                endpoint,
+                timestamp: new Date().toISOString()
+            }, 'query', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error(`${endpoint} validation failed`, {
+                sessionId,
+                error: result.error.details[0]?.message || 'Validation failed',
+                endpoint,
+                timestamp: new Date().toISOString()
+            }, 'query');
+        }
+    } else {
+        // Log successful validation in development
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug(`${endpoint} validation successful`, {
+                endpoint,
+                sessionId,
+                userId,
+                deviceId,
+                timestamp: new Date().toISOString()
+            }, 'query');
+        }
     }
     
     return result;
@@ -50,19 +83,35 @@ module.exports = ({ nluAgent, contextService, errorService }) => ({
      */
     async handleQuery(req, res) {
         const startTime = Date.now();
+        
+        // Extract user context
+        const { userId, deviceId } = req.user || {};
+        const sessionId = req.session?.id;
+        const userContext = { userId, deviceId, sessionId };
+        
         try {
-            // Log request
-            MonitoringService.info(`Processing ${req.method} ${req.path}`, {
-                method: req.method,
-                path: req.path,
-                body: req.body,
-                ip: req.ip
-            }, 'nlu');
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Processing natural language query request', {
+                    method: req.method,
+                    path: req.path,
+                    sessionId,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString(),
+                    userId,
+                    deviceId,
+                    queryLength: req.body?.query?.length || 0
+                }, 'query');
+            }
             
             // Validate request using helper function
-            const { error, value } = validateAndLog(req, querySchema, 'handleQuery');
+            const { error, value } = validateAndLog(req, querySchema, 'handleQuery', userContext);
             if (error) {
-                return res.status(400).json({ error: 'Invalid request', details: error.details });
+                return res.status(400).json({ 
+                    error: 'QUERY_VALIDATION_FAILED', 
+                    error_description: 'Invalid query request',
+                    details: error.details 
+                });
             }
             
             // Try to use the NLU agent if available, otherwise provide mock data
@@ -71,10 +120,16 @@ module.exports = ({ nluAgent, contextService, errorService }) => ({
             
             try {
                 if (typeof nluAgent.processQuery === 'function') {
-                    MonitoringService.info('Processing query with NLU agent', {
-                        query: value.query,
-                        queryLength: value.query.length
-                    }, 'nlu');
+                    // Log NLU processing start
+                    if (process.env.NODE_ENV === 'development') {
+                        MonitoringService.debug('Starting NLU agent processing', {
+                            query: value.query,
+                            queryLength: value.query.length,
+                            sessionId,
+                            userId,
+                            timestamp: new Date().toISOString()
+                        }, 'query');
+                    }
                     
                     // NLU pipeline
                     nluResult = await nluAgent.processQuery({ query: value.query });
@@ -89,10 +144,15 @@ module.exports = ({ nluAgent, contextService, errorService }) => ({
                     }
                 } else {
                     // Provide mock NLU result for testing
-                    MonitoringService.info('Using mock NLU result for query', {
-                        query: value.query,
-                        mockMode: true
-                    }, 'nlu');
+                    if (process.env.NODE_ENV === 'development') {
+                        MonitoringService.debug('Using mock NLU result for query', {
+                            query: value.query,
+                            mockMode: true,
+                            sessionId,
+                            userId,
+                            timestamp: new Date().toISOString()
+                        }, 'query');
+                    }
                     
                     // Simple intent detection based on keywords
                     let intent = 'unknown';
@@ -129,17 +189,38 @@ module.exports = ({ nluAgent, contextService, errorService }) => ({
                     };
                 }
             } catch (nluError) {
-                const error = ErrorService.createError(
-                    ErrorService.CATEGORIES.NLU,
+                // Pattern 3: Infrastructure Error Logging
+                const mcpError = ErrorService.createError(
+                    'query',
                     'Error processing NLU query',
-                    ErrorService.SEVERITIES.ERROR,
+                    'error',
                     { 
                         error: nluError.message, 
                         stack: nluError.stack,
                         operation: 'processQuery',
-                        query: value.query
+                        query: value.query,
+                        userId,
+                        deviceId,
+                        timestamp: new Date().toISOString()
                     }
                 );
+                MonitoringService.logError(mcpError);
+                
+                // Pattern 4: User Error Tracking
+                if (userId) {
+                    MonitoringService.error('NLU query processing failed', {
+                        error: nluError.message,
+                        operation: 'processQuery',
+                        timestamp: new Date().toISOString()
+                    }, 'query', null, userId);
+                } else if (sessionId) {
+                    MonitoringService.error('NLU query processing failed', {
+                        sessionId,
+                        error: nluError.message,
+                        operation: 'processQuery',
+                        timestamp: new Date().toISOString()
+                    }, 'query');
+                }
                 
                 // Provide fallback mock response
                 nluResult = {
@@ -156,36 +237,86 @@ module.exports = ({ nluAgent, contextService, errorService }) => ({
                 };
             }
             
-            // Track performance
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                MonitoringService.info('Natural language query processed successfully', {
+                    intent: nluResult.intent,
+                    confidence: nluResult.confidence,
+                    queryLength: value.query.length,
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'query', null, userId);
+            } else if (sessionId) {
+                MonitoringService.info('Natural language query processed with session', {
+                    sessionId,
+                    intent: nluResult.intent,
+                    confidence: nluResult.confidence,
+                    queryLength: value.query.length,
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'query');
+            }
+            
+            // Track performance metrics
             const duration = Date.now() - startTime;
-            MonitoringService.trackMetric('nlu.handleQuery.duration', duration, {
+            MonitoringService.trackMetric('query.handleQuery.duration', duration, {
                 intent: nluResult.intent,
                 confidence: nluResult.confidence,
                 queryLength: value.query.length,
-                success: true
+                success: true,
+                userId,
+                sessionId
             });
             
             res.json({ response: nluResult, context: ctx });
         } catch (err) {
-            // Track error metrics
-            const duration = Date.now() - startTime;
-            MonitoringService.trackMetric('nlu.handleQuery.error', 1, {
-                errorMessage: err.message,
-                duration,
-                success: false
-            });
-            
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.API,
-                'Error in handleQuery',
-                ErrorService.SEVERITIES.ERROR,
+                'query',
+                'Failed to process natural language query',
+                'error',
                 { 
+                    endpoint: '/api/query',
+                    error: err.message,
                     stack: err.stack,
                     operation: 'handleQuery',
-                    error: err.message
+                    userId,
+                    deviceId,
+                    timestamp: new Date().toISOString()
                 }
             );
-            res.status(500).json({ error: 'Internal error', message: err.message });
+            MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Natural language query processing failed', {
+                    error: err.message,
+                    operation: 'handleQuery',
+                    timestamp: new Date().toISOString()
+                }, 'query', null, userId);
+            } else if (sessionId) {
+                MonitoringService.error('Natural language query processing failed', {
+                    sessionId,
+                    error: err.message,
+                    operation: 'handleQuery',
+                    timestamp: new Date().toISOString()
+                }, 'query');
+            }
+            
+            // Track error metrics
+            const duration = Date.now() - startTime;
+            MonitoringService.trackMetric('query.handleQuery.error', 1, {
+                errorMessage: err.message,
+                duration,
+                success: false,
+                userId,
+                sessionId
+            });
+            
+            res.status(500).json({ 
+                error: 'QUERY_PROCESSING_FAILED', 
+                error_description: 'Failed to process natural language query'
+            });
         }
     }
 });
