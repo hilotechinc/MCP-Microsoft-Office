@@ -99,62 +99,96 @@ class EventService {
      * Subscribe to an event with optional filtering and user context.
      * @param {string} event
      * @param {Function} handler
-     * @param {Object} [options] - { filter, once, userId, deviceId }
+     * @param {Object} [options] - { filter, once, userId, deviceId, sessionId }
      * @returns {Promise<number>} listener ID
      */
     async subscribe(event, handler, options = {}) {
         const startTime = Date.now();
-        const { userId = null, deviceId = null } = options;
+        const { userId = null, deviceId = null, sessionId = null } = options;
         
+        // Pattern 1: Development Debug Logs
         if (process.env.NODE_ENV === 'development') {
-            this._ensureMonitoringService().debug('Event subscription started', {
+            this._ensureMonitoringService().debug('Processing event subscription request', {
                 event,
                 hasFilter: !!options.filter,
                 once: !!options.once,
                 userId,
                 deviceId,
+                sessionId,
                 timestamp: new Date().toISOString()
             }, 'events');
         }
         
         try {
             if (typeof event !== 'string' || !event.trim()) {
+                // Pattern 3: Infrastructure Error Logging
                 const mcpError = ErrorService.createError(
-                    ErrorService.CATEGORIES.SYSTEM,
+                    'events',
                     'Event name must be a non-empty string',
-                    ErrorService.SEVERITIES.WARNING,
+                    'warn',
                     {
                         event,
                         eventType: typeof event,
                         userId,
                         deviceId,
+                        sessionId,
                         timestamp: new Date().toISOString()
-                    },
-                    null,
-                    userId,
-                    deviceId
+                    }
                 );
                 this._ensureMonitoringService().logError(mcpError);
+                
+                // Pattern 4: User Error Tracking
+                if (userId) {
+                    this._ensureMonitoringService().error('Event subscription failed - invalid event name', {
+                        error: 'Event name must be a non-empty string',
+                        event,
+                        timestamp: new Date().toISOString()
+                    }, 'events', null, userId);
+                } else if (sessionId) {
+                    this._ensureMonitoringService().error('Event subscription failed - invalid event name', {
+                        sessionId,
+                        error: 'Event name must be a non-empty string',
+                        event,
+                        timestamp: new Date().toISOString()
+                    }, 'events');
+                }
+                
                 throw mcpError;
             }
             
             if (typeof handler !== 'function') {
+                // Pattern 3: Infrastructure Error Logging
                 const mcpError = ErrorService.createError(
-                    ErrorService.CATEGORIES.SYSTEM,
+                    'events',
                     'Event handler must be a function',
-                    ErrorService.SEVERITIES.WARNING,
+                    'warn',
                     {
                         event,
                         handlerType: typeof handler,
                         userId,
                         deviceId,
+                        sessionId,
                         timestamp: new Date().toISOString()
-                    },
-                    null,
-                    userId,
-                    deviceId
+                    }
                 );
                 this._ensureMonitoringService().logError(mcpError);
+                
+                // Pattern 4: User Error Tracking
+                if (userId) {
+                    this._ensureMonitoringService().error('Event subscription failed - invalid handler', {
+                        error: 'Event handler must be a function',
+                        event,
+                        timestamp: new Date().toISOString()
+                    }, 'events', null, userId);
+                } else if (sessionId) {
+                    this._ensureMonitoringService().error('Event subscription failed - invalid handler', {
+                        sessionId,
+                        error: 'Event handler must be a function',
+                        event,
+                        timestamp: new Date().toISOString()
+                    }, 'events');
+                }
+                
                 throw mcpError;
             }
             
@@ -172,6 +206,27 @@ class EventService {
             });
             
             const executionTime = Date.now() - startTime;
+            
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                this._ensureMonitoringService().info('Event subscription completed successfully', {
+                    event,
+                    listenerId: id,
+                    totalListeners: this._listeners.get(event).length,
+                    duration: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'events', null, userId);
+            } else if (sessionId) {
+                this._ensureMonitoringService().info('Event subscription completed with session', {
+                    sessionId,
+                    event,
+                    listenerId: id,
+                    totalListeners: this._listeners.get(event).length,
+                    duration: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'events');
+            }
+            
             this._ensureMonitoringService().trackMetric('event_subscribe_success', executionTime, {
                 event,
                 listenerId: id,
@@ -179,7 +234,7 @@ class EventService {
                 userId,
                 deviceId,
                 timestamp: new Date().toISOString()
-            }, userId, deviceId);
+            });
             
             // Track memory usage
             this._ensureMonitoringService().trackMetric('event_listeners_count', this._getTotalListenerCount(), {
@@ -187,7 +242,7 @@ class EventService {
                 userId,
                 deviceId,
                 timestamp: new Date().toISOString()
-            }, userId, deviceId);
+            });
             
             return id;
             
@@ -202,35 +257,49 @@ class EventService {
                     userId,
                     deviceId,
                     timestamp: new Date().toISOString()
-                }, userId, deviceId);
+                });
                 throw error;
             }
             
-            // Otherwise, wrap in MCP error
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.SYSTEM,
+                'events',
                 `Event subscription failed: ${error.message}`,
-                ErrorService.SEVERITIES.ERROR,
+                'error',
                 {
                     event,
                     stack: error.stack,
                     userId,
                     deviceId,
+                    sessionId,
                     timestamp: new Date().toISOString()
-                },
-                null,
-                userId,
-                deviceId
+                }
             );
-            
             this._ensureMonitoringService().logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                this._ensureMonitoringService().error('Event subscription failed', {
+                    error: error.message,
+                    event,
+                    timestamp: new Date().toISOString()
+                }, 'events', null, userId);
+            } else if (sessionId) {
+                this._ensureMonitoringService().error('Event subscription failed', {
+                    sessionId,
+                    error: error.message,
+                    event,
+                    timestamp: new Date().toISOString()
+                }, 'events');
+            }
+            
             this._ensureMonitoringService().trackMetric('event_subscribe_failure', executionTime, {
                 event,
                 errorType: error.code || 'unknown',
                 userId,
                 deviceId,
                 timestamp: new Date().toISOString()
-            }, userId, deviceId);
+            });
             
             throw mcpError;
         }
@@ -240,22 +309,24 @@ class EventService {
      * Emit an event (async, all handlers) with optional user context for filtering.
      * @param {string} event
      * @param {any} payload
-     * @param {Object} [options] - { userId, deviceId }
+     * @param {Object} [options] - { userId, deviceId, sessionId }
      * @returns {Promise<void>}
      */
     async emit(event, payload, options = {}) {
         const startTime = Date.now();
-        const { userId = null, deviceId = null } = options;
+        const { userId = null, deviceId = null, sessionId = null } = options;
         
+        // Pattern 1: Development Debug Logs
         if (process.env.NODE_ENV === 'development') {
             try {
                 const monitor = this._ensureMonitoringService();
                 if (monitor && typeof monitor.debug === 'function') {
-                    monitor.debug('Event emission started', {
+                    monitor.debug('Processing event emission request', {
                         event,
                         payloadType: typeof payload,
                         userId,
                         deviceId,
+                        sessionId,
                         timestamp: new Date().toISOString()
                     }, 'events');
                 } else {
@@ -275,7 +346,24 @@ class EventService {
                     userId,
                     deviceId,
                     timestamp: new Date().toISOString()
-                }, userId, deviceId);
+                });
+                
+                // Pattern 2: User Activity Logs (even for no-op)
+                if (userId) {
+                    this._ensureMonitoringService().info('Event emitted with no listeners', {
+                        event,
+                        duration: executionTime,
+                        timestamp: new Date().toISOString()
+                    }, 'events', null, userId);
+                } else if (sessionId) {
+                    this._ensureMonitoringService().info('Event emitted with no listeners', {
+                        sessionId,
+                        event,
+                        duration: executionTime,
+                        timestamp: new Date().toISOString()
+                    }, 'events');
+                }
+                
                 return;
             }
             
@@ -317,10 +405,11 @@ class EventService {
                 } catch (handlerError) {
                     failureCount++;
                     
+                    // Pattern 3: Infrastructure Error Logging
                     const mcpError = ErrorService.createError(
-                        ErrorService.CATEGORIES.SYSTEM,
+                        'events',
                         `Event handler failed for event '${event}': ${handlerError.message}`,
-                        ErrorService.SEVERITIES.ERROR,
+                        'error',
                         {
                             event,
                             listenerId: listener.id,
@@ -328,15 +417,61 @@ class EventService {
                             stack: handlerError.stack,
                             userId: listener.userId,
                             deviceId: listener.deviceId,
+                            sessionId,
                             timestamp: new Date().toISOString()
                         }
                     );
                     
                     this._ensureMonitoringService().logError(mcpError);
+                    
+                    // Pattern 4: User Error Tracking
+                    if (userId) {
+                        this._ensureMonitoringService().error('Event handler execution failed', {
+                            event,
+                            listenerId: listener.id,
+                            error: handlerError.message,
+                            timestamp: new Date().toISOString()
+                        }, 'events', null, userId);
+                    } else if (sessionId) {
+                        this._ensureMonitoringService().error('Event handler execution failed', {
+                            sessionId,
+                            event,
+                            listenerId: listener.id,
+                            error: handlerError.message,
+                            timestamp: new Date().toISOString()
+                        }, 'events');
+                    }
                 }
             }
             
             const executionTime = Date.now() - startTime;
+            
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                this._ensureMonitoringService().info('Event emission completed successfully', {
+                    event,
+                    totalListeners: listeners.length,
+                    successCount,
+                    failureCount,
+                    filteredCount,
+                    userFilteredCount,
+                    duration: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'events', null, userId);
+            } else if (sessionId) {
+                this._ensureMonitoringService().info('Event emission completed with session', {
+                    sessionId,
+                    event,
+                    totalListeners: listeners.length,
+                    successCount,
+                    failureCount,
+                    filteredCount,
+                    userFilteredCount,
+                    duration: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'events');
+            }
+            
             this._ensureMonitoringService().trackMetric('event_emit_success', executionTime, {
                 event,
                 totalListeners: listeners.length,
@@ -347,8 +482,9 @@ class EventService {
                 userId,
                 deviceId,
                 timestamp: new Date().toISOString()
-            }, userId, deviceId);
+            });
             
+            // Pattern 1: Development Debug Logs
             if (process.env.NODE_ENV === 'development') {
                 this._ensureMonitoringService().debug('Event emission completed', {
                     event,
@@ -365,95 +501,223 @@ class EventService {
         } catch (error) {
             const executionTime = Date.now() - startTime;
             
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.SYSTEM,
+                'events',
                 `Event emission failed: ${error.message}`,
-                ErrorService.SEVERITIES.ERROR,
+                'error',
                 {
                     event,
                     stack: error.stack,
                     userId,
                     deviceId,
+                    sessionId,
                     timestamp: new Date().toISOString()
                 }
             );
             
             this._ensureMonitoringService().logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                this._ensureMonitoringService().error('Event emission failed', {
+                    event,
+                    error: error.message,
+                    timestamp: new Date().toISOString()
+                }, 'events', null, userId);
+            } else if (sessionId) {
+                this._ensureMonitoringService().error('Event emission failed', {
+                    sessionId,
+                    event,
+                    error: error.message,
+                    timestamp: new Date().toISOString()
+                }, 'events');
+            }
+            
             this._ensureMonitoringService().trackMetric('event_emit_failure', executionTime, {
                 event,
                 errorType: error.code || 'unknown',
                 userId,
                 deviceId,
                 timestamp: new Date().toISOString()
-            }, userId, deviceId);
+            });
             
             throw mcpError;
         }
     }
 
     /**
-     * Unsubscribe a handler by id.
-     * @param {number} id
-     * @returns {Promise<void>}
+     * Unsubscribe from an event by listener ID.
+     * @param {string} id - Listener ID to remove
+     * @param {Object} [options] - { sessionId }
+     * @returns {Promise<boolean>} - True if found and removed
      */
-    async unsubscribe(id) {
+    async unsubscribe(id, options = {}) {
         const startTime = Date.now();
+        const { sessionId = null } = options;
         
+        // Pattern 1: Development Debug Logs
         if (process.env.NODE_ENV === 'development') {
-            this._ensureMonitoringService().debug('Event unsubscription started', {
-                listenerId: id,
-                timestamp: new Date().toISOString()
-            }, 'events');
+            try {
+                const monitor = this._ensureMonitoringService();
+                if (monitor && typeof monitor.debug === 'function') {
+                    monitor.debug('Processing unsubscribe request', {
+                        listenerId: id,
+                        sessionId,
+                        timestamp: new Date().toISOString()
+                    }, 'events');
+                } else {
+                    console.debug(`[events] Unsubscribe request received: ${id}`);
+                }
+            } catch (logError) {
+                // Silently handle any logging errors
+                console.debug(`[events] Unsubscribe request received: ${id}`);
+            }
         }
         
         try {
             let found = false;
-            let eventName = null;
+            let event = null;
+            let userId = null;
+            let deviceId = null;
             
-            for (const [event, listeners] of this._listeners.entries()) {
-                const idx = listeners.findIndex(l => l.id === id);
-                if (idx !== -1) {
-                    listeners.splice(idx, 1);
-                    eventName = event;
+            // Find and remove the listener
+            for (const [eventName, listeners] of this._listeners.entries()) {
+                const index = listeners.findIndex(listener => listener.id === id);
+                if (index !== -1) {
+                    event = eventName;
+                    userId = listeners[index].userId;
+                    deviceId = listeners[index].deviceId;
+                    listeners.splice(index, 1);
                     found = true;
-                    
-                    if (listeners.length === 0) {
-                        this._listeners.delete(event);
-                    }
                     break;
                 }
             }
             
             const executionTime = Date.now() - startTime;
-            this._ensureMonitoringService().trackMetric('event_unsubscribe_success', executionTime, {
-                listenerId: id,
-                found,
-                event: eventName,
-                timestamp: new Date().toISOString()
-            });
             
-            // Track memory usage
-            this._ensureMonitoringService().trackMetric('event_listeners_count', this._getTotalListenerCount(), {
-                operation: 'unsubscribe',
-                timestamp: new Date().toISOString()
-            });
+            if (found) {
+                this._ensureMonitoringService().trackMetric('event_unsubscribe_success', executionTime, {
+                    listenerId: id,
+                    event,
+                    userId,
+                    deviceId,
+                    timestamp: new Date().toISOString()
+                });
+                
+                // Pattern 2: User Activity Logs
+                if (userId) {
+                    this._ensureMonitoringService().info('Event unsubscribe completed', {
+                        listenerId: id,
+                        event,
+                        duration: executionTime,
+                        timestamp: new Date().toISOString()
+                    }, 'events', null, userId);
+                } else if (sessionId) {
+                    this._ensureMonitoringService().info('Event unsubscribe completed', {
+                        sessionId,
+                        listenerId: id,
+                        event,
+                        duration: executionTime,
+                        timestamp: new Date().toISOString()
+                    }, 'events');
+                }
+                
+                // Pattern 1: Development Debug Logs
+                if (process.env.NODE_ENV === 'development') {
+                    this._ensureMonitoringService().debug('Event unsubscribe successful', {
+                        listenerId: id,
+                        event,
+                        userId,
+                        deviceId,
+                        sessionId,
+                        executionTimeMs: executionTime,
+                        timestamp: new Date().toISOString()
+                    }, 'events');
+                }
+                
+                return true;
+            } else {
+                // Pattern 3: Infrastructure Error Logging
+                const mcpError = ErrorService.createError(
+                    'events',
+                    `Event unsubscribe failed: listener ID '${id}' not found`,
+                    'warn',
+                    {
+                        listenerId: id,
+                        sessionId,
+                        timestamp: new Date().toISOString()
+                    }
+                );
+                
+                this._ensureMonitoringService().logError(mcpError);
+                this._ensureMonitoringService().trackMetric('event_unsubscribe_not_found', executionTime, {
+                    listenerId: id,
+                    timestamp: new Date().toISOString()
+                });
+                
+                // Pattern 4: User Error Tracking
+                if (userId) {
+                    this._ensureMonitoringService().warn('Event unsubscribe failed: listener not found', {
+                        listenerId: id,
+                        timestamp: new Date().toISOString()
+                    }, 'events', null, userId);
+                } else if (sessionId) {
+                    this._ensureMonitoringService().warn('Event unsubscribe failed: listener not found', {
+                        sessionId,
+                        listenerId: id,
+                        timestamp: new Date().toISOString()
+                    }, 'events');
+                }
+                
+                // Pattern 1: Development Debug Logs
+                if (process.env.NODE_ENV === 'development') {
+                    this._ensureMonitoringService().debug('Event unsubscribe failed: listener not found', {
+                        listenerId: id,
+                        sessionId,
+                        executionTimeMs: executionTime,
+                        timestamp: new Date().toISOString()
+                    }, 'events');
+                }
+                
+                return false;
+            }
             
         } catch (error) {
             const executionTime = Date.now() - startTime;
             
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.SYSTEM,
-                `Event unsubscription failed: ${error.message}`,
-                ErrorService.SEVERITIES.ERROR,
+                'events',
+                `Event unsubscribe error: ${error.message}`,
+                'error',
                 {
                     listenerId: id,
+                    sessionId,
                     stack: error.stack,
                     timestamp: new Date().toISOString()
                 }
             );
             
             this._ensureMonitoringService().logError(mcpError);
-            this._ensureMonitoringService().trackMetric('event_unsubscribe_failure', executionTime, {
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                this._ensureMonitoringService().error('Event unsubscribe failed with error', {
+                    listenerId: id,
+                    error: error.message,
+                    timestamp: new Date().toISOString()
+                }, 'events', null, userId);
+            } else if (sessionId) {
+                this._ensureMonitoringService().error('Event unsubscribe failed with error', {
+                    sessionId,
+                    listenerId: id,
+                    error: error.message,
+                    timestamp: new Date().toISOString()
+                }, 'events');
+            }
+            
+            this._ensureMonitoringService().trackMetric('event_unsubscribe_error', executionTime, {
                 listenerId: id,
                 errorType: error.code || 'unknown',
                 timestamp: new Date().toISOString()
@@ -465,53 +729,109 @@ class EventService {
 
     /**
      * Remove all listeners (for test cleanup).
+     * @param {Object} [options] - { userId, sessionId }
      * @returns {Promise<void>}
      */
-    async clear() {
+    async clear(options = {}) {
         const startTime = Date.now();
+        const { userId = null, sessionId = null } = options;
+        
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            try {
+                this._ensureMonitoringService().debug('Processing clear all listeners request', {
+                    userId,
+                    sessionId,
+                    timestamp: new Date().toISOString()
+                }, 'events');
+            } catch (logError) {
+                // Silently handle any logging errors
+                console.debug('[events] Processing clear all listeners request');
+            }
+        }
         
         try {
             const totalListeners = this._getTotalListenerCount();
             const eventCount = this._listeners.size;
             
-            this._ensureMonitoringService().info('Clearing all event listeners', {
-                totalListeners,
-                eventCount,
-                timestamp: new Date().toISOString()
-            }, 'events');
-            
             this._listeners.clear();
             
             const executionTime = Date.now() - startTime;
+            
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                this._ensureMonitoringService().info('All event listeners cleared', {
+                    clearedListeners: totalListeners,
+                    clearedEvents: eventCount,
+                    duration: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'events', null, userId);
+            } else if (sessionId) {
+                this._ensureMonitoringService().info('All event listeners cleared', {
+                    sessionId,
+                    clearedListeners: totalListeners,
+                    clearedEvents: eventCount,
+                    duration: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'events');
+            }
+            
             this._ensureMonitoringService().trackMetric('event_clear_success', executionTime, {
                 clearedListeners: totalListeners,
                 clearedEvents: eventCount,
+                userId,
+                sessionId,
                 timestamp: new Date().toISOString()
             });
             
-            this._ensureMonitoringService().info('All event listeners cleared successfully', {
-                clearedListeners: totalListeners,
-                clearedEvents: eventCount,
-                executionTimeMs: executionTime,
-                timestamp: new Date().toISOString()
-            }, 'events');
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                this._ensureMonitoringService().debug('Event listeners cleared successfully', {
+                    clearedListeners: totalListeners,
+                    clearedEvents: eventCount,
+                    userId,
+                    sessionId,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'events');
+            }
             
         } catch (error) {
             const executionTime = Date.now() - startTime;
             
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.SYSTEM,
+                'events',
                 `Event clear operation failed: ${error.message}`,
-                ErrorService.SEVERITIES.ERROR,
+                'error',
                 {
+                    userId,
+                    sessionId,
                     stack: error.stack,
                     timestamp: new Date().toISOString()
                 }
             );
             
             this._ensureMonitoringService().logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                this._ensureMonitoringService().error('Failed to clear event listeners', {
+                    error: error.message,
+                    timestamp: new Date().toISOString()
+                }, 'events', null, userId);
+            } else if (sessionId) {
+                this._ensureMonitoringService().error('Failed to clear event listeners', {
+                    sessionId,
+                    error: error.message,
+                    timestamp: new Date().toISOString()
+                }, 'events');
+            }
+            
             this._ensureMonitoringService().trackMetric('event_clear_failure', executionTime, {
                 errorType: error.code || 'unknown',
+                userId,
+                sessionId,
                 timestamp: new Date().toISOString()
             });
             

@@ -12,16 +12,28 @@ const MonitoringService = require('./monitoring-service.cjs');
  * Database Migration Manager
  */
 class MigrationManager {
-  constructor(databaseFactory) {
+  constructor(databaseFactory, userId, sessionId) {
     this.databaseFactory = databaseFactory;
     this.migrations = [];
-    this.loadMigrations();
+    this.loadMigrations(userId, sessionId);
   }
 
   /**
    * Load all migration definitions
    */
-  loadMigrations() {
+  loadMigrations(userId, sessionId) {
+    const startTime = Date.now();
+    
+    // Pattern 1: Development Debug Logs
+    if (process.env.NODE_ENV === 'development') {
+      MonitoringService.debug('Loading migration definitions', {
+        sessionId,
+        userId,
+        timestamp: new Date().toISOString()
+      }, 'database');
+    }
+    
+    try {
     // Migration 001: Initial schema
     this.migrations.push({
       version: 1,
@@ -498,16 +510,75 @@ class MigrationManager {
       }
     });
 
-    MonitoringService.info('Loaded database migrations', {
-      migrationCount: this.migrations.length,
-      versions: this.migrations.map(m => m.version)
-    }, 'database');
+    const duration = Date.now() - startTime;
+    
+    // Pattern 2: User Activity Logs
+    if (userId) {
+      MonitoringService.info('Migration definitions loaded successfully', {
+        migrationsLoaded: this.migrations.length,
+        duration,
+        timestamp: new Date().toISOString()
+      }, 'database', null, userId);
+    } else if (sessionId) {
+      MonitoringService.info('Migration definitions loaded with session', {
+        sessionId,
+        migrationsLoaded: this.migrations.length,
+        duration,
+        timestamp: new Date().toISOString()
+      }, 'database');
+    }
+    
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      
+      // Pattern 3: Infrastructure Error Logging
+      const mcpError = ErrorService.createError(
+        'database',
+        'Failed to load migration definitions',
+        'error',
+        {
+          error: error.message,
+          stack: error.stack,
+          duration,
+          timestamp: new Date().toISOString()
+        }
+      );
+      MonitoringService.logError(mcpError);
+      
+      // Pattern 4: User Error Tracking
+      if (userId) {
+        MonitoringService.error('Migration definitions loading failed', {
+          error: error.message,
+          duration,
+          timestamp: new Date().toISOString()
+        }, 'database', null, userId);
+      } else if (sessionId) {
+        MonitoringService.error('Migration definitions loading failed', {
+          sessionId,
+          error: error.message,
+          duration,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
+      
+      throw mcpError;
+    }
   }
 
   /**
    * Get current database version
    */
-  async getCurrentVersion() {
+  async getCurrentVersion(userId, sessionId) {
+    const startTime = Date.now();
+    
+    // Pattern 1: Development Debug Logs
+    if (process.env.NODE_ENV === 'development') {
+      MonitoringService.debug('Getting current database version', {
+        sessionId,
+        userId,
+        timestamp: new Date().toISOString()
+      }, 'database');
+    }
     try {
       const connection = await this.databaseFactory.getConnection();
       
@@ -550,16 +621,59 @@ class MigrationManager {
       await connection.close();
       
       const maxVersion = versionResult[0]?.max_version || 0;
+      const duration = Date.now() - startTime;
+      
+      // Pattern 2: User Activity Logs
+      if (userId) {
+        MonitoringService.info('Current database version retrieved successfully', {
+          currentVersion: maxVersion,
+          duration,
+          timestamp: new Date().toISOString()
+        }, 'database', null, userId);
+      } else if (sessionId) {
+        MonitoringService.info('Current database version retrieved with session', {
+          sessionId,
+          currentVersion: maxVersion,
+          duration,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
+      
       return maxVersion;
 
     } catch (error) {
+      const duration = Date.now() - startTime;
+      
+      // Pattern 3: Infrastructure Error Logging
       const mcpError = ErrorService.createError(
-        ErrorService.CATEGORIES.DATABASE,
-        `Failed to get current migration version: ${error.message}`,
-        ErrorService.SEVERITIES.ERROR,
-        { error: error.stack }
+        'database',
+        'Failed to get current migration version',
+        'error',
+        {
+          error: error.message,
+          stack: error.stack,
+          duration,
+          timestamp: new Date().toISOString()
+        }
       );
       MonitoringService.logError(mcpError);
+      
+      // Pattern 4: User Error Tracking
+      if (userId) {
+        MonitoringService.error('Database version retrieval failed', {
+          error: error.message,
+          duration,
+          timestamp: new Date().toISOString()
+        }, 'database', null, userId);
+      } else if (sessionId) {
+        MonitoringService.error('Database version retrieval failed', {
+          sessionId,
+          error: error.message,
+          duration,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
+      
       throw mcpError;
     }
   }
@@ -567,15 +681,20 @@ class MigrationManager {
   /**
    * Apply a single migration
    */
-  async applyMigration(migration) {
+  async applyMigration(migration, userId, sessionId) {
     const startTime = Date.now();
     
-    MonitoringService.info('Applying migration', {
-      version: migration.version,
-      name: migration.name,
-      description: migration.description,
-      timestamp: new Date().toISOString()
-    }, 'database');
+    // Pattern 1: Development Debug Logs
+    if (process.env.NODE_ENV === 'development') {
+      MonitoringService.debug('Applying database migration', {
+        version: migration.version,
+        name: migration.name,
+        description: migration.description,
+        sessionId,
+        userId,
+        timestamp: new Date().toISOString()
+      }, 'database');
+    }
 
     try {
       const connection = await this.databaseFactory.getConnection();
@@ -608,34 +727,69 @@ class MigrationManager {
         timestamp: new Date().toISOString()
       });
 
-      MonitoringService.info('Migration applied successfully', {
-        version: migration.version,
-        name: migration.name,
-        executionTime,
-        timestamp: new Date().toISOString()
-      }, 'database');
+      // Pattern 2: User Activity Logs
+      if (userId) {
+        MonitoringService.info('Migration applied successfully', {
+          version: migration.version,
+          name: migration.name,
+          executionTime,
+          timestamp: new Date().toISOString()
+        }, 'database', null, userId);
+      } else if (sessionId) {
+        MonitoringService.info('Migration applied successfully with session', {
+          sessionId,
+          version: migration.version,
+          name: migration.name,
+          executionTime,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
 
     } catch (error) {
       const executionTime = Date.now() - startTime;
       
+      // Pattern 3: Infrastructure Error Logging
       const mcpError = ErrorService.createError(
-        ErrorService.CATEGORIES.DATABASE,
-        `Failed to apply migration ${migration.version} (${migration.name}): ${error.message}`,
-        ErrorService.SEVERITIES.CRITICAL,
-        { 
+        'database',
+        `Failed to apply migration ${migration.version} (${migration.name})`,
+        'error',
+        {
           version: migration.version,
           name: migration.name,
-          error: error.stack 
+          error: error.message,
+          stack: error.stack,
+          executionTime,
+          timestamp: new Date().toISOString()
         }
       );
-      
       MonitoringService.logError(mcpError);
+      
       MonitoringService.trackMetric('migration_applied_failure', executionTime, {
         version: migration.version,
         name: migration.name,
         errorType: error.code || 'unknown',
         timestamp: new Date().toISOString()
       });
+      
+      // Pattern 4: User Error Tracking
+      if (userId) {
+        MonitoringService.error('Migration application failed', {
+          version: migration.version,
+          name: migration.name,
+          error: error.message,
+          executionTime,
+          timestamp: new Date().toISOString()
+        }, 'database', null, userId);
+      } else if (sessionId) {
+        MonitoringService.error('Migration application failed', {
+          sessionId,
+          version: migration.version,
+          name: migration.name,
+          error: error.message,
+          executionTime,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
       
       throw mcpError;
     }
@@ -644,45 +798,91 @@ class MigrationManager {
   /**
    * Run all pending migrations
    */
-  async migrate() {
+  async migrate(userId, sessionId) {
     const startTime = Date.now();
     
+    // Pattern 1: Development Debug Logs
+    if (process.env.NODE_ENV === 'development') {
+      MonitoringService.debug('Starting database migration process', {
+        sessionId,
+        userId,
+        timestamp: new Date().toISOString()
+      }, 'database');
+    }
+    
     try {
-      const currentVersion = await this.getCurrentVersion();
+      const currentVersion = await this.getCurrentVersion(userId, sessionId);
       const pendingMigrations = this.migrations.filter(m => m.version > currentVersion);
 
       if (pendingMigrations.length === 0) {
-        MonitoringService.info('No pending migrations', {
-          currentVersion,
-          timestamp: new Date().toISOString()
-        }, 'database');
+        const duration = Date.now() - startTime;
+        
+        // Pattern 2: User Activity Logs
+        if (userId) {
+          MonitoringService.info('No pending migrations found', {
+            currentVersion,
+            duration,
+            timestamp: new Date().toISOString()
+          }, 'database', null, userId);
+        } else if (sessionId) {
+          MonitoringService.info('No pending migrations found with session', {
+            sessionId,
+            currentVersion,
+            duration,
+            timestamp: new Date().toISOString()
+          }, 'database');
+        }
+        
         return { applied: 0, currentVersion };
       }
 
-      MonitoringService.info('Starting database migration', {
-        currentVersion,
-        pendingMigrations: pendingMigrations.length,
-        targetVersion: Math.max(...pendingMigrations.map(m => m.version)),
-        timestamp: new Date().toISOString()
-      }, 'database');
+      // Pattern 2: User Activity Logs
+      if (userId) {
+        MonitoringService.info('Starting database migration', {
+          currentVersion,
+          pendingMigrations: pendingMigrations.length,
+          targetVersion: Math.max(...pendingMigrations.map(m => m.version)),
+          timestamp: new Date().toISOString()
+        }, 'database', null, userId);
+      } else if (sessionId) {
+        MonitoringService.info('Starting database migration with session', {
+          sessionId,
+          currentVersion,
+          pendingMigrations: pendingMigrations.length,
+          targetVersion: Math.max(...pendingMigrations.map(m => m.version)),
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
 
       // Sort migrations by version to ensure proper order
       pendingMigrations.sort((a, b) => a.version - b.version);
 
       for (const migration of pendingMigrations) {
-        await this.applyMigration(migration);
+        await this.applyMigration(migration, userId, sessionId);
       }
 
-      const finalVersion = await this.getCurrentVersion();
+      const finalVersion = await this.getCurrentVersion(userId, sessionId);
       const executionTime = Date.now() - startTime;
 
-      MonitoringService.info('Database migration completed', {
-        previousVersion: currentVersion,
-        currentVersion: finalVersion,
-        migrationsApplied: pendingMigrations.length,
-        executionTime,
-        timestamp: new Date().toISOString()
-      }, 'database');
+      // Pattern 2: User Activity Logs
+      if (userId) {
+        MonitoringService.info('Database migration completed successfully', {
+          previousVersion: currentVersion,
+          currentVersion: finalVersion,
+          migrationsApplied: pendingMigrations.length,
+          executionTime,
+          timestamp: new Date().toISOString()
+        }, 'database', null, userId);
+      } else if (sessionId) {
+        MonitoringService.info('Database migration completed successfully with session', {
+          sessionId,
+          previousVersion: currentVersion,
+          currentVersion: finalVersion,
+          migrationsApplied: pendingMigrations.length,
+          executionTime,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
 
       return { 
         applied: pendingMigrations.length, 
@@ -693,18 +893,40 @@ class MigrationManager {
     } catch (error) {
       const executionTime = Date.now() - startTime;
       
+      // Pattern 3: Infrastructure Error Logging
       const mcpError = ErrorService.createError(
-        ErrorService.CATEGORIES.DATABASE,
-        `Database migration failed: ${error.message}`,
-        ErrorService.SEVERITIES.CRITICAL,
-        { error: error.stack }
+        'database',
+        'Database migration process failed',
+        'error',
+        {
+          error: error.message,
+          stack: error.stack,
+          executionTime,
+          timestamp: new Date().toISOString()
+        }
       );
-      
       MonitoringService.logError(mcpError);
+      
       MonitoringService.trackMetric('migration_failed', executionTime, {
         errorType: error.code || 'unknown',
         timestamp: new Date().toISOString()
       });
+      
+      // Pattern 4: User Error Tracking
+      if (userId) {
+        MonitoringService.error('Database migration process failed', {
+          error: error.message,
+          executionTime,
+          timestamp: new Date().toISOString()
+        }, 'database', null, userId);
+      } else if (sessionId) {
+        MonitoringService.error('Database migration process failed', {
+          sessionId,
+          error: error.message,
+          executionTime,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
       
       throw mcpError;
     }
@@ -713,14 +935,27 @@ class MigrationManager {
   /**
    * Get migration status
    */
-  async getStatus() {
+  async getStatus(userId, sessionId) {
+    const startTime = Date.now();
+    
+    // Pattern 1: Development Debug Logs
+    if (process.env.NODE_ENV === 'development') {
+      MonitoringService.debug('Getting migration status', {
+        sessionId,
+        userId,
+        timestamp: new Date().toISOString()
+      }, 'database');
+    }
+    
     try {
-      const currentVersion = await this.getCurrentVersion();
+      const currentVersion = await this.getCurrentVersion(userId, sessionId);
       const totalMigrations = this.migrations.length;
       const maxVersion = Math.max(...this.migrations.map(m => m.version));
       const pendingMigrations = this.migrations.filter(m => m.version > currentVersion);
 
-      return {
+      const duration = Date.now() - startTime;
+      
+      const statusResult = {
         currentVersion,
         maxVersion,
         totalMigrations,
@@ -733,15 +968,64 @@ class MigrationManager {
           applied: m.version <= currentVersion
         }))
       };
+      
+      // Pattern 2: User Activity Logs
+      if (userId) {
+        MonitoringService.info('Migration status retrieved successfully', {
+          currentVersion,
+          totalMigrations,
+          pendingMigrations: pendingMigrations.length,
+          upToDate: pendingMigrations.length === 0,
+          duration,
+          timestamp: new Date().toISOString()
+        }, 'database', null, userId);
+      } else if (sessionId) {
+        MonitoringService.info('Migration status retrieved successfully with session', {
+          sessionId,
+          currentVersion,
+          totalMigrations,
+          pendingMigrations: pendingMigrations.length,
+          upToDate: pendingMigrations.length === 0,
+          duration,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
+      
+      return statusResult;
 
     } catch (error) {
+      const duration = Date.now() - startTime;
+      
+      // Pattern 3: Infrastructure Error Logging
       const mcpError = ErrorService.createError(
-        ErrorService.CATEGORIES.DATABASE,
-        `Failed to get migration status: ${error.message}`,
-        ErrorService.SEVERITIES.ERROR,
-        { error: error.stack }
+        'database',
+        'Failed to get migration status',
+        'error',
+        {
+          error: error.message,
+          stack: error.stack,
+          duration,
+          timestamp: new Date().toISOString()
+        }
       );
       MonitoringService.logError(mcpError);
+      
+      // Pattern 4: User Error Tracking
+      if (userId) {
+        MonitoringService.error('Migration status retrieval failed', {
+          error: error.message,
+          duration,
+          timestamp: new Date().toISOString()
+        }, 'database', null, userId);
+      } else if (sessionId) {
+        MonitoringService.error('Migration status retrieval failed', {
+          sessionId,
+          error: error.message,
+          duration,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
+      
       throw mcpError;
     }
   }

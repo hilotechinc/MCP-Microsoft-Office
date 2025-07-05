@@ -24,20 +24,97 @@ class DatabaseConnection {
     this.connection = connection;
   }
 
-  async query(sql, params = []) {
-    switch (this.type) {
-      case 'sqlite':
-        return this.querySQLite(sql, params);
-      case 'postgresql':
-        return this.queryPostgreSQL(sql, params);
-      case 'mysql':
-        return this.queryMySQL(sql, params);
-      default:
-        throw new Error(`Unsupported database type: ${this.type}`);
+  async query(sql, params = [], userId, sessionId) {
+    const startTime = Date.now();
+    
+    try {
+      // Pattern 1: Development Debug Logs
+      if (process.env.NODE_ENV === 'development') {
+        MonitoringService.debug('Executing database query', {
+          dbType: this.type,
+          sqlPreview: sql.substring(0, 100) + (sql.length > 100 ? '...' : ''),
+          paramCount: params.length,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
+      
+      let result;
+      switch (this.type) {
+        case 'sqlite':
+          result = await this.querySQLite(sql, params, userId, sessionId);
+          break;
+        case 'postgresql':
+          result = await this.queryPostgreSQL(sql, params, userId, sessionId);
+          break;
+        case 'mysql':
+          result = await this.queryMySQL(sql, params, userId, sessionId);
+          break;
+        default:
+          throw new Error(`Unsupported database type: ${this.type}`);
+      }
+      
+      // Pattern 2: User Activity Logs
+      if (userId) {
+        MonitoringService.info('Database query executed successfully', {
+          dbType: this.type,
+          duration: Date.now() - startTime,
+          resultCount: Array.isArray(result) ? result.length : (result?.changes || 0),
+          timestamp: new Date().toISOString()
+        }, 'database', null, userId);
+      } else if (sessionId) {
+        MonitoringService.info('Database query executed with session', {
+          sessionId,
+          dbType: this.type,
+          duration: Date.now() - startTime,
+          resultCount: Array.isArray(result) ? result.length : (result?.changes || 0),
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
+      
+      return result;
+      
+    } catch (error) {
+      // Pattern 3: Infrastructure Error Logging
+      const mcpError = ErrorService.createError(
+        'database',
+        `Database query failed: ${error.message}`,
+        'error',
+        {
+          dbType: this.type,
+          sqlPreview: sql.substring(0, 100) + (sql.length > 100 ? '...' : ''),
+          paramCount: params.length,
+          error: error.message,
+          stack: error.stack,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }
+      );
+      MonitoringService.logError(mcpError);
+      
+      // Pattern 4: User Error Tracking
+      if (userId) {
+        MonitoringService.error('Database query execution failed', {
+          error: error.message,
+          dbType: this.type,
+          timestamp: new Date().toISOString()
+        }, 'database', null, userId);
+      } else if (sessionId) {
+        MonitoringService.error('Database query execution failed', {
+          sessionId,
+          error: error.message,
+          dbType: this.type,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
+      
+      throw mcpError;
     }
   }
 
-  async querySQLite(sql, params) {
+  async querySQLite(sql, params, userId, sessionId) {
     return new Promise((resolve, reject) => {
       if (sql.toLowerCase().startsWith('select') || sql.toLowerCase().startsWith('pragma')) {
         this.connection.all(sql, params, (err, rows) => {
@@ -53,7 +130,7 @@ class DatabaseConnection {
     });
   }
 
-  async queryPostgreSQL(sql, params) {
+  async queryPostgreSQL(sql, params, userId, sessionId) {
     // Convert SQLite-style ? placeholders to PostgreSQL $1, $2, etc.
     let pgSql = sql;
     let pgParams = params;
@@ -67,7 +144,7 @@ class DatabaseConnection {
     return result.rows;
   }
 
-  async queryMySQL(sql, params) {
+  async queryMySQL(sql, params, userId, sessionId) {
     const [rows] = await this.connection.execute(sql, params);
     return rows;
   }
@@ -106,37 +183,105 @@ class DatabaseFactory {
   /**
    * Initialize the database factory with configuration
    */
-  async init(config) {
-    this.config = config;
+  async init(config, userId, sessionId) {
+    const startTime = Date.now();
     
-    MonitoringService.info('Initializing database factory', {
-      dbType: config.DB_TYPE,
-      timestamp: new Date().toISOString()
-    }, 'database');
+    try {
+      // Pattern 1: Development Debug Logs
+      if (process.env.NODE_ENV === 'development') {
+        MonitoringService.debug('Initializing database factory', {
+          dbType: config.DB_TYPE,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
+      
+      this.config = config;
 
-    switch (config.DB_TYPE) {
-      case 'sqlite':
-        await this.initSQLite();
-        break;
-      case 'postgresql':
-        await this.initPostgreSQL();
-        break;
-      case 'mysql':
-        await this.initMySQL();
-        break;
-      default:
-        throw new Error(`Unsupported database type: ${config.DB_TYPE}`);
+      switch (config.DB_TYPE) {
+        case 'sqlite':
+          await this.initSQLite(userId, sessionId);
+          break;
+        case 'postgresql':
+          await this.initPostgreSQL(userId, sessionId);
+          break;
+        case 'mysql':
+          await this.initMySQL(userId, sessionId);
+          break;
+        default:
+          throw new Error(`Unsupported database type: ${config.DB_TYPE}`);
+      }
+
+      this.initialized = true;
+      
+      // Pattern 2: User Activity Logs
+      if (userId) {
+        MonitoringService.info('Database factory initialized successfully', {
+          dbType: config.DB_TYPE,
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }, 'database', null, userId);
+      } else if (sessionId) {
+        MonitoringService.info('Database factory initialized with session', {
+          sessionId,
+          dbType: config.DB_TYPE,
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
+      
+    } catch (error) {
+      // Pattern 3: Infrastructure Error Logging
+      const mcpError = ErrorService.createError(
+        'database',
+        `Failed to initialize database factory: ${error.message}`,
+        'error',
+        {
+          dbType: config.DB_TYPE,
+          error: error.message,
+          stack: error.stack,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }
+      );
+      MonitoringService.logError(mcpError);
+      
+      // Pattern 4: User Error Tracking
+      if (userId) {
+        MonitoringService.error('Database factory initialization failed', {
+          error: error.message,
+          dbType: config.DB_TYPE,
+          timestamp: new Date().toISOString()
+        }, 'database', null, userId);
+      } else if (sessionId) {
+        MonitoringService.error('Database factory initialization failed', {
+          sessionId,
+          error: error.message,
+          dbType: config.DB_TYPE,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
+      
+      throw mcpError;
     }
-
-    this.initialized = true;
-    MonitoringService.info('Database factory initialized successfully', {
-      dbType: config.DB_TYPE,
-      timestamp: new Date().toISOString()
-    }, 'database');
   }
 
-  async initSQLite() {
+  async initSQLite(userId, sessionId) {
+    const startTime = Date.now();
+    
     try {
+      // Pattern 1: Development Debug Logs
+      if (process.env.NODE_ENV === 'development') {
+        MonitoringService.debug('Initializing SQLite database', {
+          dbPath: this.config.DB_PATH,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
+      
       sqlite3 = require('sqlite3').verbose();
       
       // Ensure data directory exists
@@ -151,25 +296,75 @@ class DatabaseFactory {
         testDb.close((err) => err ? reject(err) : resolve());
       });
 
-      MonitoringService.info('SQLite database initialized', {
-        dbPath: this.config.DB_PATH,
-        timestamp: new Date().toISOString()
-      }, 'database');
+      // Pattern 2: User Activity Logs
+      if (userId) {
+        MonitoringService.info('SQLite database initialized successfully', {
+          dbPath: this.config.DB_PATH,
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }, 'database', null, userId);
+      } else if (sessionId) {
+        MonitoringService.info('SQLite database initialized with session', {
+          sessionId,
+          dbPath: this.config.DB_PATH,
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
 
     } catch (error) {
+      // Pattern 3: Infrastructure Error Logging
       const mcpError = ErrorService.createError(
-        ErrorService.CATEGORIES.DATABASE,
+        'database',
         `Failed to initialize SQLite: ${error.message}`,
-        ErrorService.SEVERITIES.CRITICAL,
-        { error: error.stack }
+        'error',
+        {
+          dbPath: this.config.DB_PATH,
+          error: error.message,
+          stack: error.stack,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }
       );
       MonitoringService.logError(mcpError);
+      
+      // Pattern 4: User Error Tracking
+      if (userId) {
+        MonitoringService.error('SQLite database initialization failed', {
+          error: error.message,
+          dbPath: this.config.DB_PATH,
+          timestamp: new Date().toISOString()
+        }, 'database', null, userId);
+      } else if (sessionId) {
+        MonitoringService.error('SQLite database initialization failed', {
+          sessionId,
+          error: error.message,
+          dbPath: this.config.DB_PATH,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
+      
       throw mcpError;
     }
   }
 
-  async initPostgreSQL() {
+  async initPostgreSQL(userId, sessionId) {
+    const startTime = Date.now();
+    
     try {
+      // Pattern 1: Development Debug Logs
+      if (process.env.NODE_ENV === 'development') {
+        MonitoringService.debug('Initializing PostgreSQL database', {
+          host: this.config.DB_HOST,
+          database: this.config.DB_NAME,
+          port: this.config.DB_PORT,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
+      
       const { Pool } = require('pg');
       
       pgPool = new Pool({
@@ -188,27 +383,83 @@ class DatabaseFactory {
       await client.query('SELECT NOW()');
       client.release();
 
-      MonitoringService.info('PostgreSQL connection pool initialized', {
-        host: this.config.DB_HOST,
-        database: this.config.DB_NAME,
-        maxConnections: this.config.DB_POOL_MAX || 20,
-        timestamp: new Date().toISOString()
-      }, 'database');
+      // Pattern 2: User Activity Logs
+      if (userId) {
+        MonitoringService.info('PostgreSQL connection pool initialized successfully', {
+          host: this.config.DB_HOST,
+          database: this.config.DB_NAME,
+          maxConnections: this.config.DB_POOL_MAX || 20,
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }, 'database', null, userId);
+      } else if (sessionId) {
+        MonitoringService.info('PostgreSQL connection pool initialized with session', {
+          sessionId,
+          host: this.config.DB_HOST,
+          database: this.config.DB_NAME,
+          maxConnections: this.config.DB_POOL_MAX || 20,
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
 
     } catch (error) {
+      // Pattern 3: Infrastructure Error Logging
       const mcpError = ErrorService.createError(
-        ErrorService.CATEGORIES.DATABASE,
+        'database',
         `Failed to initialize PostgreSQL: ${error.message}`,
-        ErrorService.SEVERITIES.CRITICAL,
-        { error: error.stack }
+        'error',
+        {
+          host: this.config.DB_HOST,
+          database: this.config.DB_NAME,
+          port: this.config.DB_PORT,
+          error: error.message,
+          stack: error.stack,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }
       );
       MonitoringService.logError(mcpError);
+      
+      // Pattern 4: User Error Tracking
+      if (userId) {
+        MonitoringService.error('PostgreSQL database initialization failed', {
+          error: error.message,
+          host: this.config.DB_HOST,
+          database: this.config.DB_NAME,
+          timestamp: new Date().toISOString()
+        }, 'database', null, userId);
+      } else if (sessionId) {
+        MonitoringService.error('PostgreSQL database initialization failed', {
+          sessionId,
+          error: error.message,
+          host: this.config.DB_HOST,
+          database: this.config.DB_NAME,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
+      
       throw mcpError;
     }
   }
 
-  async initMySQL() {
+  async initMySQL(userId, sessionId) {
+    const startTime = Date.now();
+    
     try {
+      // Pattern 1: Development Debug Logs
+      if (process.env.NODE_ENV === 'development') {
+        MonitoringService.debug('Initializing MySQL database', {
+          host: this.config.DB_HOST,
+          database: this.config.DB_NAME,
+          port: this.config.DB_PORT,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
+      
       mysql2 = require('mysql2/promise');
       
       mysqlPool = mysql2.createPool({
@@ -227,21 +478,63 @@ class DatabaseFactory {
       await connection.query('SELECT 1');
       connection.release();
 
-      MonitoringService.info('MySQL connection pool initialized', {
-        host: this.config.DB_HOST,
-        database: this.config.DB_NAME,
-        connectionLimit: this.config.DB_POOL_MAX || 20,
-        timestamp: new Date().toISOString()
-      }, 'database');
+      // Pattern 2: User Activity Logs
+      if (userId) {
+        MonitoringService.info('MySQL connection pool initialized successfully', {
+          host: this.config.DB_HOST,
+          database: this.config.DB_NAME,
+          connectionLimit: this.config.DB_POOL_MAX || 20,
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }, 'database', null, userId);
+      } else if (sessionId) {
+        MonitoringService.info('MySQL connection pool initialized with session', {
+          sessionId,
+          host: this.config.DB_HOST,
+          database: this.config.DB_NAME,
+          connectionLimit: this.config.DB_POOL_MAX || 20,
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
 
     } catch (error) {
+      // Pattern 3: Infrastructure Error Logging
       const mcpError = ErrorService.createError(
-        ErrorService.CATEGORIES.DATABASE,
+        'database',
         `Failed to initialize MySQL: ${error.message}`,
-        ErrorService.SEVERITIES.CRITICAL,
-        { error: error.stack }
+        'error',
+        {
+          host: this.config.DB_HOST,
+          database: this.config.DB_NAME,
+          port: this.config.DB_PORT,
+          error: error.message,
+          stack: error.stack,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }
       );
       MonitoringService.logError(mcpError);
+      
+      // Pattern 4: User Error Tracking
+      if (userId) {
+        MonitoringService.error('MySQL database initialization failed', {
+          error: error.message,
+          host: this.config.DB_HOST,
+          database: this.config.DB_NAME,
+          timestamp: new Date().toISOString()
+        }, 'database', null, userId);
+      } else if (sessionId) {
+        MonitoringService.error('MySQL database initialization failed', {
+          sessionId,
+          error: error.message,
+          host: this.config.DB_HOST,
+          database: this.config.DB_NAME,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
+      
       throw mcpError;
     }
   }
@@ -249,7 +542,7 @@ class DatabaseFactory {
   /**
    * Get a database connection
    */
-  async getConnection() {
+  async getConnection(userId, sessionId) {
     if (!this.initialized) {
       throw new Error('Database factory not initialized');
     }
@@ -257,6 +550,16 @@ class DatabaseFactory {
     const startTime = Date.now();
 
     try {
+      // Pattern 1: Development Debug Logs
+      if (process.env.NODE_ENV === 'development') {
+        MonitoringService.debug('Acquiring database connection', {
+          dbType: this.config.DB_TYPE,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
+      
       let connection;
 
       switch (this.config.DB_TYPE) {
@@ -276,21 +579,44 @@ class DatabaseFactory {
       const executionTime = Date.now() - startTime;
       MonitoringService.trackMetric('database_connection_acquired', executionTime, {
         dbType: this.config.DB_TYPE,
+        userId,
+        sessionId,
         timestamp: new Date().toISOString()
       });
+
+      // Pattern 2: User Activity Logs
+      if (userId) {
+        MonitoringService.info('Database connection acquired successfully', {
+          dbType: this.config.DB_TYPE,
+          duration: executionTime,
+          timestamp: new Date().toISOString()
+        }, 'database', null, userId);
+      } else if (sessionId) {
+        MonitoringService.info('Database connection acquired with session', {
+          sessionId,
+          dbType: this.config.DB_TYPE,
+          duration: executionTime,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
 
       return new DatabaseConnection(this.config.DB_TYPE, connection);
 
     } catch (error) {
       const executionTime = Date.now() - startTime;
       
+      // Pattern 3: Infrastructure Error Logging
       const mcpError = ErrorService.createError(
-        ErrorService.CATEGORIES.DATABASE,
+        'database',
         `Failed to get database connection: ${error.message}`,
-        ErrorService.SEVERITIES.ERROR,
+        'error',
         { 
           dbType: this.config.DB_TYPE,
-          error: error.stack 
+          error: error.message,
+          stack: error.stack,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
         }
       );
       
@@ -298,8 +624,26 @@ class DatabaseFactory {
       MonitoringService.trackMetric('database_connection_failed', executionTime, {
         dbType: this.config.DB_TYPE,
         errorType: error.code || 'unknown',
+        userId,
+        sessionId,
         timestamp: new Date().toISOString()
       });
+      
+      // Pattern 4: User Error Tracking
+      if (userId) {
+        MonitoringService.error('Database connection acquisition failed', {
+          error: error.message,
+          dbType: this.config.DB_TYPE,
+          timestamp: new Date().toISOString()
+        }, 'database', null, userId);
+      } else if (sessionId) {
+        MonitoringService.error('Database connection acquisition failed', {
+          sessionId,
+          error: error.message,
+          dbType: this.config.DB_TYPE,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
       
       throw mcpError;
     }
@@ -308,8 +652,20 @@ class DatabaseFactory {
   /**
    * Close all database connections and pools
    */
-  async close() {
+  async close(userId, sessionId) {
+    const startTime = Date.now();
+    
     try {
+      // Pattern 1: Development Debug Logs
+      if (process.env.NODE_ENV === 'development') {
+        MonitoringService.debug('Closing database factory', {
+          dbType: this.config?.DB_TYPE,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
+      
       if (pgPool) {
         await pgPool.end();
         pgPool = null;
@@ -322,19 +678,55 @@ class DatabaseFactory {
 
       this.initialized = false;
       
-      MonitoringService.info('Database factory closed', {
-        dbType: this.config?.DB_TYPE,
-        timestamp: new Date().toISOString()
-      }, 'database');
+      // Pattern 2: User Activity Logs
+      if (userId) {
+        MonitoringService.info('Database factory closed successfully', {
+          dbType: this.config?.DB_TYPE,
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }, 'database', null, userId);
+      } else if (sessionId) {
+        MonitoringService.info('Database factory closed with session', {
+          sessionId,
+          dbType: this.config?.DB_TYPE,
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
 
     } catch (error) {
+      // Pattern 3: Infrastructure Error Logging
       const mcpError = ErrorService.createError(
-        ErrorService.CATEGORIES.DATABASE,
+        'database',
         `Failed to close database factory: ${error.message}`,
-        ErrorService.SEVERITIES.ERROR,
-        { error: error.stack }
+        'error',
+        {
+          dbType: this.config?.DB_TYPE,
+          error: error.message,
+          stack: error.stack,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }
       );
       MonitoringService.logError(mcpError);
+      
+      // Pattern 4: User Error Tracking
+      if (userId) {
+        MonitoringService.error('Database factory close failed', {
+          error: error.message,
+          dbType: this.config?.DB_TYPE,
+          timestamp: new Date().toISOString()
+        }, 'database', null, userId);
+      } else if (sessionId) {
+        MonitoringService.error('Database factory close failed', {
+          sessionId,
+          error: error.message,
+          dbType: this.config?.DB_TYPE,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
+      
       throw mcpError;
     }
   }
@@ -342,13 +734,40 @@ class DatabaseFactory {
   /**
    * Get database health status
    */
-  async getHealthStatus() {
+  async getHealthStatus(userId, sessionId) {
+    const startTime = Date.now();
+    
+    // Pattern 1: Development Debug Logs
+    if (process.env.NODE_ENV === 'development') {
+      MonitoringService.debug('Checking database health status', {
+        dbType: this.config?.DB_TYPE,
+        initialized: this.initialized,
+        userId,
+        sessionId,
+        timestamp: new Date().toISOString()
+      }, 'database');
+    }
+    
     if (!this.initialized) {
+      // Pattern 4: User Error Tracking for not initialized
+      if (userId) {
+        MonitoringService.error('Database health check failed - not initialized', {
+          status: 'not_initialized',
+          timestamp: new Date().toISOString()
+        }, 'database', null, userId);
+      } else if (sessionId) {
+        MonitoringService.error('Database health check failed - not initialized', {
+          sessionId,
+          status: 'not_initialized',
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
+      
       return { status: 'not_initialized', healthy: false };
     }
 
     try {
-      const connection = await this.getConnection();
+      const connection = await this.getConnection(userId, sessionId);
       
       // Simple health check query
       switch (this.config.DB_TYPE) {
@@ -365,14 +784,67 @@ class DatabaseFactory {
       
       await connection.close();
       
-      return {
+      const healthStatus = {
         status: 'healthy',
         healthy: true,
         dbType: this.config.DB_TYPE,
+        duration: Date.now() - startTime,
         timestamp: new Date().toISOString()
       };
+      
+      // Pattern 2: User Activity Logs
+      if (userId) {
+        MonitoringService.info('Database health check completed successfully', {
+          status: 'healthy',
+          dbType: this.config.DB_TYPE,
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }, 'database', null, userId);
+      } else if (sessionId) {
+        MonitoringService.info('Database health check completed with session', {
+          sessionId,
+          status: 'healthy',
+          dbType: this.config.DB_TYPE,
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
+      
+      return healthStatus;
 
     } catch (error) {
+      // Pattern 3: Infrastructure Error Logging
+      const mcpError = ErrorService.createError(
+        'database',
+        `Database health check failed: ${error.message}`,
+        'error',
+        {
+          dbType: this.config.DB_TYPE,
+          error: error.message,
+          stack: error.stack,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }
+      );
+      MonitoringService.logError(mcpError);
+      
+      // Pattern 4: User Error Tracking
+      if (userId) {
+        MonitoringService.error('Database health check failed', {
+          error: error.message,
+          dbType: this.config.DB_TYPE,
+          timestamp: new Date().toISOString()
+        }, 'database', null, userId);
+      } else if (sessionId) {
+        MonitoringService.error('Database health check failed', {
+          sessionId,
+          error: error.message,
+          dbType: this.config.DB_TYPE,
+          timestamp: new Date().toISOString()
+        }, 'database');
+      }
+      
       return {
         status: 'unhealthy',
         healthy: false,
