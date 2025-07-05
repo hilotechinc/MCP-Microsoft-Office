@@ -27,23 +27,72 @@ class BackupManager {
   /**
    * Ensure backup directory exists
    */
-  ensureBackupDirectory() {
+  ensureBackupDirectory(userId, sessionId) {
+    const startTime = Date.now();
+    
     try {
+      // Pattern 1: Development Debug Logs
+      if (process.env.NODE_ENV === 'development') {
+        MonitoringService.debug('Ensuring backup directory exists', {
+          backupDir: this.backupDir,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }, 'backup');
+      }
+      
       if (!fs.existsSync(this.backupDir)) {
         fs.mkdirSync(this.backupDir, { recursive: true });
-        MonitoringService.info('Created backup directory', {
+        
+        // Pattern 2: User Activity Logs
+        if (userId) {
+          MonitoringService.info('Created backup directory', {
+            backupDir: this.backupDir,
+            duration: Date.now() - startTime,
+            timestamp: new Date().toISOString()
+          }, 'backup', null, userId);
+        } else if (sessionId) {
+          MonitoringService.info('Created backup directory with session', {
+            sessionId,
+            backupDir: this.backupDir,
+            duration: Date.now() - startTime,
+            timestamp: new Date().toISOString()
+          }, 'backup');
+        }
+      }
+    } catch (error) {
+      // Pattern 3: Infrastructure Error Logging
+      const mcpError = ErrorService.createError(
+        'backup',
+        `Failed to create backup directory: ${error.message}`,
+        'error',
+        { 
+          backupDir: this.backupDir, 
+          error: error.message,
+          stack: error.stack,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }
+      );
+      MonitoringService.logError(mcpError);
+      
+      // Pattern 4: User Error Tracking
+      if (userId) {
+        MonitoringService.error('Failed to create backup directory', {
+          error: error.message,
+          backupDir: this.backupDir,
+          timestamp: new Date().toISOString()
+        }, 'backup', null, userId);
+      } else if (sessionId) {
+        MonitoringService.error('Failed to create backup directory', {
+          sessionId,
+          error: error.message,
           backupDir: this.backupDir,
           timestamp: new Date().toISOString()
         }, 'backup');
       }
-    } catch (error) {
-      const mcpError = ErrorService.createError(
-        ErrorService.CATEGORIES.SYSTEM,
-        `Failed to create backup directory: ${error.message}`,
-        ErrorService.SEVERITIES.ERROR,
-        { backupDir: this.backupDir, error: error.stack }
-      );
-      MonitoringService.logError(mcpError);
+      
       throw mcpError;
     }
   }
@@ -51,21 +100,103 @@ class BackupManager {
   /**
    * Generate backup filename
    */
-  generateBackupFilename(type = 'full') {
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const dbType = this.config.DB_TYPE;
-    return `mcp-backup-${dbType}-${type}-${timestamp}.sql`;
+  generateBackupFilename(type = 'full', userId, sessionId) {
+    try {
+      // Pattern 1: Development Debug Logs
+      if (process.env.NODE_ENV === 'development') {
+        MonitoringService.debug('Generating backup filename', {
+          type,
+          dbType: this.config.DB_TYPE,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }, 'backup');
+      }
+      
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const dbType = this.config.DB_TYPE;
+      const filename = `mcp-backup-${dbType}-${type}-${timestamp}.sql`;
+      
+      // Pattern 2: User Activity Logs (for successful generation)
+      if (userId) {
+        MonitoringService.info('Generated backup filename', {
+          filename,
+          type,
+          dbType,
+          timestamp: new Date().toISOString()
+        }, 'backup', null, userId);
+      } else if (sessionId) {
+        MonitoringService.info('Generated backup filename with session', {
+          sessionId,
+          filename,
+          type,
+          dbType,
+          timestamp: new Date().toISOString()
+        }, 'backup');
+      }
+      
+      return filename;
+      
+    } catch (error) {
+      // Pattern 3: Infrastructure Error Logging
+      const mcpError = ErrorService.createError(
+        'backup',
+        `Failed to generate backup filename: ${error.message}`,
+        'error',
+        { 
+          type,
+          dbType: this.config.DB_TYPE,
+          error: error.message,
+          stack: error.stack,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }
+      );
+      MonitoringService.logError(mcpError);
+      
+      // Pattern 4: User Error Tracking
+      if (userId) {
+        MonitoringService.error('Failed to generate backup filename', {
+          error: error.message,
+          type,
+          timestamp: new Date().toISOString()
+        }, 'backup', null, userId);
+      } else if (sessionId) {
+        MonitoringService.error('Failed to generate backup filename', {
+          sessionId,
+          error: error.message,
+          type,
+          timestamp: new Date().toISOString()
+        }, 'backup');
+      }
+      
+      throw mcpError;
+    }
   }
 
   /**
    * Create SQLite backup
    */
-  async backupSQLite() {
+  async backupSQLite(userId, sessionId) {
     const startTime = Date.now();
-    const backupFilename = this.generateBackupFilename();
-    const backupPath = path.join(this.backupDir, backupFilename);
-
+    
     try {
+      // Pattern 1: Development Debug Logs
+      if (process.env.NODE_ENV === 'development') {
+        MonitoringService.debug('Starting SQLite backup process', {
+          dbType: 'sqlite',
+          sourcePath: this.config.DB_PATH,
+          backupDir: this.backupDir,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }, 'backup');
+      }
+      
+      const backupFilename = this.generateBackupFilename('full', userId, sessionId);
+      const backupPath = path.join(this.backupDir, backupFilename);
+
       // For SQLite, we can simply copy the database file
       const sourcePath = this.config.DB_PATH;
       
@@ -137,6 +268,26 @@ class BackupManager {
         filename: backupFilename,
         timestamp: new Date().toISOString()
       });
+      
+      // Pattern 2: User Activity Logs
+      if (userId) {
+        MonitoringService.info('SQLite backup completed successfully', {
+          filename: backupFilename,
+          backupSize,
+          executionTime,
+          dbType: 'sqlite',
+          timestamp: new Date().toISOString()
+        }, 'backup', null, userId);
+      } else if (sessionId) {
+        MonitoringService.info('SQLite backup completed with session', {
+          sessionId,
+          filename: backupFilename,
+          backupSize,
+          executionTime,
+          dbType: 'sqlite',
+          timestamp: new Date().toISOString()
+        }, 'backup');
+      }
 
       return {
         success: true,
@@ -149,11 +300,20 @@ class BackupManager {
     } catch (error) {
       const executionTime = Date.now() - startTime;
       
+      // Pattern 3: Infrastructure Error Logging
       const mcpError = ErrorService.createError(
-        ErrorService.CATEGORIES.DATABASE,
+        'backup',
         `SQLite backup failed: ${error.message}`,
-        ErrorService.SEVERITIES.ERROR,
-        { backupPath, error: error.stack }
+        'error',
+        { 
+          backupPath, 
+          error: error.message,
+          stack: error.stack,
+          dbType: 'sqlite',
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }
       );
       
       MonitoringService.logError(mcpError);
@@ -163,6 +323,24 @@ class BackupManager {
         timestamp: new Date().toISOString()
       });
       
+      // Pattern 4: User Error Tracking
+      if (userId) {
+        MonitoringService.error('SQLite backup failed', {
+          error: error.message,
+          executionTime,
+          dbType: 'sqlite',
+          timestamp: new Date().toISOString()
+        }, 'backup', null, userId);
+      } else if (sessionId) {
+        MonitoringService.error('SQLite backup failed', {
+          sessionId,
+          error: error.message,
+          executionTime,
+          dbType: 'sqlite',
+          timestamp: new Date().toISOString()
+        }, 'backup');
+      }
+      
       throw mcpError;
     }
   }
@@ -170,9 +348,24 @@ class BackupManager {
   /**
    * Create PostgreSQL backup using pg_dump
    */
-  async backupPostgreSQL() {
+  async backupPostgreSQL(userId, sessionId) {
     const startTime = Date.now();
-    const backupFilename = this.generateBackupFilename();
+    
+    // Pattern 1: Development Debug Logs
+    if (process.env.NODE_ENV === 'development') {
+      MonitoringService.debug('Starting PostgreSQL backup process', {
+        dbType: 'postgresql',
+        host: this.config.DB_HOST,
+        port: this.config.DB_PORT,
+        database: this.config.DB_NAME,
+        backupDir: this.backupDir,
+        userId,
+        sessionId,
+        timestamp: new Date().toISOString()
+      }, 'backup');
+    }
+    
+    const backupFilename = this.generateBackupFilename('full', userId, sessionId);
     const backupPath = path.join(this.backupDir, backupFilename);
 
     return new Promise((resolve, reject) => {
@@ -214,6 +407,26 @@ class BackupManager {
               filename: backupFilename,
               timestamp: new Date().toISOString()
             });
+            
+            // Pattern 2: User Activity Logs
+            if (userId) {
+              MonitoringService.info('PostgreSQL backup completed successfully', {
+                filename: backupFilename,
+                backupSize,
+                executionTime,
+                dbType: 'postgresql',
+                timestamp: new Date().toISOString()
+              }, 'backup', null, userId);
+            } else if (sessionId) {
+              MonitoringService.info('PostgreSQL backup completed with session', {
+                sessionId,
+                filename: backupFilename,
+                backupSize,
+                executionTime,
+                dbType: 'postgresql',
+                timestamp: new Date().toISOString()
+              }, 'backup');
+            }
 
             resolve({
               success: true,
@@ -223,11 +436,20 @@ class BackupManager {
               executionTime
             });
           } else {
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-              ErrorService.CATEGORIES.DATABASE,
+              'backup',
               `PostgreSQL backup failed with exit code ${code}: ${errorOutput}`,
-              ErrorService.SEVERITIES.ERROR,
-              { backupPath, exitCode: code, errorOutput }
+              'error',
+              { 
+                backupPath, 
+                exitCode: code, 
+                errorOutput,
+                dbType: 'postgresql',
+                userId,
+                sessionId,
+                timestamp: new Date().toISOString()
+              }
             );
             
             MonitoringService.logError(mcpError);
@@ -237,6 +459,24 @@ class BackupManager {
               timestamp: new Date().toISOString()
             });
             
+            // Pattern 4: User Error Tracking
+            if (userId) {
+              MonitoringService.error('PostgreSQL backup failed', {
+                error: `Exit code ${code}: ${errorOutput}`,
+                executionTime,
+                dbType: 'postgresql',
+                timestamp: new Date().toISOString()
+              }, 'backup', null, userId);
+            } else if (sessionId) {
+              MonitoringService.error('PostgreSQL backup failed', {
+                sessionId,
+                error: `Exit code ${code}: ${errorOutput}`,
+                executionTime,
+                dbType: 'postgresql',
+                timestamp: new Date().toISOString()
+              }, 'backup');
+            }
+            
             reject(mcpError);
           }
         });
@@ -244,11 +484,20 @@ class BackupManager {
         pgDump.on('error', (error) => {
           const executionTime = Date.now() - startTime;
           
+          // Pattern 3: Infrastructure Error Logging
           const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.DATABASE,
+            'backup',
             `PostgreSQL backup process error: ${error.message}`,
-            ErrorService.SEVERITIES.ERROR,
-            { backupPath, error: error.stack }
+            'error',
+            { 
+              backupPath, 
+              error: error.message,
+              stack: error.stack,
+              dbType: 'postgresql',
+              userId,
+              sessionId,
+              timestamp: new Date().toISOString()
+            }
           );
           
           MonitoringService.logError(mcpError);
@@ -258,17 +507,44 @@ class BackupManager {
             timestamp: new Date().toISOString()
           });
           
+          // Pattern 4: User Error Tracking
+          if (userId) {
+            MonitoringService.error('PostgreSQL backup process error', {
+              error: error.message,
+              executionTime,
+              dbType: 'postgresql',
+              timestamp: new Date().toISOString()
+            }, 'backup', null, userId);
+          } else if (sessionId) {
+            MonitoringService.error('PostgreSQL backup process error', {
+              sessionId,
+              error: error.message,
+              executionTime,
+              dbType: 'postgresql',
+              timestamp: new Date().toISOString()
+            }, 'backup');
+          }
+          
           reject(mcpError);
         });
 
       } catch (error) {
         const executionTime = Date.now() - startTime;
         
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
-          ErrorService.CATEGORIES.DATABASE,
+          'backup',
           `PostgreSQL backup setup failed: ${error.message}`,
-          ErrorService.SEVERITIES.ERROR,
-          { backupPath, error: error.stack }
+          'error',
+          { 
+            backupPath, 
+            error: error.message,
+            stack: error.stack,
+            dbType: 'postgresql',
+            userId,
+            sessionId,
+            timestamp: new Date().toISOString()
+          }
         );
         
         MonitoringService.logError(mcpError);
@@ -278,6 +554,24 @@ class BackupManager {
           timestamp: new Date().toISOString()
         });
         
+        // Pattern 4: User Error Tracking
+        if (userId) {
+          MonitoringService.error('PostgreSQL backup setup failed', {
+            error: error.message,
+            executionTime,
+            dbType: 'postgresql',
+            timestamp: new Date().toISOString()
+          }, 'backup', null, userId);
+        } else if (sessionId) {
+          MonitoringService.error('PostgreSQL backup setup failed', {
+            sessionId,
+            error: error.message,
+            executionTime,
+            dbType: 'postgresql',
+            timestamp: new Date().toISOString()
+          }, 'backup');
+        }
+        
         reject(mcpError);
       }
     });
@@ -286,9 +580,24 @@ class BackupManager {
   /**
    * Create MySQL backup using mysqldump
    */
-  async backupMySQL() {
+  async backupMySQL(userId, sessionId) {
     const startTime = Date.now();
-    const backupFilename = this.generateBackupFilename();
+    
+    // Pattern 1: Development Debug Logs
+    if (process.env.NODE_ENV === 'development') {
+      MonitoringService.debug('Starting MySQL backup process', {
+        dbType: 'mysql',
+        host: this.config.DB_HOST,
+        port: this.config.DB_PORT,
+        database: this.config.DB_NAME,
+        backupDir: this.backupDir,
+        userId,
+        sessionId,
+        timestamp: new Date().toISOString()
+      }, 'backup');
+    }
+    
+    const backupFilename = this.generateBackupFilename('full', userId, sessionId);
     const backupPath = path.join(this.backupDir, backupFilename);
 
     return new Promise((resolve, reject) => {
@@ -327,6 +636,26 @@ class BackupManager {
               filename: backupFilename,
               timestamp: new Date().toISOString()
             });
+            
+            // Pattern 2: User Activity Logs
+            if (userId) {
+              MonitoringService.info('MySQL backup completed successfully', {
+                filename: backupFilename,
+                backupSize,
+                executionTime,
+                dbType: 'mysql',
+                timestamp: new Date().toISOString()
+              }, 'backup', null, userId);
+            } else if (sessionId) {
+              MonitoringService.info('MySQL backup completed with session', {
+                sessionId,
+                filename: backupFilename,
+                backupSize,
+                executionTime,
+                dbType: 'mysql',
+                timestamp: new Date().toISOString()
+              }, 'backup');
+            }
 
             resolve({
               success: true,
@@ -336,11 +665,20 @@ class BackupManager {
               executionTime
             });
           } else {
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-              ErrorService.CATEGORIES.DATABASE,
+              'backup',
               `MySQL backup failed with exit code ${code}: ${errorOutput}`,
-              ErrorService.SEVERITIES.ERROR,
-              { backupPath, exitCode: code, errorOutput }
+              'error',
+              { 
+                backupPath, 
+                exitCode: code, 
+                errorOutput,
+                dbType: 'mysql',
+                userId,
+                sessionId,
+                timestamp: new Date().toISOString()
+              }
             );
             
             MonitoringService.logError(mcpError);
@@ -350,6 +688,24 @@ class BackupManager {
               timestamp: new Date().toISOString()
             });
             
+            // Pattern 4: User Error Tracking
+            if (userId) {
+              MonitoringService.error('MySQL backup failed', {
+                error: `Exit code ${code}: ${errorOutput}`,
+                executionTime,
+                dbType: 'mysql',
+                timestamp: new Date().toISOString()
+              }, 'backup', null, userId);
+            } else if (sessionId) {
+              MonitoringService.error('MySQL backup failed', {
+                sessionId,
+                error: `Exit code ${code}: ${errorOutput}`,
+                executionTime,
+                dbType: 'mysql',
+                timestamp: new Date().toISOString()
+              }, 'backup');
+            }
+            
             reject(mcpError);
           }
         });
@@ -357,11 +713,20 @@ class BackupManager {
         mysqldump.on('error', (error) => {
           const executionTime = Date.now() - startTime;
           
+          // Pattern 3: Infrastructure Error Logging
           const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.DATABASE,
+            'backup',
             `MySQL backup process error: ${error.message}`,
-            ErrorService.SEVERITIES.ERROR,
-            { backupPath, error: error.stack }
+            'error',
+            { 
+              backupPath, 
+              error: error.message,
+              stack: error.stack,
+              dbType: 'mysql',
+              userId,
+              sessionId,
+              timestamp: new Date().toISOString()
+            }
           );
           
           MonitoringService.logError(mcpError);
@@ -371,17 +736,44 @@ class BackupManager {
             timestamp: new Date().toISOString()
           });
           
+          // Pattern 4: User Error Tracking
+          if (userId) {
+            MonitoringService.error('MySQL backup process error', {
+              error: error.message,
+              executionTime,
+              dbType: 'mysql',
+              timestamp: new Date().toISOString()
+            }, 'backup', null, userId);
+          } else if (sessionId) {
+            MonitoringService.error('MySQL backup process error', {
+              sessionId,
+              error: error.message,
+              executionTime,
+              dbType: 'mysql',
+              timestamp: new Date().toISOString()
+            }, 'backup');
+          }
+          
           reject(mcpError);
         });
 
       } catch (error) {
         const executionTime = Date.now() - startTime;
         
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
-          ErrorService.CATEGORIES.DATABASE,
+          'backup',
           `MySQL backup setup failed: ${error.message}`,
-          ErrorService.SEVERITIES.ERROR,
-          { backupPath, error: error.stack }
+          'error',
+          { 
+            backupPath, 
+            error: error.message,
+            stack: error.stack,
+            dbType: 'mysql',
+            userId,
+            sessionId,
+            timestamp: new Date().toISOString()
+          }
         );
         
         MonitoringService.logError(mcpError);
@@ -391,6 +783,24 @@ class BackupManager {
           timestamp: new Date().toISOString()
         });
         
+        // Pattern 4: User Error Tracking
+        if (userId) {
+          MonitoringService.error('MySQL backup setup failed', {
+            error: error.message,
+            executionTime,
+            dbType: 'mysql',
+            timestamp: new Date().toISOString()
+          }, 'backup', null, userId);
+        } else if (sessionId) {
+          MonitoringService.error('MySQL backup setup failed', {
+            sessionId,
+            error: error.message,
+            executionTime,
+            dbType: 'mysql',
+            timestamp: new Date().toISOString()
+          }, 'backup');
+        }
+        
         reject(mcpError);
       }
     });
@@ -399,25 +809,38 @@ class BackupManager {
   /**
    * Create database backup
    */
-  async createBackup() {
-    MonitoringService.info('Starting database backup', {
-      dbType: this.config.DB_TYPE,
-      backupDir: this.backupDir,
-      timestamp: new Date().toISOString()
-    }, 'backup');
-
+  async createBackup(userId, sessionId) {
+    const startTime = Date.now();
+    
     try {
+      // Pattern 1: Development Debug Logs
+      if (process.env.NODE_ENV === 'development') {
+        MonitoringService.debug('Starting database backup process', {
+          dbType: this.config.DB_TYPE,
+          backupDir: this.backupDir,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }, 'backup');
+      }
+      
+      MonitoringService.info('Starting database backup', {
+        dbType: this.config.DB_TYPE,
+        backupDir: this.backupDir,
+        timestamp: new Date().toISOString()
+      }, 'backup');
+
       let result;
 
       switch (this.config.DB_TYPE) {
         case 'sqlite':
-          result = await this.backupSQLite();
+          result = await this.backupSQLite(userId, sessionId);
           break;
         case 'postgresql':
-          result = await this.backupPostgreSQL();
+          result = await this.backupPostgreSQL(userId, sessionId);
           break;
         case 'mysql':
-          result = await this.backupMySQL();
+          result = await this.backupMySQL(userId, sessionId);
           break;
         default:
           throw new Error(`Unsupported database type for backup: ${this.config.DB_TYPE}`);
@@ -430,18 +853,65 @@ class BackupManager {
       }, 'backup');
 
       // Clean up old backups
-      await this.cleanupOldBackups();
+      await this.cleanupOldBackups(userId, sessionId);
+      
+      // Pattern 2: User Activity Logs
+      if (userId) {
+        MonitoringService.info('Database backup process completed', {
+          dbType: this.config.DB_TYPE,
+          filename: result.filename,
+          backupSize: result.size,
+          executionTime: result.executionTime,
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }, 'backup', null, userId);
+      } else if (sessionId) {
+        MonitoringService.info('Database backup process completed with session', {
+          sessionId,
+          dbType: this.config.DB_TYPE,
+          filename: result.filename,
+          backupSize: result.size,
+          executionTime: result.executionTime,
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }, 'backup');
+      }
 
       return result;
 
     } catch (error) {
+      // Pattern 3: Infrastructure Error Logging
       const mcpError = ErrorService.createError(
-        ErrorService.CATEGORIES.DATABASE,
+        'backup',
         `Database backup failed: ${error.message}`,
-        ErrorService.SEVERITIES.ERROR,
-        { dbType: this.config.DB_TYPE, error: error.stack }
+        'error',
+        { 
+          dbType: this.config.DB_TYPE, 
+          error: error.message,
+          stack: error.stack,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }
       );
       MonitoringService.logError(mcpError);
+      
+      // Pattern 4: User Error Tracking
+      if (userId) {
+        MonitoringService.error('Database backup failed', {
+          error: error.message,
+          dbType: this.config.DB_TYPE,
+          timestamp: new Date().toISOString()
+        }, 'backup', null, userId);
+      } else if (sessionId) {
+        MonitoringService.error('Database backup failed', {
+          sessionId,
+          error: error.message,
+          dbType: this.config.DB_TYPE,
+          timestamp: new Date().toISOString()
+        }, 'backup');
+      }
+      
       throw mcpError;
     }
   }
@@ -449,8 +919,20 @@ class BackupManager {
   /**
    * List available backups
    */
-  async listBackups() {
+  async listBackups(userId, sessionId) {
+    const startTime = Date.now();
+    
     try {
+      // Pattern 1: Development Debug Logs
+      if (process.env.NODE_ENV === 'development') {
+        MonitoringService.debug('Listing available backups', {
+          backupDir: this.backupDir,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }, 'backup');
+      }
+      
       const files = fs.readdirSync(this.backupDir);
       const backupFiles = files
         .filter(file => file.startsWith('mcp-backup-') && file.endsWith('.sql'))
@@ -468,16 +950,59 @@ class BackupManager {
         })
         .sort((a, b) => b.created - a.created); // Sort by creation date, newest first
 
+      // Pattern 2: User Activity Logs
+      if (userId) {
+        MonitoringService.info('Listed available backups', {
+          backupCount: backupFiles.length,
+          totalSize: backupFiles.reduce((sum, file) => sum + file.size, 0),
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }, 'backup', null, userId);
+      } else if (sessionId) {
+        MonitoringService.info('Listed available backups with session', {
+          sessionId,
+          backupCount: backupFiles.length,
+          totalSize: backupFiles.reduce((sum, file) => sum + file.size, 0),
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }, 'backup');
+      }
+
       return backupFiles;
 
     } catch (error) {
+      // Pattern 3: Infrastructure Error Logging
       const mcpError = ErrorService.createError(
-        ErrorService.CATEGORIES.SYSTEM,
+        'backup',
         `Failed to list backups: ${error.message}`,
-        ErrorService.SEVERITIES.ERROR,
-        { backupDir: this.backupDir, error: error.stack }
+        'error',
+        { 
+          backupDir: this.backupDir, 
+          error: error.message,
+          stack: error.stack,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }
       );
       MonitoringService.logError(mcpError);
+      
+      // Pattern 4: User Error Tracking
+      if (userId) {
+        MonitoringService.error('Failed to list backups', {
+          error: error.message,
+          backupDir: this.backupDir,
+          timestamp: new Date().toISOString()
+        }, 'backup', null, userId);
+      } else if (sessionId) {
+        MonitoringService.error('Failed to list backups', {
+          sessionId,
+          error: error.message,
+          backupDir: this.backupDir,
+          timestamp: new Date().toISOString()
+        }, 'backup');
+      }
+      
       throw mcpError;
     }
   }
@@ -485,9 +1010,23 @@ class BackupManager {
   /**
    * Clean up old backups based on retention policy
    */
-  async cleanupOldBackups() {
+  async cleanupOldBackups(userId, sessionId) {
+    const startTime = Date.now();
+    
     try {
-      const backups = await this.listBackups();
+      // Pattern 1: Development Debug Logs
+      if (process.env.NODE_ENV === 'development') {
+        MonitoringService.debug('Starting backup cleanup process', {
+          retentionDays: this.retentionDays,
+          maxBackups: this.maxBackups,
+          backupDir: this.backupDir,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }, 'backup');
+      }
+      
+      const backups = await this.listBackups(userId, sessionId);
       const now = new Date();
       const retentionMs = this.retentionDays * 24 * 60 * 60 * 1000;
       
@@ -529,17 +1068,63 @@ class BackupManager {
           timestamp: new Date().toISOString()
         }, 'backup');
       }
+      
+      // Pattern 2: User Activity Logs
+      if (userId) {
+        MonitoringService.info('Backup cleanup completed', {
+          deletedCount,
+          deletedSize,
+          remainingBackups: backups.length - deletedCount,
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }, 'backup', null, userId);
+      } else if (sessionId) {
+        MonitoringService.info('Backup cleanup completed with session', {
+          sessionId,
+          deletedCount,
+          deletedSize,
+          remainingBackups: backups.length - deletedCount,
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }, 'backup');
+      }
 
       return { deletedCount, deletedSize };
 
     } catch (error) {
+      // Pattern 3: Infrastructure Error Logging
       const mcpError = ErrorService.createError(
-        ErrorService.CATEGORIES.SYSTEM,
+        'backup',
         `Failed to cleanup old backups: ${error.message}`,
-        ErrorService.SEVERITIES.ERROR,
-        { error: error.stack }
+        'error',
+        { 
+          error: error.message,
+          stack: error.stack,
+          retentionDays: this.retentionDays,
+          maxBackups: this.maxBackups,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }
       );
       MonitoringService.logError(mcpError);
+      
+      // Pattern 4: User Error Tracking
+      if (userId) {
+        MonitoringService.error('Failed to cleanup old backups', {
+          error: error.message,
+          retentionDays: this.retentionDays,
+          timestamp: new Date().toISOString()
+        }, 'backup', null, userId);
+      } else if (sessionId) {
+        MonitoringService.error('Failed to cleanup old backups', {
+          sessionId,
+          error: error.message,
+          retentionDays: this.retentionDays,
+          timestamp: new Date().toISOString()
+        }, 'backup');
+      }
+      
       throw mcpError;
     }
   }
@@ -547,13 +1132,26 @@ class BackupManager {
   /**
    * Get backup status and statistics
    */
-  async getBackupStatus() {
+  async getBackupStatus(userId, sessionId) {
+    const startTime = Date.now();
+    
     try {
-      const backups = await this.listBackups();
+      // Pattern 1: Development Debug Logs
+      if (process.env.NODE_ENV === 'development') {
+        MonitoringService.debug('Retrieving backup status and statistics', {
+          backupDir: this.backupDir,
+          dbType: this.config.DB_TYPE,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }, 'backup');
+      }
+      
+      const backups = await this.listBackups(userId, sessionId);
       const totalSize = backups.reduce((sum, backup) => sum + backup.size, 0);
       const latestBackup = backups.length > 0 ? backups[0] : null;
 
-      return {
+      const status = {
         backupDir: this.backupDir,
         totalBackups: backups.length,
         totalSize,
@@ -566,15 +1164,63 @@ class BackupManager {
         maxBackups: this.maxBackups,
         dbType: this.config.DB_TYPE
       };
+      
+      // Pattern 2: User Activity Logs
+      if (userId) {
+        MonitoringService.info('Retrieved backup status', {
+          totalBackups: backups.length,
+          totalSize,
+          hasLatestBackup: !!latestBackup,
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }, 'backup', null, userId);
+      } else if (sessionId) {
+        MonitoringService.info('Retrieved backup status with session', {
+          sessionId,
+          totalBackups: backups.length,
+          totalSize,
+          hasLatestBackup: !!latestBackup,
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }, 'backup');
+      }
+
+      return status;
 
     } catch (error) {
+      // Pattern 3: Infrastructure Error Logging
       const mcpError = ErrorService.createError(
-        ErrorService.CATEGORIES.SYSTEM,
+        'backup',
         `Failed to get backup status: ${error.message}`,
-        ErrorService.SEVERITIES.ERROR,
-        { error: error.stack }
+        'error',
+        { 
+          error: error.message,
+          stack: error.stack,
+          backupDir: this.backupDir,
+          dbType: this.config.DB_TYPE,
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString()
+        }
       );
       MonitoringService.logError(mcpError);
+      
+      // Pattern 4: User Error Tracking
+      if (userId) {
+        MonitoringService.error('Failed to get backup status', {
+          error: error.message,
+          backupDir: this.backupDir,
+          timestamp: new Date().toISOString()
+        }, 'backup', null, userId);
+      } else if (sessionId) {
+        MonitoringService.error('Failed to get backup status', {
+          sessionId,
+          error: error.message,
+          backupDir: this.backupDir,
+          timestamp: new Date().toISOString()
+        }, 'backup');
+      }
+      
       throw mcpError;
     }
   }

@@ -42,30 +42,55 @@ class ContextService {
     /**
      * Update context with arbitrary fields (e.g., topic, entities)
      * @param {object} update
+     * @param {string} userId - User ID for context
+     * @param {string} sessionId - Session ID for context
      * @returns {Promise<void>}
      */
-    async updateContext(update) {
+    async updateContext(update, userId, sessionId) {
         const startTime = Date.now();
         
+        // Pattern 1: Development Debug Logs
         if (process.env.NODE_ENV === 'development') {
-            MonitoringService.debug('Context update started', {
+            MonitoringService.debug('Processing context update request', {
                 updateKeys: Object.keys(update || {}),
+                userId,
+                sessionId,
                 timestamp: new Date().toISOString()
             }, 'context');
         }
         
         try {
             if (!update || typeof update !== 'object') {
+                // Pattern 3: Infrastructure Error Logging
                 const mcpError = ErrorService.createError(
-                    ErrorService.CATEGORIES.SYSTEM,
+                    'context',
                     'Context update must be an object',
-                    ErrorService.SEVERITIES.WARNING,
+                    'warning',
                     {
                         updateType: typeof update,
+                        userId,
+                        sessionId,
                         timestamp: new Date().toISOString()
                     }
                 );
                 MonitoringService.logError(mcpError);
+                
+                // Pattern 4: User Error Tracking
+                if (userId) {
+                    MonitoringService.error('Context update validation failed', {
+                        error: 'Invalid update object',
+                        updateType: typeof update,
+                        timestamp: new Date().toISOString()
+                    }, 'context', null, userId);
+                } else if (sessionId) {
+                    MonitoringService.error('Context update validation failed', {
+                        sessionId,
+                        error: 'Invalid update object',
+                        updateType: typeof update,
+                        timestamp: new Date().toISOString()
+                    }, 'context');
+                }
+                
                 throw mcpError;
             }
             
@@ -87,6 +112,26 @@ class ContextService {
             
             const newContextSize = JSON.stringify(this._context).length;
             const executionTime = Date.now() - startTime;
+            
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                MonitoringService.info('Context updated successfully', {
+                    updateKeys: Object.keys(update).length,
+                    previousSize: previousContextSize,
+                    newSize: newContextSize,
+                    duration: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'context', null, userId);
+            } else if (sessionId) {
+                MonitoringService.info('Context updated with session', {
+                    sessionId,
+                    updateKeys: Object.keys(update).length,
+                    previousSize: previousContextSize,
+                    newSize: newContextSize,
+                    duration: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'context');
+            }
             
             MonitoringService.trackMetric('context_update_success', executionTime, {
                 updateKeys: Object.keys(update).length,
@@ -113,19 +158,38 @@ class ContextService {
                 throw error;
             }
             
-            // Otherwise, wrap in MCP error
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.SYSTEM,
+                'context',
                 `Context update failed: ${error.message}`,
-                ErrorService.SEVERITIES.ERROR,
+                'error',
                 {
                     updateKeys: Object.keys(update || {}),
                     stack: error.stack,
+                    userId,
+                    sessionId,
                     timestamp: new Date().toISOString()
                 }
             );
             
             MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Context update failed', {
+                    error: error.message,
+                    updateKeys: Object.keys(update || {}),
+                    timestamp: new Date().toISOString()
+                }, 'context', null, userId);
+            } else if (sessionId) {
+                MonitoringService.error('Context update failed', {
+                    sessionId,
+                    error: error.message,
+                    updateKeys: Object.keys(update || {}),
+                    timestamp: new Date().toISOString()
+                }, 'context');
+            }
+            
             MonitoringService.trackMetric('context_update_failure', executionTime, {
                 errorType: error.code || 'unknown',
                 timestamp: new Date().toISOString()
@@ -137,20 +201,26 @@ class ContextService {
 
     /**
      * Get the current context (for LLM prompting, etc)
+     * @param {string} userId - User ID for context
+     * @param {string} sessionId - Session ID for context
      * @returns {Promise<object>}
      */
-    async getCurrentContext() {
+    async getCurrentContext(userId, sessionId) {
         const startTime = Date.now();
         
+        // Pattern 1: Development Debug Logs
         if (process.env.NODE_ENV === 'development') {
-            MonitoringService.debug('Getting current context', {
+            MonitoringService.debug('Processing get current context request', {
+                userId,
+                sessionId,
                 timestamp: new Date().toISOString()
             }, 'context');
         }
         
         try {
             if (this.storageService && typeof this.storageService.getSetting === 'function') {
-                const stored = await this.storageService.getSetting('context');
+                const contextKey = this.userId ? `user:${this.userId}:context` : 'context';
+                const stored = await this.storageService.getSetting(contextKey);
                 if (stored) {
                     this._context = { ...this._context, ...stored };
                 }
@@ -159,6 +229,28 @@ class ContextService {
             const context = { ...this._context };
             const contextSize = JSON.stringify(context).length;
             const executionTime = Date.now() - startTime;
+            
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                MonitoringService.info('Context retrieved successfully', {
+                    contextSize,
+                    conversationLength: context.conversationHistory?.length || 0,
+                    hasIntent: !!context.currentIntent,
+                    hasTopic: !!context.currentTopic,
+                    duration: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'context', null, userId);
+            } else if (sessionId) {
+                MonitoringService.info('Context retrieved with session', {
+                    sessionId,
+                    contextSize,
+                    conversationLength: context.conversationHistory?.length || 0,
+                    hasIntent: !!context.currentIntent,
+                    hasTopic: !!context.currentTopic,
+                    duration: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'context');
+            }
             
             MonitoringService.trackMetric('context_get_success', executionTime, {
                 contextSize,
@@ -173,17 +265,35 @@ class ContextService {
         } catch (error) {
             const executionTime = Date.now() - startTime;
             
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.SYSTEM,
+                'context',
                 `Failed to get current context: ${error.message}`,
-                ErrorService.SEVERITIES.ERROR,
+                'error',
                 {
                     stack: error.stack,
+                    userId,
+                    sessionId,
                     timestamp: new Date().toISOString()
                 }
             );
             
             MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Context retrieval failed', {
+                    error: error.message,
+                    timestamp: new Date().toISOString()
+                }, 'context', null, userId);
+            } else if (sessionId) {
+                MonitoringService.error('Context retrieval failed', {
+                    sessionId,
+                    error: error.message,
+                    timestamp: new Date().toISOString()
+                }, 'context');
+            }
+            
             MonitoringService.trackMetric('context_get_failure', executionTime, {
                 errorType: error.code || 'unknown',
                 timestamp: new Date().toISOString()
@@ -198,48 +308,95 @@ class ContextService {
      * @param {string} role - 'user' | 'assistant'
      * @param {string} text - Message text
      * @param {object} [meta] - Optional metadata (intent, entities, etc)
+     * @param {string} userId - User ID for context
+     * @param {string} sessionId - Session ID for context
      * @returns {Promise<void>}
      */
-    async addToConversation(role, text, meta = {}) {
+    async addToConversation(role, text, meta = {}, userId, sessionId) {
         const startTime = Date.now();
         
+        // Pattern 1: Development Debug Logs
         if (process.env.NODE_ENV === 'development') {
-            MonitoringService.debug('Adding conversation entry', {
+            MonitoringService.debug('Processing add conversation entry request', {
                 role,
                 textLength: text?.length || 0,
                 metaKeys: Object.keys(meta || {}),
+                userId,
+                sessionId,
                 timestamp: new Date().toISOString()
             }, 'context');
         }
         
         try {
             if (!role || typeof role !== 'string') {
+                // Pattern 3: Infrastructure Error Logging
                 const mcpError = ErrorService.createError(
-                    ErrorService.CATEGORIES.SYSTEM,
+                    'context',
                     'Role must be a non-empty string',
-                    ErrorService.SEVERITIES.WARNING,
+                    'warning',
                     {
                         role,
                         roleType: typeof role,
+                        userId,
+                        sessionId,
                         timestamp: new Date().toISOString()
                     }
                 );
                 MonitoringService.logError(mcpError);
+                
+                // Pattern 4: User Error Tracking
+                if (userId) {
+                    MonitoringService.error('Conversation entry validation failed', {
+                        error: 'Invalid role parameter',
+                        role,
+                        roleType: typeof role,
+                        timestamp: new Date().toISOString()
+                    }, 'context', null, userId);
+                } else if (sessionId) {
+                    MonitoringService.error('Conversation entry validation failed', {
+                        sessionId,
+                        error: 'Invalid role parameter',
+                        role,
+                        roleType: typeof role,
+                        timestamp: new Date().toISOString()
+                    }, 'context');
+                }
+                
                 throw mcpError;
             }
             
             if (!text || typeof text !== 'string') {
+                // Pattern 3: Infrastructure Error Logging
                 const mcpError = ErrorService.createError(
-                    ErrorService.CATEGORIES.SYSTEM,
+                    'context',
                     'Text must be a non-empty string',
-                    ErrorService.SEVERITIES.WARNING,
+                    'warning',
                     {
                         text,
                         textType: typeof text,
+                        userId,
+                        sessionId,
                         timestamp: new Date().toISOString()
                     }
                 );
                 MonitoringService.logError(mcpError);
+                
+                // Pattern 4: User Error Tracking
+                if (userId) {
+                    MonitoringService.error('Conversation entry validation failed', {
+                        error: 'Invalid text parameter',
+                        textType: typeof text,
+                        timestamp: new Date().toISOString()
+                    }, 'context', null, userId);
+                } else if (sessionId) {
+                    MonitoringService.error('Conversation entry validation failed', {
+                        sessionId,
+                        error: 'Invalid text parameter',
+                        textType: typeof text,
+                        timestamp: new Date().toISOString()
+                    }, 'context');
+                }
+                
                 throw mcpError;
             }
             
@@ -262,6 +419,29 @@ class ContextService {
             await this._persistContext();
             
             const executionTime = Date.now() - startTime;
+            
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                MonitoringService.info('Conversation entry added successfully', {
+                    role,
+                    textLength: text.length,
+                    previousLength: previousHistoryLength,
+                    newLength: this._context.conversationHistory.length,
+                    duration: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'context', null, userId);
+            } else if (sessionId) {
+                MonitoringService.info('Conversation entry added with session', {
+                    sessionId,
+                    role,
+                    textLength: text.length,
+                    previousLength: previousHistoryLength,
+                    newLength: this._context.conversationHistory.length,
+                    duration: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'context');
+            }
+            
             MonitoringService.trackMetric('conversation_add_success', executionTime, {
                 role,
                 textLength: text.length,
@@ -269,14 +449,6 @@ class ContextService {
                 newLength: this._context.conversationHistory.length,
                 timestamp: new Date().toISOString()
             });
-            
-            MonitoringService.info('Conversation entry added', {
-                role,
-                textLength: text.length,
-                conversationLength: this._context.conversationHistory.length,
-                executionTimeMs: executionTime,
-                timestamp: new Date().toISOString()
-            }, 'context');
             
         } catch (error) {
             const executionTime = Date.now() - startTime;
@@ -291,20 +463,41 @@ class ContextService {
                 throw error;
             }
             
-            // Otherwise, wrap in MCP error
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.SYSTEM,
+                'context',
                 `Failed to add conversation entry: ${error.message}`,
-                ErrorService.SEVERITIES.ERROR,
+                'error',
                 {
                     role,
                     textLength: text?.length || 0,
                     stack: error.stack,
+                    userId,
+                    sessionId,
                     timestamp: new Date().toISOString()
                 }
             );
             
             MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Conversation entry addition failed', {
+                    error: error.message,
+                    role,
+                    textLength: text?.length || 0,
+                    timestamp: new Date().toISOString()
+                }, 'context', null, userId);
+            } else if (sessionId) {
+                MonitoringService.error('Conversation entry addition failed', {
+                    sessionId,
+                    error: error.message,
+                    role,
+                    textLength: text?.length || 0,
+                    timestamp: new Date().toISOString()
+                }, 'context');
+            }
+            
             MonitoringService.trackMetric('conversation_add_failure', executionTime, {
                 role,
                 errorType: error.code || 'unknown',
@@ -318,14 +511,19 @@ class ContextService {
     /**
      * Get conversation history (optionally limited)
      * @param {number} [limit]
+     * @param {string} userId - User ID for context
+     * @param {string} sessionId - Session ID for context
      * @returns {Promise<Array<object>>}
      */
-    async getConversationHistory(limit = 20) {
+    async getConversationHistory(limit = 20, userId, sessionId) {
         const startTime = Date.now();
         
+        // Pattern 1: Development Debug Logs
         if (process.env.NODE_ENV === 'development') {
-            MonitoringService.debug('Getting conversation history', {
+            MonitoringService.debug('Processing get conversation history request', {
                 limit,
+                userId,
+                sessionId,
                 timestamp: new Date().toISOString()
             }, 'context');
         }
@@ -334,12 +532,33 @@ class ContextService {
             let history;
             
             if (this.storageService && typeof this.storageService.getHistory === 'function') {
-                history = await this.storageService.getHistory(limit);
+                history = await this.storageService.getHistory(limit, this.userId);
             } else {
                 history = this._context.conversationHistory.slice(-limit);
             }
             
             const executionTime = Date.now() - startTime;
+            
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                MonitoringService.info('Conversation history retrieved successfully', {
+                    limit,
+                    resultCount: history.length,
+                    usedStorage: !!(this.storageService && typeof this.storageService.getHistory === 'function'),
+                    duration: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'context', null, userId);
+            } else if (sessionId) {
+                MonitoringService.info('Conversation history retrieved with session', {
+                    sessionId,
+                    limit,
+                    resultCount: history.length,
+                    usedStorage: !!(this.storageService && typeof this.storageService.getHistory === 'function'),
+                    duration: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'context');
+            }
+            
             MonitoringService.trackMetric('conversation_history_get_success', executionTime, {
                 limit,
                 resultCount: history.length,
@@ -352,18 +571,38 @@ class ContextService {
         } catch (error) {
             const executionTime = Date.now() - startTime;
             
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.SYSTEM,
+                'context',
                 `Failed to get conversation history: ${error.message}`,
-                ErrorService.SEVERITIES.ERROR,
+                'error',
                 {
                     limit,
                     stack: error.stack,
+                    userId,
+                    sessionId,
                     timestamp: new Date().toISOString()
                 }
             );
             
             MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Conversation history retrieval failed', {
+                    error: error.message,
+                    limit,
+                    timestamp: new Date().toISOString()
+                }, 'context', null, userId);
+            } else if (sessionId) {
+                MonitoringService.error('Conversation history retrieval failed', {
+                    sessionId,
+                    error: error.message,
+                    limit,
+                    timestamp: new Date().toISOString()
+                }, 'context');
+            }
+            
             MonitoringService.trackMetric('conversation_history_get_failure', executionTime, {
                 limit,
                 errorType: error.code || 'unknown',
@@ -376,20 +615,25 @@ class ContextService {
 
     /**
      * Reset context (e.g., on user sign-out)
+     * @param {string} userId - User ID for context
+     * @param {string} sessionId - Session ID for context
      * @returns {Promise<void>}
      */
-    async resetContext() {
+    async resetContext(userId, sessionId) {
         const startTime = Date.now();
+        
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Processing context reset request', {
+                userId,
+                sessionId,
+                timestamp: new Date().toISOString()
+            }, 'context');
+        }
         
         try {
             const previousContextSize = JSON.stringify(this._context).length;
             const previousHistoryLength = this._context.conversationHistory.length;
-            
-            MonitoringService.info('Resetting conversation context', {
-                previousContextSize,
-                previousHistoryLength,
-                timestamp: new Date().toISOString()
-            }, 'context');
             
             this._context = {
                 conversationHistory: [],
@@ -402,39 +646,69 @@ class ContextService {
             };
             
             if (this.storageService && typeof this.storageService.clearConversationHistory === 'function') {
-                await this.storageService.clearConversationHistory();
+                await this.storageService.clearConversationHistory(this.userId);
             }
             
             await this._persistContext();
             
             const executionTime = Date.now() - startTime;
+            
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                MonitoringService.info('Context reset completed successfully', {
+                    clearedHistoryLength: previousHistoryLength,
+                    clearedContextSize: previousContextSize,
+                    duration: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'context', null, userId);
+            } else if (sessionId) {
+                MonitoringService.info('Context reset completed with session', {
+                    sessionId,
+                    clearedHistoryLength: previousHistoryLength,
+                    clearedContextSize: previousContextSize,
+                    duration: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'context');
+            }
+            
             MonitoringService.trackMetric('context_reset_success', executionTime, {
                 clearedHistoryLength: previousHistoryLength,
                 clearedContextSize: previousContextSize,
                 timestamp: new Date().toISOString()
             });
             
-            MonitoringService.info('Context reset completed successfully', {
-                clearedHistoryLength: previousHistoryLength,
-                clearedContextSize: previousContextSize,
-                executionTimeMs: executionTime,
-                timestamp: new Date().toISOString()
-            }, 'context');
-            
         } catch (error) {
             const executionTime = Date.now() - startTime;
             
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.SYSTEM,
+                'context',
                 `Context reset failed: ${error.message}`,
-                ErrorService.SEVERITIES.ERROR,
+                'error',
                 {
                     stack: error.stack,
+                    userId,
+                    sessionId,
                     timestamp: new Date().toISOString()
                 }
             );
             
             MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Context reset failed', {
+                    error: error.message,
+                    timestamp: new Date().toISOString()
+                }, 'context', null, userId);
+            } else if (sessionId) {
+                MonitoringService.error('Context reset failed', {
+                    sessionId,
+                    error: error.message,
+                    timestamp: new Date().toISOString()
+                }, 'context');
+            }
+            
             MonitoringService.trackMetric('context_reset_failure', executionTime, {
                 errorType: error.code || 'unknown',
                 timestamp: new Date().toISOString()
@@ -514,9 +788,9 @@ class ContextService {
             const executionTime = Date.now() - startTime;
             
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.SYSTEM,
+                'context',
                 `Context persistence failed: ${error.message}`,
-                ErrorService.SEVERITIES.WARNING,
+                'warning',
                 {
                     userId: this.userId,
                     stack: error.stack,
