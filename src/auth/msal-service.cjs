@@ -160,51 +160,164 @@ function base64URLEncode(buffer) {
 }
 
 /**
+ * Extract user context from request for logging purposes
+ * @param {Object} req - Express request object
+ * @returns {Object} User context with userId and sessionId
+ */
+function extractUserContext(req) {
+    let userId, sessionId;
+    
+    if (req.user?.userId) {
+        userId = req.user.userId;
+        sessionId = req.user.sessionId || req.session?.id;
+    } else if (req.session?.id) {
+        sessionId = req.session.id;
+        userId = req.session.msUser?.username ? `ms365:${req.session.msUser.username}` : `session:${sessionId}`;
+    }
+    
+    return { userId, sessionId };
+}
+
+/**
  * Get the login URL for Microsoft authentication
  * @param {Object} req - Express request object
  */
 async function getLoginUrl(req) {
-    const { codeVerifier, codeChallenge } = generatePkceCodes();
+    const startTime = Date.now();
+    const { userId, sessionId } = extractUserContext(req);
     
-    // Store PKCE verifier in session (simple approach)
-    req.session.pkceCodeVerifier = codeVerifier;
-    
-    // Force session save to ensure code verifier is persisted immediately
-    await new Promise((resolve, reject) => {
-        req.session.save(err => {
-            if (err) {
-                MonitoringService.error('Failed to save session with PKCE code verifier', {
-                    error: err.message,
-                    sessionId: req.session?.id,
-                    timestamp: new Date().toISOString()
-                }, 'auth');
-                reject(err);
-            } else {
-                // Only log in development mode
-                if (process.env.NODE_ENV !== 'production') {
-                    MonitoringService.debug('Session saved with PKCE code verifier', {
-                        sessionId: req.session?.id,
-                        hasCodeVerifier: !!req.session.pkceCodeVerifier,
-                        timestamp: new Date().toISOString()
-                    }, 'auth');
+    try {
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Processing getLoginUrl request', {
+                sessionId,
+                userAgent: req.get('User-Agent'),
+                timestamp: new Date().toISOString(),
+                userId
+            }, 'auth');
+        }
+        
+        const { codeVerifier, codeChallenge } = generatePkceCodes();
+        
+        // Store PKCE verifier in session (simple approach)
+        req.session.pkceCodeVerifier = codeVerifier;
+        
+        // Force session save to ensure code verifier is persisted immediately
+        await new Promise((resolve, reject) => {
+            req.session.save(err => {
+                if (err) {
+                    // Pattern 3: Infrastructure Error Logging
+                    const mcpError = ErrorService.createError(
+                        'auth',
+                        'Failed to save session with PKCE code verifier',
+                        'error',
+                        {
+                            error: err.message,
+                            stack: err.stack,
+                            sessionId,
+                            userId,
+                            timestamp: new Date().toISOString()
+                        }
+                    );
+                    MonitoringService.logError(mcpError);
+                    
+                    // Pattern 4: User Error Tracking
+                    if (userId) {
+                        MonitoringService.error('Login URL generation failed', {
+                            error: err.message,
+                            operation: 'getLoginUrl',
+                            timestamp: new Date().toISOString()
+                        }, 'auth', null, userId);
+                    } else if (sessionId) {
+                        MonitoringService.error('Login URL generation failed', {
+                            sessionId,
+                            error: err.message,
+                            operation: 'getLoginUrl',
+                            timestamp: new Date().toISOString()
+                        }, 'auth');
+                    }
+                    
+                    reject(err);
+                } else {
+                    // Only log in development mode
+                    if (process.env.NODE_ENV === 'development') {
+                        MonitoringService.debug('Session saved with PKCE code verifier', {
+                            sessionId,
+                            hasCodeVerifier: !!req.session.pkceCodeVerifier,
+                            timestamp: new Date().toISOString()
+                        }, 'auth');
+                    }
+                    resolve();
                 }
-                resolve();
-            }
+            });
+        }).catch(err => {
+            // Log but continue even if save fails
+            MonitoringService.error('Error saving session', { error: err.message }, 'auth');
         });
-    }).catch(err => {
-        // Log but continue even if save fails
-        MonitoringService.error('Error saving session', { error: err.message }, 'auth');
-    });
-    
-    const authCodeUrlParameters = {
-        scopes: SCOPES,
-        redirectUri: REDIRECT_URI,
-        codeChallenge,
-        codeChallengeMethod: 'S256',
-        prompt: 'select_account'
-    };
-    
-    return pca.getAuthCodeUrl(authCodeUrlParameters);
+        
+        const authCodeUrlParameters = {
+            scopes: SCOPES,
+            redirectUri: REDIRECT_URI,
+            codeChallenge,
+            codeChallengeMethod: 'S256',
+            prompt: 'select_account'
+        };
+        
+        const authUrl = pca.getAuthCodeUrl(authCodeUrlParameters);
+        
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('Login URL generated successfully', {
+                operation: 'getLoginUrl',
+                duration: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'auth', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('Login URL generated with session', {
+                sessionId,
+                operation: 'getLoginUrl',
+                duration: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
+        
+        return authUrl;
+        
+    } catch (error) {
+        // Pattern 3: Infrastructure Error Logging
+        const mcpError = ErrorService.createError(
+            'auth',
+            'Failed to generate login URL',
+            'error',
+            {
+                error: error.message,
+                stack: error.stack,
+                operation: 'getLoginUrl',
+                userId,
+                sessionId,
+                timestamp: new Date().toISOString()
+            }
+        );
+        MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('Login URL generation failed', {
+                error: error.message,
+                operation: 'getLoginUrl',
+                timestamp: new Date().toISOString()
+            }, 'auth', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('Login URL generation failed', {
+                sessionId,
+                error: error.message,
+                operation: 'getLoginUrl',
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
+        
+        throw error;
+    }
 }
 
 /**
@@ -213,31 +326,58 @@ async function getLoginUrl(req) {
  * @param {Object} res - Express response object
  */
 async function login(req, res) {
+    const startTime = Date.now();
+    const { userId, sessionId } = extractUserContext(req);
+    
     try {
+        // Pattern 1: Development Debug Logs
         if (process.env.NODE_ENV === 'development') {
-            MonitoringService.debug('Login attempt received', {
+            MonitoringService.debug('Processing login request', {
                 hasSession: !!req.session,
-                sessionId: req.session?.id,
-                timestamp: new Date().toISOString()
+                sessionId,
+                userAgent: req.get('User-Agent'),
+                timestamp: new Date().toISOString(),
+                userId
             }, 'auth');
         }
         
         // Check if session is available
         if (!req.session) {
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.AUTH,
+                'auth',
                 'Session middleware not available',
                 'error',
-                { endpoint: '/api/auth/login' }
+                {
+                    endpoint: '/api/auth/login',
+                    userId,
+                    sessionId,
+                    timestamp: new Date().toISOString()
+                }
             );
             MonitoringService.logError(mcpError);
-            return res.status(500).json({ error: 'Session not available' });
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Login failed - session not available', {
+                    error: 'Session middleware not available',
+                    operation: 'login',
+                    timestamp: new Date().toISOString()
+                }, 'auth', null, userId);
+            }
+            
+            return res.status(500).json({ 
+                error: 'session_not_available',
+                error_description: 'Session not available' 
+            });
         }
         
         const authUrl = await getLoginUrl(req);
+        
         if (process.env.NODE_ENV === 'development') {
-            MonitoringService.debug('Generated auth URL', {
+            MonitoringService.debug('Generated auth URL for login', {
                 authUrlLength: authUrl.length,
+                sessionId,
                 timestamp: new Date().toISOString()
             }, 'auth');
         }
@@ -247,16 +387,60 @@ async function login(req, res) {
         res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
         res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
         
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('Login redirect initiated successfully', {
+                operation: 'login',
+                duration: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'auth', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('Login redirect initiated with session', {
+                sessionId,
+                operation: 'login',
+                duration: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
+        
         res.redirect(authUrl);
+        
     } catch (err) {
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.AUTH,
+            'auth',
             `MSAL login error: ${err.message}`,
-            ErrorService.SEVERITIES.ERROR,
-            { stack: err.stack, timestamp: new Date().toISOString() }
+            'error',
+            {
+                stack: err.stack,
+                operation: 'login',
+                userId,
+                sessionId,
+                timestamp: new Date().toISOString()
+            }
         );
         MonitoringService.logError(mcpError);
-        res.status(500).send('Failed to get login URL: ' + (err.message || err));
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('Login failed', {
+                error: err.message,
+                operation: 'login',
+                timestamp: new Date().toISOString()
+            }, 'auth', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('Login failed', {
+                sessionId,
+                error: err.message,
+                operation: 'login',
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
+        
+        res.status(500).json({
+            error: 'login_failed',
+            error_description: 'Failed to initiate login process'
+        });
     }
 }
 
@@ -266,42 +450,72 @@ async function login(req, res) {
  * @param {Object} res - Express response object
  */
 async function handleAuthCallback(req, res) {
-    // Debug: log session and PKCE verifier status only in development mode
-    if (process.env.NODE_ENV !== 'production') {
-        MonitoringService.debug('Auth callback processing', {
-            clientIdSet: !!CLIENT_ID,
-            tenantId: TENANT_ID,
-            redirectUri: REDIRECT_URI,
-            sessionId: req.session?.id,
-            hasSession: !!req.session,
-            hasCodeVerifier: !!req.session?.pkceCodeVerifier,
-            environment: process.env.NODE_ENV || 'development',
-            timestamp: new Date().toISOString()
-        }, 'auth');
-    }
-
-    
-    // Get code verifier from session
-    const codeVerifier = req.session.pkceCodeVerifier;
-    if (!codeVerifier) {
-        const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.AUTH,
-            'No PKCE codeVerifier found',
-            ErrorService.SEVERITIES.ERROR,
-            { timestamp: new Date().toISOString() }
-        );
-        MonitoringService.logError(mcpError);
-        return res.status(400).send('Authentication failed: No code verifier found. Please try logging in again.');
-    }
-    
-    const tokenRequest = {
-        code: req.query.code,
-        scopes: SCOPES,
-        redirectUri: REDIRECT_URI,
-        codeVerifier: codeVerifier
-    };
+    const startTime = Date.now();
+    const { userId, sessionId } = extractUserContext(req);
     
     try {
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Processing auth callback request', {
+                clientIdSet: !!CLIENT_ID,
+                tenantId: TENANT_ID,
+                redirectUri: REDIRECT_URI,
+                sessionId,
+                hasSession: !!req.session,
+                hasCodeVerifier: !!req.session?.pkceCodeVerifier,
+                environment: process.env.NODE_ENV || 'development',
+                userAgent: req.get('User-Agent'),
+                timestamp: new Date().toISOString(),
+                userId
+            }, 'auth');
+        }
+
+        
+        // Get code verifier from session
+        const codeVerifier = req.session.pkceCodeVerifier;
+        if (!codeVerifier) {
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService.createError(
+                'auth',
+                'No PKCE codeVerifier found',
+                'error',
+                {
+                    sessionId,
+                    userId,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Auth callback failed - no code verifier', {
+                    error: 'No PKCE codeVerifier found',
+                    operation: 'handleAuthCallback',
+                    timestamp: new Date().toISOString()
+                }, 'auth', null, userId);
+            } else if (sessionId) {
+                MonitoringService.error('Auth callback failed - no code verifier', {
+                    sessionId,
+                    error: 'No PKCE codeVerifier found',
+                    operation: 'handleAuthCallback',
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+            
+            return res.status(400).json({
+                error: 'authentication_failed',
+                error_description: 'Authentication failed: No code verifier found. Please try logging in again.'
+            });
+        }
+        
+        const tokenRequest = {
+            code: req.query.code,
+            scopes: SCOPES,
+            redirectUri: REDIRECT_URI,
+            codeVerifier: codeVerifier
+        };
+        
         const response = await pca.acquireTokenByCode(tokenRequest);
         
         // Store user info in session, memory, and SQLite database
@@ -327,11 +541,13 @@ async function handleAuthCallback(req, res) {
         
         // Also store in SQLite database for persistence across restarts
         try {
-            MonitoringService.info('Storing authentication token in database', {
-                username: userInfo.username,
-                sessionId: req.session?.id,
-                timestamp: new Date().toISOString()
-            }, 'auth');
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Storing authentication token in database', {
+                    username: userInfo.username,
+                    sessionId,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
             
             // MICROSOFT 365-CENTRIC AUTH: Store token using Microsoft 365 email as user identifier
             const userKey = `ms365:${userInfo.username}`;
@@ -343,33 +559,79 @@ async function handleAuthCallback(req, res) {
                 expiresOn: userInfo.expiresOn
             }, req.session?.id);
             
-            MonitoringService.info('Authentication token stored successfully', {
-                username: userInfo.username,
-                sessionId: req.session?.id,
-                userKey: userKey,
-                timestamp: new Date().toISOString()
-            }, 'auth');
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Authentication token stored successfully', {
+                    username: userInfo.username,
+                    sessionId,
+                    userKey: userKey,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
         } catch (dbError) {
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.DATABASE,
+                'auth',
                 `Error storing token in database: ${dbError.message}`,
-                ErrorService.SEVERITIES.WARNING,
-                { stack: dbError.stack, timestamp: new Date().toISOString() }
+                'warning',
+                {
+                    stack: dbError.stack,
+                    username: userInfo.username,
+                    sessionId,
+                    userId,
+                    timestamp: new Date().toISOString()
+                }
             );
             MonitoringService.logError(mcpError);
             // Continue even if database storage fails
         }
         
+        // Pattern 2: User Activity Logs
+        const finalUserId = `ms365:${userInfo.username}`;
+        MonitoringService.info('Authentication completed successfully', {
+            username: userInfo.username,
+            operation: 'handleAuthCallback',
+            duration: Date.now() - startTime,
+            timestamp: new Date().toISOString()
+        }, 'auth', null, finalUserId);
+        
         res.redirect('/');
+        
     } catch (err) {
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.AUTH,
+            'auth',
             `Authentication callback error: ${err.message}`,
-            ErrorService.SEVERITIES.ERROR,
-            { stack: err.stack, timestamp: new Date().toISOString() }
+            'error',
+            {
+                stack: err.stack,
+                operation: 'handleAuthCallback',
+                userId,
+                sessionId,
+                timestamp: new Date().toISOString()
+            }
         );
         MonitoringService.logError(mcpError);
-        res.status(500).send('Authentication failed: ' + (err.message || err));
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('Auth callback failed', {
+                error: err.message,
+                operation: 'handleAuthCallback',
+                timestamp: new Date().toISOString()
+            }, 'auth', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('Auth callback failed', {
+                sessionId,
+                error: err.message,
+                operation: 'handleAuthCallback',
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
+        
+        res.status(500).json({
+            error: 'authentication_failed',
+            error_description: 'Authentication failed during callback processing'
+        });
     }
 }
 
@@ -379,74 +641,159 @@ async function handleAuthCallback(req, res) {
  * @returns {Promise<boolean>} - True if authenticated
  */
 async function isAuthenticated(req) {
-    // Handle both session-based auth (browser) and device-based auth (MCP adapter)
-    let userId, sessionId;
+    const startTime = Date.now();
     
-    if (req.user?.isApiCall && req.user?.userId) {
-        // Device auth flow - use Microsoft 365-based userId from JWT token
-        userId = req.user.userId;  // This should be ms365:email@domain.com
-        sessionId = req.user.sessionId || req.user.userId;
-    } else if (req.session?.id && req.session?.msUser?.username) {
-        // Session-based auth flow - use Microsoft 365 email as consistent identifier
-        sessionId = req.session.id;
-        userId = `ms365:${req.session.msUser.username}`;
-    } else if (req.session?.id) {
-        // Fallback for sessions without Microsoft 365 auth
-        sessionId = req.session.id;
-        userId = `session:${sessionId}`;
-    }
-    
-    MonitoringService.info('Checking authentication status', {
-        hasSession: !!req.session,
-        sessionId: sessionId,
-        hasUser: !!req.user,
-        isApiCall: req.user?.isApiCall,
-        userId: userId,
-        hasMsUser: !!req.session?.msUser,
-        hasAccessToken: !!req.session?.msUser?.accessToken,
-        timestamp: new Date().toISOString()
-    }, 'auth');
-    
-    // Check if user is authenticated via Express session (primary method for browser)
-    if (req.session?.msUser?.accessToken) {
-        MonitoringService.info('User authenticated via Express session', {
-            username: req.session.msUser.username,
-            sessionId: req.session.id,
-            timestamp: new Date().toISOString()
-        }, 'auth');
-        return true;
-    }
-    
-    // Check database storage using userId (works for both session and device auth)
-    if (userId) {
-        try {
-            const tokenKey = `${userId}:ms-access-token`;
-            const storedToken = await storageService.getSecureSetting(tokenKey, sessionId);
-            if (storedToken) {
-                MonitoringService.info('User authenticated via database', {
-                    userId: userId,
-                    sessionId: sessionId,
-                    isApiCall: req.user?.isApiCall,
-                    timestamp: new Date().toISOString()
-                }, 'auth');
-                return true;
-            }
-        } catch (error) {
-            MonitoringService.debug('Failed to check database authentication', {
-                userId: userId,
+    try {
+        // Handle both session-based auth (browser) and device-based auth (MCP adapter)
+        let userId, sessionId;
+        
+        if (req.user?.isApiCall && req.user?.userId) {
+            // Device auth flow - use Microsoft 365-based userId from JWT token
+            userId = req.user.userId;  // This should be ms365:email@domain.com
+            sessionId = req.user.sessionId || req.user.userId;
+        } else if (req.session?.id && req.session?.msUser?.username) {
+            // Session-based auth flow - use Microsoft 365 email as consistent identifier
+            sessionId = req.session.id;
+            userId = `ms365:${req.session.msUser.username}`;
+        } else if (req.session?.id) {
+            // Fallback for sessions without Microsoft 365 auth
+            sessionId = req.session.id;
+            userId = `session:${sessionId}`;
+        }
+        
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Processing authentication check', {
+                hasSession: !!req.session,
                 sessionId: sessionId,
-                error: error.message,
+                hasUser: !!req.user,
+                isApiCall: req.user?.isApiCall,
+                userId: userId,
+                hasMsUser: !!req.session?.msUser,
+                hasAccessToken: !!req.session?.msUser?.accessToken,
+                userAgent: req.get('User-Agent'),
                 timestamp: new Date().toISOString()
             }, 'auth');
         }
+        
+        // Check if user is authenticated via Express session (primary method for browser)
+        if (req.session?.msUser?.accessToken) {
+            // Pattern 2: User Activity Logs
+            const finalUserId = `ms365:${req.session.msUser.username}`;
+            MonitoringService.info('User authenticated via Express session', {
+                username: req.session.msUser.username,
+                operation: 'isAuthenticated',
+                duration: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'auth', null, finalUserId);
+            return true;
+        }
+        
+        // Check database storage using userId (works for both session and device auth)
+        if (userId) {
+            try {
+                const tokenKey = `${userId}:ms-access-token`;
+                const storedToken = await storageService.getSecureSetting(tokenKey, sessionId);
+                if (storedToken) {
+                    // Pattern 2: User Activity Logs
+                    if (userId) {
+                        MonitoringService.info('User authenticated via database', {
+                            isApiCall: req.user?.isApiCall,
+                            operation: 'isAuthenticated',
+                            duration: Date.now() - startTime,
+                            timestamp: new Date().toISOString()
+                        }, 'auth', null, userId);
+                    } else if (sessionId) {
+                        MonitoringService.info('User authenticated via database with session', {
+                            sessionId,
+                            isApiCall: req.user?.isApiCall,
+                            operation: 'isAuthenticated',
+                            duration: Date.now() - startTime,
+                            timestamp: new Date().toISOString()
+                        }, 'auth');
+                    }
+                    return true;
+                }
+            } catch (error) {
+                // Pattern 3: Infrastructure Error Logging
+                const mcpError = ErrorService.createError(
+                    'auth',
+                    'Failed to check database authentication',
+                    'warning',
+                    {
+                        userId: userId,
+                        sessionId: sessionId,
+                        error: error.message,
+                        stack: error.stack,
+                        operation: 'isAuthenticated',
+                        timestamp: new Date().toISOString()
+                    }
+                );
+                MonitoringService.logError(mcpError);
+                
+                if (process.env.NODE_ENV === 'development') {
+                    MonitoringService.debug('Database authentication check failed', {
+                        userId: userId,
+                        sessionId: sessionId,
+                        error: error.message,
+                        timestamp: new Date().toISOString()
+                    }, 'auth');
+                }
+            }
+        }
+        
+        // Pattern 2: User Activity Logs (for not authenticated case)
+        if (userId) {
+            MonitoringService.info('User not authenticated', {
+                operation: 'isAuthenticated',
+                duration: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'auth', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('User not authenticated with session', {
+                sessionId,
+                operation: 'isAuthenticated',
+                duration: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
+        
+        return false;
+        
+    } catch (error) {
+        // Pattern 3: Infrastructure Error Logging
+        const mcpError = ErrorService.createError(
+            'auth',
+            'Error during authentication check',
+            'error',
+            {
+                error: error.message,
+                stack: error.stack,
+                operation: 'isAuthenticated',
+                timestamp: new Date().toISOString()
+            }
+        );
+        MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        const { userId, sessionId } = extractUserContext(req);
+        if (userId) {
+            MonitoringService.error('Authentication check failed', {
+                error: error.message,
+                operation: 'isAuthenticated',
+                timestamp: new Date().toISOString()
+            }, 'auth', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('Authentication check failed', {
+                sessionId,
+                error: error.message,
+                operation: 'isAuthenticated',
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
+        
+        return false;
     }
-    
-    MonitoringService.info('User not authenticated', {
-        sessionId: sessionId,
-        userId: userId,
-        timestamp: new Date().toISOString()
-    }, 'auth');
-    return false;
 }
 
 /**
@@ -455,6 +802,8 @@ async function isAuthenticated(req) {
  * @returns {Promise<string>} The access token
  */
 async function getAccessToken(req) {
+    const startTime = Date.now();
+    
     try {
         // Handle both session-based auth (browser) and device-based auth (MCP adapter)
         let userId, sessionId;
@@ -463,38 +812,69 @@ async function getAccessToken(req) {
             // Device auth flow - use userId from JWT token
             userId = req.user.userId;
             sessionId = req.user.sessionId || req.user.userId; // Use userId as sessionId if not provided
-            console.log('[MSAL] Getting token for device auth user:', userId);
         } else if (req.session?.id) {
             // Session-based auth flow - use session ID
             sessionId = req.session.id;
             userId = `user:${sessionId}`;
-            console.log('[MSAL] Getting token for session user:', userId);
         } else {
             // Fallback to query parameter
             userId = req.query?.userId;
             sessionId = userId;
-            console.log('[MSAL] Getting token for query user:', userId);
         }
         
+        // Pattern 1: Development Debug Logs
         if (process.env.NODE_ENV === 'development') {
-            console.log(`[MSAL] Request details:`, {
+            MonitoringService.debug('Processing getAccessToken request', {
                 hasReq: !!req,
                 hasUser: !!req?.user,
-                userObj: req?.user,
                 hasSession: !!req?.session,
-                sessionId: req?.session?.id,
-                extractedUserId: userId
-            });
+                sessionId,
+                extractedUserId: userId,
+                isApiCall: req.user?.isApiCall,
+                userAgent: req.get ? req.get('User-Agent') : 'N/A',
+                timestamp: new Date().toISOString()
+            }, 'auth');
         }
         
         if (!userId) {
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService.createError(
+                'auth',
+                'No user ID available for token retrieval',
+                'error',
+                {
+                    operation: 'getAccessToken',
+                    hasReq: !!req,
+                    hasUser: !!req?.user,
+                    hasSession: !!req?.session,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            MonitoringService.logError(mcpError);
+            
             throw new Error('No user ID available for token retrieval');
         }
         
         const userSession = getUserSession(userId);
         if (userSession?.msUser?.accessToken) {
             // TODO: Check token expiration and refresh if needed
-            console.log('[MSAL] Using access token from user session');
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Using access token from user session', {
+                    userId: userId.substring(0, 8) + '...',
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+            
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                MonitoringService.info('Access token retrieved from session', {
+                    operation: 'getAccessToken',
+                    source: 'user_session',
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'auth', null, userId);
+            }
+            
             return userSession.msUser.accessToken;
         }
         
@@ -504,7 +884,13 @@ async function getAccessToken(req) {
                 const tokenKey = `${userId}:ms-access-token`;
                 const storedToken = await storageService.getSecureSetting(tokenKey, sessionId);
                 if (storedToken) {
-                    console.log('[MSAL] Using access token from SQLite database');
+                    if (process.env.NODE_ENV === 'development') {
+                        MonitoringService.debug('Using access token from SQLite database', {
+                            userId: userId.substring(0, 8) + '...',
+                            tokenKey,
+                            timestamp: new Date().toISOString()
+                        }, 'auth');
+                    }
                     
                     // Also load it into memory for future use
                     const userInfoKey = `${userId}:ms-user-info`;
@@ -516,14 +902,29 @@ async function getAccessToken(req) {
                         }
                     });
                     
+                    // Pattern 2: User Activity Logs
+                    MonitoringService.info('Access token retrieved from database', {
+                        operation: 'getAccessToken',
+                        source: 'database',
+                        duration: Date.now() - startTime,
+                        timestamp: new Date().toISOString()
+                    }, 'auth', null, userId);
+                    
                     return storedToken;
                 }
             } catch (dbError) {
+                // Pattern 3: Infrastructure Error Logging
                 const mcpError = ErrorService.createError(
-                    ErrorService.CATEGORIES.DATABASE,
+                    'auth',
                     `Error getting token from database: ${dbError.message}`,
-                    ErrorService.SEVERITIES.WARNING,
-                    { stack: dbError.stack, timestamp: new Date().toISOString() }
+                    'warning',
+                    {
+                        stack: dbError.stack,
+                        userId,
+                        sessionId,
+                        operation: 'getAccessToken',
+                        timestamp: new Date().toISOString()
+                    }
                 );
                 MonitoringService.logError(mcpError);
             }
@@ -547,17 +948,79 @@ async function getAccessToken(req) {
                             expiresOn: response.expiresOn
                         }
                     });
+                    
+                    // Pattern 2: User Activity Logs
+                    MonitoringService.info('Access token acquired silently', {
+                        operation: 'getAccessToken',
+                        source: 'silent_acquisition',
+                        duration: Date.now() - startTime,
+                        timestamp: new Date().toISOString()
+                    }, 'auth', null, userId);
+                    
                     return response.accessToken;
                 }
             } catch (error) {
-                console.log('[MSAL] Silent token acquisition failed:', error);
+                if (process.env.NODE_ENV === 'development') {
+                    MonitoringService.debug('Silent token acquisition failed', {
+                        error: error.message,
+                        userId: userId.substring(0, 8) + '...',
+                        timestamp: new Date().toISOString()
+                    }, 'auth');
+                }
                 throw error;
             }
         }
         
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('User not authenticated - no token available', {
+                error: 'User not authenticated',
+                operation: 'getAccessToken',
+                timestamp: new Date().toISOString()
+            }, 'auth', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('User not authenticated - no token available', {
+                sessionId,
+                error: 'User not authenticated',
+                operation: 'getAccessToken',
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
+        
         throw new Error('User not authenticated');
+        
     } catch (error) {
-        console.error('[MSAL] Failed to get access token:', error);
+        // Pattern 3: Infrastructure Error Logging
+        const mcpError = ErrorService.createError(
+            'auth',
+            `Failed to get access token: ${error.message}`,
+            'error',
+            {
+                stack: error.stack,
+                operation: 'getAccessToken',
+                userId,
+                sessionId,
+                timestamp: new Date().toISOString()
+            }
+        );
+        MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('Access token retrieval failed', {
+                error: error.message,
+                operation: 'getAccessToken',
+                timestamp: new Date().toISOString()
+            }, 'auth', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('Access token retrieval failed', {
+                sessionId,
+                error: error.message,
+                operation: 'getAccessToken',
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
+        
         throw error;
     }
 }
@@ -568,40 +1031,150 @@ async function getAccessToken(req) {
  * @returns {Promise<Object>} Status details
  */
 async function statusDetails(req) {
-    if (await isAuthenticated(req)) {
-        // First try to get user info from Express session
-        let userInfo = req.session?.msUser;
+    const startTime = Date.now();
+    const { userId, sessionId } = extractUserContext(req);
+    
+    try {
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Processing statusDetails request', {
+                sessionId,
+                userId,
+                userAgent: req.get('User-Agent'),
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
         
-        // Fallback: get from database using session ID
-        if (!userInfo && req.session?.id) {
-            try {
-                const userKey = `user:${req.session.id}`;
-                const storedUserInfo = await storageService.getSetting(`${userKey}:ms-user-info`, req.session.id);
-                if (storedUserInfo) {
-                    userInfo = storedUserInfo;
+        if (await isAuthenticated(req)) {
+            // First try to get user info from Express session
+            let userInfo = req.session?.msUser;
+            
+            // Fallback: get from database using session ID
+            if (!userInfo && req.session?.id) {
+                try {
+                    const userKey = `user:${req.session.id}`;
+                    const storedUserInfo = await storageService.getSetting(`${userKey}:ms-user-info`, req.session.id);
+                    if (storedUserInfo) {
+                        userInfo = storedUserInfo;
+                    }
+                } catch (error) {
+                    // Pattern 3: Infrastructure Error Logging
+                    const mcpError = ErrorService.createError(
+                        'auth',
+                        'Failed to get user info from database',
+                        'warning',
+                        {
+                            sessionId: req.session.id,
+                            error: error.message,
+                            stack: error.stack,
+                            operation: 'statusDetails',
+                            timestamp: new Date().toISOString()
+                        }
+                    );
+                    MonitoringService.logError(mcpError);
+                    
+                    if (process.env.NODE_ENV === 'development') {
+                        MonitoringService.debug('Failed to get user info from database', {
+                            sessionId: req.session.id,
+                            error: error.message,
+                            timestamp: new Date().toISOString()
+                        }, 'auth');
+                    }
                 }
-            } catch (error) {
-                MonitoringService.debug('Failed to get user info from database', {
-                    sessionId: req.session.id,
-                    error: error.message,
+            }
+            
+            const statusResult = {
+                authenticated: true,
+                user: userInfo?.username || 'Unknown User',
+                name: userInfo?.name,
+                sessionId: req.session?.id,
+                message: 'Authenticated',
+                logoutUrl: '/api/auth/logout'
+            };
+            
+            // Pattern 2: User Activity Logs
+            const finalUserId = userInfo?.username ? `ms365:${userInfo.username}` : userId;
+            if (finalUserId) {
+                MonitoringService.info('Status details retrieved for authenticated user', {
+                    username: userInfo?.username,
+                    operation: 'statusDetails',
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'auth', null, finalUserId);
+            } else if (sessionId) {
+                MonitoringService.info('Status details retrieved with session', {
+                    sessionId,
+                    operation: 'statusDetails',
+                    duration: Date.now() - startTime,
                     timestamp: new Date().toISOString()
                 }, 'auth');
             }
+            
+            return statusResult;
+        } else {
+            const statusResult = {
+                authenticated: false,
+                loginUrl: '/api/auth/login',
+                message: 'Not authenticated'
+            };
+            
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                MonitoringService.info('Status details retrieved for unauthenticated user', {
+                    operation: 'statusDetails',
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'auth', null, userId);
+            } else if (sessionId) {
+                MonitoringService.info('Status details retrieved for unauthenticated session', {
+                    sessionId,
+                    operation: 'statusDetails',
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+            
+            return statusResult;
         }
         
-        return {
-            authenticated: true,
-            user: userInfo?.username || 'Unknown User',
-            name: userInfo?.name,
-            sessionId: req.session?.id,
-            message: 'Authenticated',
-            logoutUrl: '/api/auth/logout'
-        };
-    } else {
+    } catch (error) {
+        // Pattern 3: Infrastructure Error Logging
+        const mcpError = ErrorService.createError(
+            'auth',
+            `Error getting status details: ${error.message}`,
+            'error',
+            {
+                stack: error.stack,
+                operation: 'statusDetails',
+                userId,
+                sessionId,
+                timestamp: new Date().toISOString()
+            }
+        );
+        MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('Status details retrieval failed', {
+                error: error.message,
+                operation: 'statusDetails',
+                timestamp: new Date().toISOString()
+            }, 'auth', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('Status details retrieval failed', {
+                sessionId,
+                error: error.message,
+                operation: 'statusDetails',
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
+        
+        // Return fallback status on error
         return {
             authenticated: false,
             loginUrl: '/api/auth/login',
-            message: 'Not authenticated'
+            message: 'Error determining authentication status',
+            error: true
         };
     }
 }
@@ -612,26 +1185,45 @@ async function statusDetails(req) {
  * @param {Object} res - Express response object
  */
 async function logout(req, res) {
+    const startTime = Date.now();
+    const { userId, sessionId } = extractUserContext(req);
+    
     try {
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Processing logout request', {
+                sessionId,
+                userId,
+                userAgent: req.get('User-Agent'),
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
+        
         // Clear session if available
         if (req.session) {
             req.session.destroy(() => {
-                MonitoringService.info('User session destroyed', {
-                    timestamp: new Date().toISOString()
-                }, 'auth');
+                if (process.env.NODE_ENV === 'development') {
+                    MonitoringService.debug('User session destroyed', {
+                        sessionId,
+                        timestamp: new Date().toISOString()
+                    }, 'auth');
+                }
             });
         }
         
         // Clear user session
-        const userId = req.session?.userId || req.query.userId;
-        clearUserSession(userId);
+        const logoutUserId = req.session?.userId || req.query.userId || userId;
+        clearUserSession(logoutUserId);
         
         // Clear SQLite database storage
         try {
-            MonitoringService.info('Clearing authentication token from database', {
-                sessionId: req.session?.id,
-                timestamp: new Date().toISOString()
-            }, 'auth');
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Clearing authentication token from database', {
+                    sessionId,
+                    userId: logoutUserId,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
             
             // Clear session-based tokens if session exists
             if (req.session?.id) {
@@ -640,31 +1232,85 @@ async function logout(req, res) {
                 await storageService.setSetting(`${userKey}:ms-user-info`, null, req.session.id);
             }
             
-            MonitoringService.info('Authentication token cleared from database', {
-                sessionId: req.session?.id,
-                timestamp: new Date().toISOString()
-            }, 'auth');
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Authentication token cleared from database', {
+                    sessionId,
+                    userId: logoutUserId,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
         } catch (dbError) {
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.DATABASE,
+                'auth',
                 `Error clearing token from database: ${dbError.message}`,
-                ErrorService.SEVERITIES.WARNING,
-                { stack: dbError.stack, timestamp: new Date().toISOString() }
+                'warning',
+                {
+                    stack: dbError.stack,
+                    operation: 'logout',
+                    userId: logoutUserId,
+                    sessionId,
+                    timestamp: new Date().toISOString()
+                }
             );
             MonitoringService.logError(mcpError);
         }
         
+        // Pattern 2: User Activity Logs
+        if (logoutUserId) {
+            MonitoringService.info('User logout completed successfully', {
+                operation: 'logout',
+                duration: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'auth', null, logoutUserId);
+        } else if (sessionId) {
+            MonitoringService.info('Session logout completed successfully', {
+                sessionId,
+                operation: 'logout',
+                duration: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
+        
         // Redirect to home page
         res.redirect('/');
+        
     } catch (error) {
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.AUTH,
+            'auth',
             `Logout error: ${error.message}`,
-            ErrorService.SEVERITIES.ERROR,
-            { stack: error.stack, timestamp: new Date().toISOString() }
+            'error',
+            {
+                stack: error.stack,
+                operation: 'logout',
+                userId,
+                sessionId,
+                timestamp: new Date().toISOString()
+            }
         );
         MonitoringService.logError(mcpError);
-        res.status(500).send('Logout failed: ' + (error.message || error));
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('Logout failed', {
+                error: error.message,
+                operation: 'logout',
+                timestamp: new Date().toISOString()
+            }, 'auth', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('Logout failed', {
+                sessionId,
+                error: error.message,
+                operation: 'logout',
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
+        
+        res.status(500).json({
+            error: 'logout_failed',
+            error_description: 'Logout process failed'
+        });
     }
 }
 
@@ -675,10 +1321,13 @@ async function logout(req, res) {
  * @returns {Promise<string|null>} The most recent access token, or null if none available
  */
 async function getMostRecentToken(userId) {
+    const startTime = Date.now();
+    
     try {
+        // Pattern 1: Development Debug Logs
         if (process.env.NODE_ENV === 'development') {
-            MonitoringService.debug('Attempting to get most recent token for internal MCP call', {
-                userId,
+            MonitoringService.debug('Processing getMostRecentToken request', {
+                userId: userId ? userId.substring(0, 8) + '...' : 'N/A',
                 timestamp: new Date().toISOString()
             }, 'auth');
         }
@@ -689,10 +1338,19 @@ async function getMostRecentToken(userId) {
             if (userSession?.msUser?.accessToken) {
                 if (process.env.NODE_ENV === 'development') {
                     MonitoringService.debug('Found valid token in user session', {
-                        userId,
+                        userId: userId.substring(0, 8) + '...',
                         timestamp: new Date().toISOString()
                     }, 'auth');
                 }
+                
+                // Pattern 2: User Activity Logs
+                MonitoringService.info('Most recent token retrieved from user session', {
+                    operation: 'getMostRecentToken',
+                    source: 'user_session',
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'auth', null, userId);
+                
                 return userSession.msUser.accessToken;
             }
         }
@@ -701,11 +1359,20 @@ async function getMostRecentToken(userId) {
         for (const [sessionUserId, userSession] of userSessions.entries()) {
             if (userSession.msUser?.accessToken) {
                 if (process.env.NODE_ENV === 'development') {
-                    MonitoringService.debug('Found valid token in user session', {
-                        userId: sessionUserId,
+                    MonitoringService.debug('Found valid token in fallback user session', {
+                        userId: sessionUserId.substring(0, 8) + '...',
                         timestamp: new Date().toISOString()
                     }, 'auth');
                 }
+                
+                // Pattern 2: User Activity Logs
+                MonitoringService.info('Most recent token retrieved from fallback session', {
+                    operation: 'getMostRecentToken',
+                    source: 'fallback_session',
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'auth', null, sessionUserId);
+                
                 return userSession.msUser.accessToken;
             }
         }
@@ -713,7 +1380,7 @@ async function getMostRecentToken(userId) {
         // If not in memory, try to get from SQLite database with user-specific key
         if (process.env.NODE_ENV === 'development') {
             MonitoringService.debug('Trying to get token from SQLite database', {
-                userId,
+                userId: userId ? userId.substring(0, 8) + '...' : 'N/A',
                 timestamp: new Date().toISOString()
             }, 'auth');
         }
@@ -723,7 +1390,7 @@ async function getMostRecentToken(userId) {
             if (storedToken) {
                 if (process.env.NODE_ENV === 'development') {
                     MonitoringService.debug('Found valid token in SQLite database', {
-                        userId,
+                        userId: userId ? userId.substring(0, 8) + '...' : 'N/A',
                         tokenKey,
                         timestamp: new Date().toISOString()
                     }, 'auth');
@@ -741,32 +1408,78 @@ async function getMostRecentToken(userId) {
                     });
                 }
                 
+                // Pattern 2: User Activity Logs
+                if (userId) {
+                    MonitoringService.info('Most recent token retrieved from database', {
+                        operation: 'getMostRecentToken',
+                        source: 'database',
+                        duration: Date.now() - startTime,
+                        timestamp: new Date().toISOString()
+                    }, 'auth', null, userId);
+                }
+                
                 return storedToken;
             }
         } catch (dbError) {
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.DATABASE,
+                'auth',
                 `Error getting token from database: ${dbError.message}`,
-                ErrorService.SEVERITIES.WARNING,
-                { userId, stack: dbError.stack, timestamp: new Date().toISOString() }
+                'warning',
+                {
+                    userId,
+                    stack: dbError.stack,
+                    operation: 'getMostRecentToken',
+                    timestamp: new Date().toISOString()
+                }
             );
             MonitoringService.logError(mcpError);
         }
         
         // If no token found, we have no authenticated user
-        MonitoringService.warn('No authenticated user found for internal MCP call', {
-            userId,
-            timestamp: new Date().toISOString()
-        }, 'auth');
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('No authenticated user found for internal MCP call', {
+                userId: userId ? userId.substring(0, 8) + '...' : 'N/A',
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
+        
+        // Pattern 2: User Activity Logs (for no token case)
+        if (userId) {
+            MonitoringService.info('No recent token available', {
+                operation: 'getMostRecentToken',
+                result: 'no_token',
+                duration: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'auth', null, userId);
+        }
+        
         return null;
+        
     } catch (error) {
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.AUTH,
+            'auth',
             `Error getting most recent token: ${error.message}`,
-            ErrorService.SEVERITIES.ERROR,
-            { userId, stack: error.stack, timestamp: new Date().toISOString() }
+            'error',
+            {
+                userId,
+                stack: error.stack,
+                operation: 'getMostRecentToken',
+                timestamp: new Date().toISOString()
+            }
         );
         MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('Most recent token retrieval failed', {
+                error: error.message,
+                operation: 'getMostRecentToken',
+                timestamp: new Date().toISOString()
+            }, 'auth', null, userId);
+        }
+        
         return null;
     }
 }

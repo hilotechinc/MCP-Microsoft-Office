@@ -55,7 +55,19 @@ class DeviceJwtService {
      * @returns {string} Signed JWT access token
      */
     generateAccessToken(deviceId, userId, metadata = {}) {
+        const startTime = Date.now();
+        
         try {
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Processing access token generation request', {
+                    deviceId,
+                    userId: userId ? userId.substring(0, 8) + '...' : 'undefined',
+                    hasMetadata: Object.keys(metadata).length > 0,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+            
             if (!deviceId || !userId) {
                 throw ErrorService.createError(
                     'auth',
@@ -80,23 +92,43 @@ class DeviceJwtService {
                 subject: deviceId
             });
 
-            MonitoringService.debug('Access token generated', {
+            // Pattern 2: User Activity Logs
+            MonitoringService.info('Access token generated successfully', {
                 deviceId,
                 userId: userId.substring(0, 8) + '...',
                 expiresIn: ACCESS_TOKEN_EXPIRY,
+                duration: Date.now() - startTime,
                 timestamp: new Date().toISOString()
-            }, 'auth');
+            }, 'auth', null, userId);
 
             return token;
 
         } catch (error) {
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
                 'auth',
                 'Failed to generate access token',
                 'error',
-                { deviceId, error: error.message }
+                { 
+                    deviceId, 
+                    error: error.message,
+                    stack: error.stack,
+                    operation: 'generateAccessToken',
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }
             );
             MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Access token generation failed', {
+                    error: error.message,
+                    operation: 'generateAccessToken',
+                    timestamp: new Date().toISOString()
+                }, 'auth', null, userId);
+            }
+            
             throw mcpError;
         }
     }
@@ -109,7 +141,19 @@ class DeviceJwtService {
      * @returns {string} Signed JWT access token with 24-hour expiry
      */
     generateLongLivedAccessToken(deviceId, userId, metadata = {}) {
+        const startTime = Date.now();
+        
         try {
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Processing long-lived access token generation request', {
+                    deviceId,
+                    userId: userId ? userId.substring(0, 8) + '...' : 'undefined',
+                    hasMetadata: Object.keys(metadata).length > 0,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+            
             if (!deviceId || !userId) {
                 throw ErrorService.createError(
                     'auth',
@@ -134,23 +178,43 @@ class DeviceJwtService {
                 subject: deviceId
             });
 
-            MonitoringService.debug('Long-lived access token generated', {
+            // Pattern 2: User Activity Logs
+            MonitoringService.info('Long-lived access token generated successfully', {
                 deviceId,
                 userId: userId.substring(0, 8) + '...',
                 expiresIn: '24h',
+                duration: Date.now() - startTime,
                 timestamp: new Date().toISOString()
-            }, 'auth');
+            }, 'auth', null, userId);
 
             return token;
 
         } catch (error) {
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
                 'auth',
                 'Failed to generate long-lived access token',
                 'error',
-                { deviceId, error: error.message }
+                { 
+                    deviceId, 
+                    error: error.message,
+                    stack: error.stack,
+                    operation: 'generateLongLivedAccessToken',
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }
             );
             MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Long-lived access token generation failed', {
+                    error: error.message,
+                    operation: 'generateLongLivedAccessToken',
+                    timestamp: new Date().toISOString()
+                }, 'auth', null, userId);
+            }
+            
             throw mcpError;
         }
     }
@@ -162,7 +226,18 @@ class DeviceJwtService {
      * @returns {string} Signed JWT refresh token
      */
     generateRefreshToken(deviceId, metadata = {}) {
+        const startTime = Date.now();
+        
         try {
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Processing refresh token generation request', {
+                    deviceId,
+                    hasMetadata: Object.keys(metadata).length > 0,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+            
             if (!deviceId) {
                 throw ErrorService.createError(
                     'auth',
@@ -186,22 +261,41 @@ class DeviceJwtService {
                 subject: deviceId
             });
 
-            MonitoringService.debug('Refresh token generated', {
+            // Pattern 2: User Activity Logs
+            MonitoringService.info('Refresh token generated successfully', {
                 deviceId,
                 expiresIn: REFRESH_TOKEN_EXPIRY,
+                duration: Date.now() - startTime,
                 timestamp: new Date().toISOString()
             }, 'auth');
 
             return token;
 
         } catch (error) {
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
                 'auth',
                 'Failed to generate refresh token',
                 'error',
-                { deviceId, error: error.message }
+                { 
+                    deviceId, 
+                    error: error.message,
+                    stack: error.stack,
+                    operation: 'generateRefreshToken',
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }
             );
             MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking (Note: No userId available for refresh tokens)
+            MonitoringService.error('Refresh token generation failed', {
+                deviceId,
+                error: error.message,
+                operation: 'generateRefreshToken',
+                timestamp: new Date().toISOString()
+            }, 'auth');
+            
             throw mcpError;
         }
     }
@@ -212,7 +306,19 @@ class DeviceJwtService {
      * @returns {Object} Decoded token payload with { deviceId, userId, type, iat, exp }
      */
     validateAccessToken(token) {
+        const startTime = Date.now();
+        let userId = null;
+        
         try {
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Processing access token validation request', {
+                    tokenProvided: !!token,
+                    tokenLength: token ? token.length : 0,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+            
             if (!token) {
                 throw ErrorService.createError(
                     'auth',
@@ -229,6 +335,9 @@ class DeviceJwtService {
                 issuer: 'mcp-remote-service',
                 audience: 'mcp-client'
             });
+
+            // Extract userId for logging
+            userId = decoded.userId;
 
             // Validate token type
             if (decoded.type !== 'access') {
@@ -253,12 +362,23 @@ class DeviceJwtService {
                 );
             }
 
-            MonitoringService.debug('Access token validated successfully', {
-                deviceId: decoded.deviceId,
-                userId: decoded.userId.substring(0, 8) + '...',
-                exp: decoded.exp,
-                timestamp: new Date().toISOString()
-            }, 'auth');
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                MonitoringService.info('Access token validated successfully', {
+                    deviceId: decoded.deviceId,
+                    userId: userId.substring(0, 8) + '...',
+                    exp: decoded.exp,
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'auth', null, userId);
+            } else {
+                MonitoringService.info('Access token validated successfully', {
+                    deviceId: decoded.deviceId,
+                    exp: decoded.exp,
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
 
             return {
                 deviceId: decoded.deviceId,
@@ -271,19 +391,30 @@ class DeviceJwtService {
         } catch (error) {
             let mcpError;
             
+            // Pattern 3: Infrastructure Error Logging
             if (error.name === 'TokenExpiredError') {
                 mcpError = ErrorService.createError(
                     'auth',
                     'Access token has expired',
                     'warning',
-                    { expiredAt: error.expiredAt }
+                    { 
+                        expiredAt: error.expiredAt,
+                        operation: 'validateAccessToken',
+                        duration: Date.now() - startTime,
+                        timestamp: new Date().toISOString()
+                    }
                 );
             } else if (error.name === 'JsonWebTokenError') {
                 mcpError = ErrorService.createError(
                     'auth',
                     'Invalid access token format',
                     'warning',
-                    { jwtError: error.message }
+                    { 
+                        jwtError: error.message,
+                        operation: 'validateAccessToken',
+                        duration: Date.now() - startTime,
+                        timestamp: new Date().toISOString()
+                    }
                 );
             } else if (error.category) {
                 // Already an MCP error
@@ -293,11 +424,33 @@ class DeviceJwtService {
                     'auth',
                     'Token validation failed',
                     'error',
-                    { error: error.message }
+                    { 
+                        error: error.message,
+                        stack: error.stack,
+                        operation: 'validateAccessToken',
+                        duration: Date.now() - startTime,
+                        timestamp: new Date().toISOString()
+                    }
                 );
             }
 
             MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Access token validation failed', {
+                    error: error.message,
+                    operation: 'validateAccessToken',
+                    timestamp: new Date().toISOString()
+                }, 'auth', null, userId);
+            } else {
+                MonitoringService.error('Access token validation failed', {
+                    error: error.message,
+                    operation: 'validateAccessToken',
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+            
             throw mcpError;
         }
     }
@@ -308,7 +461,18 @@ class DeviceJwtService {
      * @returns {Object} Decoded token payload with { deviceId, type, iat, exp }
      */
     validateRefreshToken(token) {
+        const startTime = Date.now();
+        
         try {
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Processing refresh token validation request', {
+                    tokenProvided: !!token,
+                    tokenLength: token ? token.length : 0,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+            
             if (!token) {
                 throw ErrorService.createError(
                     'auth',
@@ -346,9 +510,11 @@ class DeviceJwtService {
                 );
             }
 
-            MonitoringService.debug('Refresh token validated successfully', {
+            // Pattern 2: User Activity Logs
+            MonitoringService.info('Refresh token validated successfully', {
                 deviceId: decoded.deviceId,
                 exp: decoded.exp,
+                duration: Date.now() - startTime,
                 timestamp: new Date().toISOString()
             }, 'auth');
 
@@ -362,19 +528,30 @@ class DeviceJwtService {
         } catch (error) {
             let mcpError;
             
+            // Pattern 3: Infrastructure Error Logging
             if (error.name === 'TokenExpiredError') {
                 mcpError = ErrorService.createError(
                     'auth',
                     'Refresh token has expired',
                     'warning',
-                    { expiredAt: error.expiredAt }
+                    { 
+                        expiredAt: error.expiredAt,
+                        operation: 'validateRefreshToken',
+                        duration: Date.now() - startTime,
+                        timestamp: new Date().toISOString()
+                    }
                 );
             } else if (error.name === 'JsonWebTokenError') {
                 mcpError = ErrorService.createError(
                     'auth',
                     'Invalid refresh token format',
                     'warning',
-                    { jwtError: error.message }
+                    { 
+                        jwtError: error.message,
+                        operation: 'validateRefreshToken',
+                        duration: Date.now() - startTime,
+                        timestamp: new Date().toISOString()
+                    }
                 );
             } else if (error.category) {
                 // Already an MCP error
@@ -384,11 +561,25 @@ class DeviceJwtService {
                     'auth',
                     'Refresh token validation failed',
                     'error',
-                    { error: error.message }
+                    { 
+                        error: error.message,
+                        stack: error.stack,
+                        operation: 'validateRefreshToken',
+                        duration: Date.now() - startTime,
+                        timestamp: new Date().toISOString()
+                    }
                 );
             }
 
             MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking (Note: No userId available for refresh tokens)
+            MonitoringService.error('Refresh token validation failed', {
+                error: error.message,
+                operation: 'validateRefreshToken',
+                timestamp: new Date().toISOString()
+            }, 'auth');
+            
             throw mcpError;
         }
     }
@@ -399,12 +590,61 @@ class DeviceJwtService {
      * @returns {string|null} Extracted token or null if not found
      */
     extractTokenFromHeader(authHeader) {
-        if (!authHeader) {
-            return null;
-        }
+        const startTime = Date.now();
+        
+        try {
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Processing token extraction from header', {
+                    hasAuthHeader: !!authHeader,
+                    headerLength: authHeader ? authHeader.length : 0,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+            
+            if (!authHeader) {
+                return null;
+            }
 
-        const match = authHeader.match(/^Bearer\s+(.+)$/);
-        return match ? match[1] : null;
+            const match = authHeader.match(/^Bearer\s+(.+)$/);
+            const token = match ? match[1] : null;
+            
+            // Pattern 2: User Activity Logs (only log successful extractions)
+            if (token) {
+                MonitoringService.info('Token extracted from header successfully', {
+                    tokenLength: token.length,
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+            
+            return token;
+            
+        } catch (error) {
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService.createError(
+                'auth',
+                'Failed to extract token from header',
+                'error',
+                { 
+                    error: error.message,
+                    stack: error.stack,
+                    operation: 'extractTokenFromHeader',
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            MonitoringService.error('Token extraction from header failed', {
+                error: error.message,
+                operation: 'extractTokenFromHeader',
+                timestamp: new Date().toISOString()
+            }, 'auth');
+            
+            throw mcpError;
+        }
     }
 
     /**
@@ -415,15 +655,37 @@ class DeviceJwtService {
      * @returns {Object} { accessToken, refreshToken }
      */
     generateTokenPair(deviceId, userId, metadata = {}) {
+        const startTime = Date.now();
+        
         try {
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Processing token pair generation request', {
+                    deviceId,
+                    userId: userId ? userId.substring(0, 8) + '...' : 'undefined',
+                    hasMetadata: Object.keys(metadata).length > 0,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+            
             const accessToken = this.generateAccessToken(deviceId, userId, metadata);
             const refreshToken = this.generateRefreshToken(deviceId, metadata);
 
-            MonitoringService.info('Token pair generated successfully', {
-                deviceId,
-                userId: userId.substring(0, 8) + '...',
-                timestamp: new Date().toISOString()
-            }, 'auth');
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                MonitoringService.info('Token pair generated successfully', {
+                    deviceId,
+                    userId: userId.substring(0, 8) + '...',
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'auth', null, userId);
+            } else {
+                MonitoringService.info('Token pair generated successfully', {
+                    deviceId,
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
 
             return {
                 accessToken,
@@ -433,13 +695,38 @@ class DeviceJwtService {
             };
 
         } catch (error) {
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
                 'auth',
                 'Failed to generate token pair',
                 'error',
-                { deviceId, error: error.message }
+                { 
+                    deviceId, 
+                    error: error.message,
+                    stack: error.stack,
+                    operation: 'generateTokenPair',
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }
             );
             MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Token pair generation failed', {
+                    error: error.message,
+                    operation: 'generateTokenPair',
+                    timestamp: new Date().toISOString()
+                }, 'auth', null, userId);
+            } else {
+                MonitoringService.error('Token pair generation failed', {
+                    deviceId,
+                    error: error.message,
+                    operation: 'generateTokenPair',
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+            
             throw mcpError;
         }
     }

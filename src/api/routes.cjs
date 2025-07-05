@@ -45,15 +45,160 @@ function registerRoutes(router) {
         next();
     });
     // MCP Tool Manifest for Claude Desktop
-    router.get('/tools', (req, res) => {
-        // Get tools dynamically from the tools service
-        const tools = apiContext.toolsService.getAllTools();
-        res.json({ tools });
+    router.get('/tools', async (req, res) => {
+        try {
+            // Extract user context
+            const { userId, sessionId } = req.user || {};
+            const actualSessionId = sessionId || req.session?.id;
+            
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Processing MCP tools manifest request', {
+                    method: req.method,
+                    path: req.path,
+                    sessionId: actualSessionId,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString(),
+                    userId
+                }, 'routes');
+            }
+            
+            // Get tools dynamically from the tools service
+            const tools = apiContext.toolsService.getAllTools();
+            
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                MonitoringService.info('MCP tools manifest retrieved successfully', {
+                    toolCount: tools.length,
+                    timestamp: new Date().toISOString()
+                }, 'routes', null, userId);
+            } else if (actualSessionId) {
+                MonitoringService.info('MCP tools manifest retrieved with session', {
+                    sessionId: actualSessionId,
+                    toolCount: tools.length,
+                    timestamp: new Date().toISOString()
+                }, 'routes');
+            }
+            
+            res.json({ tools });
+            
+        } catch (error) {
+            // Extract user context for error handling
+            const { userId } = req.user || {};
+            const actualSessionId = req.session?.id;
+            
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService.createError(
+                'routes',
+                'Failed to retrieve MCP tools manifest',
+                'error',
+                {
+                    endpoint: '/tools',
+                    error: error.message,
+                    stack: error.stack,
+                    userId,
+                    sessionId: actualSessionId,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('MCP tools manifest retrieval failed', {
+                    error: error.message,
+                    timestamp: new Date().toISOString()
+                }, 'routes', null, userId);
+            } else if (actualSessionId) {
+                MonitoringService.error('MCP tools manifest retrieval failed', {
+                    sessionId: actualSessionId,
+                    error: error.message,
+                    timestamp: new Date().toISOString()
+                }, 'routes');
+            }
+            
+            res.status(500).json({
+                error: 'TOOLS_MANIFEST_FAILED',
+                error_description: 'Failed to retrieve tools manifest'
+            });
+        }
     });
 
     // Health check endpoint (on main router before v1 to avoid potential v1 middleware)
-    router.get('/health', (req, res) => {
-        res.json({ status: 'ok' });
+    router.get('/health', async (req, res) => {
+        try {
+            // Extract user context
+            const { userId, sessionId } = req.user || {};
+            const actualSessionId = sessionId || req.session?.id;
+            
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Processing health check request', {
+                    method: req.method,
+                    path: req.path,
+                    sessionId: actualSessionId,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString(),
+                    userId
+                }, 'routes');
+            }
+            
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                MonitoringService.info('Health check completed successfully', {
+                    status: 'ok',
+                    timestamp: new Date().toISOString()
+                }, 'routes', null, userId);
+            } else if (actualSessionId) {
+                MonitoringService.info('Health check completed with session', {
+                    sessionId: actualSessionId,
+                    status: 'ok',
+                    timestamp: new Date().toISOString()
+                }, 'routes');
+            }
+            
+            res.json({ status: 'ok' });
+            
+        } catch (error) {
+            // Extract user context for error handling
+            const { userId } = req.user || {};
+            const actualSessionId = req.session?.id;
+            
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService.createError(
+                'routes',
+                'Health check failed',
+                'error',
+                {
+                    endpoint: '/health',
+                    error: error.message,
+                    stack: error.stack,
+                    userId,
+                    sessionId: actualSessionId,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Health check failed', {
+                    error: error.message,
+                    timestamp: new Date().toISOString()
+                }, 'routes', null, userId);
+            } else if (actualSessionId) {
+                MonitoringService.error('Health check failed', {
+                    sessionId: actualSessionId,
+                    error: error.message,
+                    timestamp: new Date().toISOString()
+                }, 'routes');
+            }
+            
+            res.status(500).json({
+                error: 'HEALTH_CHECK_FAILED',
+                error_description: 'Health check failed'
+            });
+        }
     });
 
     // Versioned API path
@@ -172,10 +317,84 @@ function registerRoutes(router) {
     logRouter.post('/', placeholderRateLimit, logController.addLogEntry); // /v1/logs
     logRouter.get('/', logController.getLogEntries); // /v1/logs
     // Convenience endpoints for specific log categories
-    logRouter.get('/calendar', (req, res) => {
-        // Pre-filter for calendar logs
-        req.query.category = 'calendar';
-        return logController.getLogEntries(req, res);
+    logRouter.get('/calendar', async (req, res) => {
+        try {
+            // Extract user context
+            const { userId, sessionId } = req.user || {};
+            const actualSessionId = sessionId || req.session?.id;
+            
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Processing calendar logs filter request', {
+                    method: req.method,
+                    path: req.path,
+                    sessionId: actualSessionId,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString(),
+                    userId,
+                    category: 'calendar'
+                }, 'routes');
+            }
+            
+            // Pre-filter for calendar logs
+            req.query.category = 'calendar';
+            
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                MonitoringService.info('Calendar logs filter applied successfully', {
+                    category: 'calendar',
+                    timestamp: new Date().toISOString()
+                }, 'routes', null, userId);
+            } else if (actualSessionId) {
+                MonitoringService.info('Calendar logs filter applied with session', {
+                    sessionId: actualSessionId,
+                    category: 'calendar',
+                    timestamp: new Date().toISOString()
+                }, 'routes');
+            }
+            
+            return logController.getLogEntries(req, res);
+            
+        } catch (error) {
+            // Extract user context for error handling
+            const { userId } = req.user || {};
+            const actualSessionId = req.session?.id;
+            
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService.createError(
+                'routes',
+                'Failed to apply calendar logs filter',
+                'error',
+                {
+                    endpoint: '/v1/logs/calendar',
+                    error: error.message,
+                    stack: error.stack,
+                    userId,
+                    sessionId: actualSessionId,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Calendar logs filter failed', {
+                    error: error.message,
+                    timestamp: new Date().toISOString()
+                }, 'routes', null, userId);
+            } else if (actualSessionId) {
+                MonitoringService.error('Calendar logs filter failed', {
+                    sessionId: actualSessionId,
+                    error: error.message,
+                    timestamp: new Date().toISOString()
+                }, 'routes');
+            }
+            
+            res.status(500).json({
+                error: 'CALENDAR_LOGS_FILTER_FAILED',
+                error_description: 'Failed to filter calendar logs'
+            });
+        }
     }); // /v1/logs/calendar
     // TODO: Apply rate limiting
     logRouter.post('/clear', placeholderRateLimit, logController.clearLogEntries); // /v1/logs/clear
@@ -222,6 +441,20 @@ function registerRoutes(router) {
     if (process.env.NODE_ENV === 'development') {
         router.get('/api/v1/debug/graph-token', requireAuth, async (req, res) => {
             try {
+                // Extract user context
+                const { userId, sessionId } = req.user || {};
+                const actualSessionId = sessionId || req.session?.id;
+                
+                // Pattern 1: Development Debug Logs
+                MonitoringService.debug('Processing debug graph token request', {
+                    method: req.method,
+                    path: req.path,
+                    sessionId: actualSessionId,
+                    userAgent: req.get('User-Agent'),
+                    timestamp: new Date().toISOString(),
+                    userId
+                }, 'routes');
+                
                 const graphClientFactory = require('../graph/graph-client-factory.cjs');
                 const client = await graphClientFactory.createClient(req);
                 
@@ -229,21 +462,86 @@ function registerRoutes(router) {
                 const authProvider = client.authProvider || client._authProvider;
                 if (authProvider && authProvider.getAccessToken) {
                     const accessToken = await authProvider.getAccessToken();
+                    
+                    // Pattern 2: User Activity Logs
+                    if (userId) {
+                        MonitoringService.info('Debug graph token retrieved successfully', {
+                            hasToken: !!accessToken,
+                            tokenLength: accessToken ? accessToken.length : 0,
+                            timestamp: new Date().toISOString()
+                        }, 'routes', null, userId);
+                    } else if (actualSessionId) {
+                        MonitoringService.info('Debug graph token retrieved with session', {
+                            sessionId: actualSessionId,
+                            hasToken: !!accessToken,
+                            tokenLength: accessToken ? accessToken.length : 0,
+                            timestamp: new Date().toISOString()
+                        }, 'routes');
+                    }
+                    
                     res.json({ 
                         accessToken: accessToken,
                         hasToken: !!accessToken,
                         tokenLength: accessToken ? accessToken.length : 0
                     });
                 } else {
+                    // Pattern 4: User Error Tracking for auth provider issue
+                    if (userId) {
+                        MonitoringService.error('Debug graph token - auth provider not accessible', {
+                            error: 'Could not access auth provider',
+                            timestamp: new Date().toISOString()
+                        }, 'routes', null, userId);
+                    } else if (actualSessionId) {
+                        MonitoringService.error('Debug graph token - auth provider not accessible', {
+                            sessionId: actualSessionId,
+                            error: 'Could not access auth provider',
+                            timestamp: new Date().toISOString()
+                        }, 'routes');
+                    }
+                    
                     res.json({ 
                         error: 'Could not access auth provider',
                         hasToken: false
                     });
                 }
             } catch (error) {
+                // Extract user context for error handling
+                const { userId } = req.user || {};
+                const actualSessionId = req.session?.id;
+                
+                // Pattern 3: Infrastructure Error Logging
+                const mcpError = ErrorService.createError(
+                    'routes',
+                    'Failed to get debug graph token',
+                    'error',
+                    {
+                        endpoint: '/api/v1/debug/graph-token',
+                        error: error.message,
+                        stack: error.stack,
+                        userId,
+                        sessionId: actualSessionId,
+                        timestamp: new Date().toISOString()
+                    }
+                );
+                MonitoringService.logError(mcpError);
+                
+                // Pattern 4: User Error Tracking
+                if (userId) {
+                    MonitoringService.error('Debug graph token retrieval failed', {
+                        error: error.message,
+                        timestamp: new Date().toISOString()
+                    }, 'routes', null, userId);
+                } else if (actualSessionId) {
+                    MonitoringService.error('Debug graph token retrieval failed', {
+                        sessionId: actualSessionId,
+                        error: error.message,
+                        timestamp: new Date().toISOString()
+                    }, 'routes');
+                }
+                
                 res.status(500).json({ 
-                    error: 'Failed to get access token',
-                    message: error.message
+                    error: 'DEBUG_GRAPH_TOKEN_FAILED',
+                    error_description: 'Failed to get access token'
                 });
             }
         });

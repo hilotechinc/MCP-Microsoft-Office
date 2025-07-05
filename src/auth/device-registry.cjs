@@ -38,6 +38,16 @@ class DeviceRegistry {
     async registerDevice(options = {}) {
         const startTime = Date.now();
         
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Processing device registration request', {
+                deviceName: options.deviceName,
+                deviceType: options.deviceType,
+                clientId: options.clientId,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
+        
         try {
             const deviceId = uuid();
             const deviceSecret = this.generateDeviceSecret();
@@ -71,12 +81,16 @@ class DeviceRegistry {
             // Store device in database
             await this.storeDevice(deviceData);
 
+            // Pattern 2: User Activity Logs
             MonitoringService.info('Device registered successfully', {
                 deviceId,
                 userCode,
+                deviceName: options.deviceName || 'Unknown Device',
+                deviceType: options.deviceType || 'unknown',
                 expiresAt: new Date(expiresAt).toISOString(),
+                duration: Date.now() - startTime,
                 timestamp: new Date().toISOString()
-            }, 'device-registry');
+            }, 'auth');
 
             MonitoringService.trackMetric('device_registration_success', Date.now() - startTime, {
                 timestamp: new Date().toISOString()
@@ -94,17 +108,29 @@ class DeviceRegistry {
         } catch (error) {
             const executionTime = Date.now() - startTime;
             
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                'device-registry',
+                'auth',
                 `Device registration failed: ${error.message}`,
-                ErrorService.SEVERITIES.ERROR,
+                'error',
                 {
+                    operation: 'registerDevice',
+                    deviceName: options.deviceName,
+                    deviceType: options.deviceType,
+                    error: error.message,
                     stack: error.stack,
                     timestamp: new Date().toISOString()
                 }
             );
-            
             MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            MonitoringService.error('Device registration failed', {
+                error: error.message,
+                operation: 'registerDevice',
+                timestamp: new Date().toISOString()
+            }, 'auth');
+            
             MonitoringService.trackMetric('device_registration_failure', executionTime, {
                 errorType: error.code || 'unknown',
                 timestamp: new Date().toISOString()
@@ -122,6 +148,15 @@ class DeviceRegistry {
      */
     async authorizeDevice(userCode, userId) {
         const startTime = Date.now();
+        
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Processing device authorization request', {
+                userCode,
+                userId: userId ? userId.substring(0, 8) + '...' : 'unknown',
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
         
         try {
             const device = await this.getDeviceByUserCode(userCode);
@@ -141,12 +176,26 @@ class DeviceRegistry {
             // Update device with authorization
             await this.updateDeviceAuthorization(device.device_id, userId);
 
-            MonitoringService.info('Device authorized successfully', {
-                deviceId: device.device_id,
-                userId,
-                userCode,
-                timestamp: new Date().toISOString()
-            }, 'device-registry');
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                MonitoringService.info('Device authorized successfully', {
+                    deviceId: device.device_id,
+                    deviceName: device.device_name,
+                    deviceType: device.device_type,
+                    userCode,
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'auth', null, userId);
+            } else {
+                MonitoringService.info('Device authorized successfully', {
+                    deviceId: device.device_id,
+                    deviceName: device.device_name,
+                    deviceType: device.device_type,
+                    userCode,
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
 
             MonitoringService.trackMetric('device_authorization_success', Date.now() - startTime, {
                 timestamp: new Date().toISOString()
@@ -157,19 +206,39 @@ class DeviceRegistry {
         } catch (error) {
             const executionTime = Date.now() - startTime;
             
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                'device-registry',
+                'auth',
                 `Device authorization failed: ${error.message}`,
-                ErrorService.SEVERITIES.ERROR,
+                'error',
                 {
+                    operation: 'authorizeDevice',
                     userCode,
                     userId,
+                    error: error.message,
                     stack: error.stack,
                     timestamp: new Date().toISOString()
                 }
             );
-            
             MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Device authorization failed', {
+                    error: error.message,
+                    operation: 'authorizeDevice',
+                    userCode,
+                    timestamp: new Date().toISOString()
+                }, 'auth', null, userId);
+            } else {
+                MonitoringService.error('Device authorization failed', {
+                    error: error.message,
+                    operation: 'authorizeDevice',
+                    userCode,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+            
             MonitoringService.trackMetric('device_authorization_failure', executionTime, {
                 errorType: error.code || 'unknown',
                 timestamp: new Date().toISOString()
@@ -185,6 +254,16 @@ class DeviceRegistry {
      * @returns {Promise<Object|null>} Device data or null
      */
     async getDeviceByCode(deviceCode) {
+        const startTime = Date.now();
+        
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Processing get device by code request', {
+                deviceCode: deviceCode ? deviceCode.substring(0, 8) + '...' : 'unknown',
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
+        
         try {
             const connection = await StorageService.getConnection();
             
@@ -194,24 +273,55 @@ class DeviceRegistry {
                     [deviceCode, Date.now()]
                 );
                 connection.release();
-                return rows.length > 0 ? rows[0] : null;
+                
+                const device = rows.length > 0 ? rows[0] : null;
+                
+                // Pattern 2: User Activity Logs
+                if (device && device.user_id) {
+                    MonitoringService.info('Device retrieved by code successfully', {
+                        deviceId: device.device_id,
+                        deviceName: device.device_name,
+                        deviceType: device.device_type,
+                        isAuthorized: device.is_authorized,
+                        duration: Date.now() - startTime,
+                        timestamp: new Date().toISOString()
+                    }, 'auth', null, device.user_id);
+                } else {
+                    MonitoringService.info('Device lookup by code completed', {
+                        found: !!device,
+                        duration: Date.now() - startTime,
+                        timestamp: new Date().toISOString()
+                    }, 'auth');
+                }
+                
+                return device;
             } catch (error) {
                 connection.release();
                 throw error;
             }
         } catch (error) {
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                'device-registry',
+                'auth',
                 `Failed to get device by code: ${error.message}`,
-                ErrorService.SEVERITIES.ERROR,
+                'error',
                 {
+                    operation: 'getDeviceByCode',
                     deviceCode,
+                    error: error.message,
                     stack: error.stack,
                     timestamp: new Date().toISOString()
                 }
             );
-            
             MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            MonitoringService.error('Device lookup by code failed', {
+                error: error.message,
+                operation: 'getDeviceByCode',
+                timestamp: new Date().toISOString()
+            }, 'auth');
+            
             throw mcpError;
         }
     }
@@ -222,12 +332,17 @@ class DeviceRegistry {
      * @returns {Promise<Object|null>} Device data or null
      */
     async getDeviceByUserCode(userCode) {
-        try {
-            MonitoringService.debug('Searching for device by user code', {
+        const startTime = Date.now();
+        
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Processing get device by user code request', {
                 userCode,
                 timestamp: new Date().toISOString()
-            }, 'device-registry');
-            
+            }, 'auth');
+        }
+        
+        try {
             const connection = await StorageService.getConnection();
             
             try {
@@ -237,31 +352,67 @@ class DeviceRegistry {
                 );
                 connection.release();
                 
-                MonitoringService.debug('Device search result', {
-                    userCode,
-                    found: rows.length > 0,
-                    rowCount: rows.length,
-                    timestamp: new Date().toISOString()
-                }, 'device-registry');
+                const device = rows.length > 0 ? rows[0] : null;
                 
-                return rows.length > 0 ? rows[0] : null;
+                // Pattern 1: Development Debug Logs (additional detail)
+                if (process.env.NODE_ENV === 'development') {
+                    MonitoringService.debug('Device search result', {
+                        userCode,
+                        found: !!device,
+                        rowCount: rows.length,
+                        timestamp: new Date().toISOString()
+                    }, 'auth');
+                }
+                
+                // Pattern 2: User Activity Logs
+                if (device && device.user_id) {
+                    MonitoringService.info('Device retrieved by user code successfully', {
+                        deviceId: device.device_id,
+                        deviceName: device.device_name,
+                        deviceType: device.device_type,
+                        isAuthorized: device.is_authorized,
+                        userCode,
+                        duration: Date.now() - startTime,
+                        timestamp: new Date().toISOString()
+                    }, 'auth', null, device.user_id);
+                } else {
+                    MonitoringService.info('Device lookup by user code completed', {
+                        userCode,
+                        found: !!device,
+                        duration: Date.now() - startTime,
+                        timestamp: new Date().toISOString()
+                    }, 'auth');
+                }
+                
+                return device;
             } catch (error) {
                 connection.release();
                 throw error;
             }
         } catch (error) {
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                'device-registry',
+                'auth',
                 `Failed to get device by user code: ${error.message}`,
-                ErrorService.SEVERITIES.ERROR,
+                'error',
                 {
+                    operation: 'getDeviceByUserCode',
                     userCode,
+                    error: error.message,
                     stack: error.stack,
                     timestamp: new Date().toISOString()
                 }
             );
-            
             MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            MonitoringService.error('Device lookup by user code failed', {
+                error: error.message,
+                operation: 'getDeviceByUserCode',
+                userCode,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+            
             throw mcpError;
         }
     }
@@ -272,6 +423,16 @@ class DeviceRegistry {
      * @returns {Promise<Object|null>} Device data or null
      */
     async getDeviceById(deviceId) {
+        const startTime = Date.now();
+        
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Processing get device by ID request', {
+                deviceId,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
+        
         try {
             const connection = await StorageService.getConnection();
             
@@ -281,24 +442,57 @@ class DeviceRegistry {
                     [deviceId]
                 );
                 connection.release();
-                return rows.length > 0 ? rows[0] : null;
+                
+                const device = rows.length > 0 ? rows[0] : null;
+                
+                // Pattern 2: User Activity Logs
+                if (device && device.user_id) {
+                    MonitoringService.info('Device retrieved by ID successfully', {
+                        deviceId: device.device_id,
+                        deviceName: device.device_name,
+                        deviceType: device.device_type,
+                        isAuthorized: device.is_authorized,
+                        duration: Date.now() - startTime,
+                        timestamp: new Date().toISOString()
+                    }, 'auth', null, device.user_id);
+                } else {
+                    MonitoringService.info('Device lookup by ID completed', {
+                        deviceId,
+                        found: !!device,
+                        duration: Date.now() - startTime,
+                        timestamp: new Date().toISOString()
+                    }, 'auth');
+                }
+                
+                return device;
             } catch (error) {
                 connection.release();
                 throw error;
             }
         } catch (error) {
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                'device-registry',
+                'auth',
                 `Failed to get device by ID: ${error.message}`,
-                ErrorService.SEVERITIES.ERROR,
+                'error',
                 {
+                    operation: 'getDeviceById',
                     deviceId,
+                    error: error.message,
                     stack: error.stack,
                     timestamp: new Date().toISOString()
                 }
             );
-            
             MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            MonitoringService.error('Device lookup by ID failed', {
+                error: error.message,
+                operation: 'getDeviceById',
+                deviceId,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+            
             throw mcpError;
         }
     }
@@ -308,6 +502,16 @@ class DeviceRegistry {
      * @param {string} deviceId - Device ID
      */
     async updateLastSeen(deviceId) {
+        const startTime = Date.now();
+        
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Processing update device last seen request', {
+                deviceId,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
+        
         try {
             const connection = await StorageService.getConnection();
             const lastSeen = Date.now();
@@ -318,17 +522,46 @@ class DeviceRegistry {
                     [lastSeen, deviceId]
                 );
                 connection.release();
-                return result.changes > 0;
+                
+                const updated = result.changes > 0;
+                
+                // Pattern 2: User Activity Logs
+                MonitoringService.info('Device last seen updated', {
+                    deviceId,
+                    updated,
+                    lastSeen: new Date(lastSeen).toISOString(),
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+                
+                return updated;
             } catch (error) {
                 connection.release();
                 throw error;
             }
         } catch (error) {
-            MonitoringService.warn('Failed to update device last seen', {
-                deviceId,
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService.createError(
+                'auth',
+                `Failed to update device last seen: ${error.message}`,
+                'error',
+                {
+                    operation: 'updateLastSeen',
+                    deviceId,
+                    error: error.message,
+                    stack: error.stack,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            MonitoringService.error('Device last seen update failed', {
                 error: error.message,
+                operation: 'updateLastSeen',
+                deviceId,
                 timestamp: new Date().toISOString()
-            }, 'device-registry');
+            }, 'auth');
         }
     }
 
@@ -366,36 +599,90 @@ class DeviceRegistry {
      * @returns {Promise<void>}
      */
     async storeDevice(deviceData) {
-        const connection = await StorageService.getConnection();
+        const startTime = Date.now();
+        
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Processing store device request', {
+                deviceId: deviceData.device_id,
+                deviceName: deviceData.device_name,
+                deviceType: deviceData.device_type,
+                userCode: deviceData.user_code,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
         
         try {
-            const result = await connection.query(
-                `INSERT INTO devices (
-                    device_id, device_secret, device_code, user_code, 
-                    verification_uri, expires_at, is_authorized, user_id, 
-                    device_name, device_type, created_at, last_seen, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                [
-                    deviceData.device_id,
-                    deviceData.device_secret,
-                    deviceData.device_code,
-                    deviceData.user_code,
-                    deviceData.verification_uri,
-                    deviceData.expires_at,
-                    deviceData.is_authorized,
-                    deviceData.user_id,
-                    deviceData.device_name,
-                    deviceData.device_type,
-                    deviceData.created_at,
-                    deviceData.last_seen,
-                    deviceData.metadata
-                ]
-            );
-            connection.release();
-            return result.lastID;
+            const connection = await StorageService.getConnection();
+            
+            try {
+                const result = await connection.query(
+                    `INSERT INTO devices (
+                        device_id, device_secret, device_code, user_code, 
+                        verification_uri, expires_at, is_authorized, user_id, 
+                        device_name, device_type, created_at, last_seen, metadata
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [
+                        deviceData.device_id,
+                        deviceData.device_secret,
+                        deviceData.device_code,
+                        deviceData.user_code,
+                        deviceData.verification_uri,
+                        deviceData.expires_at,
+                        deviceData.is_authorized,
+                        deviceData.user_id,
+                        deviceData.device_name,
+                        deviceData.device_type,
+                        deviceData.created_at,
+                        deviceData.last_seen,
+                        deviceData.metadata
+                    ]
+                );
+                connection.release();
+                
+                // Pattern 2: User Activity Logs
+                MonitoringService.info('Device stored successfully', {
+                    deviceId: deviceData.device_id,
+                    deviceName: deviceData.device_name,
+                    deviceType: deviceData.device_type,
+                    userCode: deviceData.user_code,
+                    lastID: result.lastID,
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+                
+                return result.lastID;
+            } catch (error) {
+                connection.release();
+                throw error;
+            }
         } catch (error) {
-            connection.release();
-            throw error;
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService.createError(
+                'auth',
+                `Failed to store device: ${error.message}`,
+                'error',
+                {
+                    operation: 'storeDevice',
+                    deviceId: deviceData.device_id,
+                    deviceName: deviceData.device_name,
+                    deviceType: deviceData.device_type,
+                    error: error.message,
+                    stack: error.stack,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            MonitoringService.error('Device storage failed', {
+                error: error.message,
+                operation: 'storeDevice',
+                deviceId: deviceData.device_id,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+            
+            throw mcpError;
         }
     }
 
@@ -405,18 +692,86 @@ class DeviceRegistry {
      * @param {string} userId - User ID
      */
     async updateDeviceAuthorization(deviceId, userId) {
-        const connection = await StorageService.getConnection();
+        const startTime = Date.now();
+        
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Processing update device authorization request', {
+                deviceId,
+                userId: userId ? userId.substring(0, 8) + '...' : 'unknown',
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
         
         try {
-            const result = await connection.query(
-                'UPDATE devices SET is_authorized = TRUE, user_id = ?, last_seen = ? WHERE device_id = ?',
-                [userId, Date.now(), deviceId]
-            );
-            connection.release();
-            return result.changes > 0;
+            const connection = await StorageService.getConnection();
+            
+            try {
+                const result = await connection.query(
+                    'UPDATE devices SET is_authorized = TRUE, user_id = ?, last_seen = ? WHERE device_id = ?',
+                    [userId, Date.now(), deviceId]
+                );
+                connection.release();
+                
+                const updated = result.changes > 0;
+                
+                // Pattern 2: User Activity Logs
+                if (userId) {
+                    MonitoringService.info('Device authorization updated successfully', {
+                        deviceId,
+                        updated,
+                        duration: Date.now() - startTime,
+                        timestamp: new Date().toISOString()
+                    }, 'auth', null, userId);
+                } else {
+                    MonitoringService.info('Device authorization updated', {
+                        deviceId,
+                        updated,
+                        duration: Date.now() - startTime,
+                        timestamp: new Date().toISOString()
+                    }, 'auth');
+                }
+                
+                return updated;
+            } catch (error) {
+                connection.release();
+                throw error;
+            }
         } catch (error) {
-            connection.release();
-            throw error;
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService.createError(
+                'auth',
+                `Failed to update device authorization: ${error.message}`,
+                'error',
+                {
+                    operation: 'updateDeviceAuthorization',
+                    deviceId,
+                    userId,
+                    error: error.message,
+                    stack: error.stack,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Device authorization update failed', {
+                    error: error.message,
+                    operation: 'updateDeviceAuthorization',
+                    deviceId,
+                    timestamp: new Date().toISOString()
+                }, 'auth', null, userId);
+            } else {
+                MonitoringService.error('Device authorization update failed', {
+                    error: error.message,
+                    operation: 'updateDeviceAuthorization',
+                    deviceId,
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+            
+            throw mcpError;
         }
     }
 
@@ -424,20 +779,65 @@ class DeviceRegistry {
      * Start cleanup timer for expired devices
      */
     startCleanupTimer() {
-        this.cleanupInterval = setInterval(() => {
-            this.cleanupExpiredDevices();
-        }, CLEANUP_INTERVAL);
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Processing start cleanup timer request', {
+                interval: CLEANUP_INTERVAL,
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
+        
+        try {
+            this.cleanupInterval = setInterval(() => {
+                this.cleanupExpiredDevices();
+            }, CLEANUP_INTERVAL);
 
-        MonitoringService.info('Device cleanup timer started', {
-            interval: CLEANUP_INTERVAL,
-            timestamp: new Date().toISOString()
-        }, 'device-registry');
+            // Pattern 2: User Activity Logs
+            MonitoringService.info('Device cleanup timer started', {
+                interval: CLEANUP_INTERVAL,
+                intervalMinutes: Math.floor(CLEANUP_INTERVAL / 60000),
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        } catch (error) {
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService.createError(
+                'auth',
+                `Failed to start cleanup timer: ${error.message}`,
+                'error',
+                {
+                    operation: 'startCleanupTimer',
+                    interval: CLEANUP_INTERVAL,
+                    error: error.message,
+                    stack: error.stack,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            MonitoringService.error('Cleanup timer start failed', {
+                error: error.message,
+                operation: 'startCleanupTimer',
+                timestamp: new Date().toISOString()
+            }, 'auth');
+            
+            throw mcpError;
+        }
     }
 
     /**
      * Clean up expired devices
      */
     async cleanupExpiredDevices() {
+        const startTime = Date.now();
+        
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Processing cleanup expired devices request', {
+                timestamp: new Date().toISOString()
+            }, 'auth');
+        }
+        
         try {
             const connection = await StorageService.getConnection();
             const now = Date.now();
@@ -449,10 +849,13 @@ class DeviceRegistry {
                 );
                 connection.release();
                 
+                // Pattern 2: User Activity Logs
                 MonitoringService.info('Cleaned up expired devices', {
                     deletedCount: result.changes,
+                    cutoffTime: new Date(now).toISOString(),
+                    duration: Date.now() - startTime,
                     timestamp: new Date().toISOString()
-                }, 'device-registry');
+                }, 'auth');
                 
                 return result.changes;
             } catch (error) {
@@ -460,10 +863,26 @@ class DeviceRegistry {
                 throw error;
             }
         } catch (error) {
-            MonitoringService.warn('Device cleanup failed', {
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService.createError(
+                'auth',
+                `Device cleanup failed: ${error.message}`,
+                'error',
+                {
+                    operation: 'cleanupExpiredDevices',
+                    error: error.message,
+                    stack: error.stack,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            MonitoringService.error('Device cleanup failed', {
                 error: error.message,
+                operation: 'cleanupExpiredDevices',
                 timestamp: new Date().toISOString()
-            }, 'device-registry');
+            }, 'auth');
         }
     }
 
@@ -471,13 +890,52 @@ class DeviceRegistry {
      * Stop cleanup timer
      */
     stopCleanupTimer() {
-        if (this.cleanupInterval) {
-            clearInterval(this.cleanupInterval);
-            this.cleanupInterval = null;
-            
-            MonitoringService.info('Device cleanup timer stopped', {
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Processing stop cleanup timer request', {
+                hasInterval: !!this.cleanupInterval,
                 timestamp: new Date().toISOString()
-            }, 'device-registry');
+            }, 'auth');
+        }
+        
+        try {
+            if (this.cleanupInterval) {
+                clearInterval(this.cleanupInterval);
+                this.cleanupInterval = null;
+                
+                // Pattern 2: User Activity Logs
+                MonitoringService.info('Device cleanup timer stopped', {
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            } else {
+                // Pattern 2: User Activity Logs
+                MonitoringService.info('Cleanup timer stop requested but no timer was running', {
+                    timestamp: new Date().toISOString()
+                }, 'auth');
+            }
+        } catch (error) {
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService.createError(
+                'auth',
+                `Failed to stop cleanup timer: ${error.message}`,
+                'error',
+                {
+                    operation: 'stopCleanupTimer',
+                    error: error.message,
+                    stack: error.stack,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            MonitoringService.error('Cleanup timer stop failed', {
+                error: error.message,
+                operation: 'stopCleanupTimer',
+                timestamp: new Date().toISOString()
+            }, 'auth');
+            
+            throw mcpError;
         }
     }
 }
