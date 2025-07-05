@@ -163,78 +163,245 @@ const configSchema = Joi.object({
 
 // Helper to load .env if present (async, non-blocking)
 async function loadDotenv() {
-  const envPath = path.join(process.cwd(), '.env');
-  if (await fs.pathExists(envPath)) {
-    dotenv.config({ path: envPath });
+  const startTime = Date.now();
+  
+  try {
+    // Pattern 1: Development Debug Logs
+    if (process.env.NODE_ENV === 'development') {
+      MonitoringService.debug('Loading .env file', {
+        cwd: process.cwd(),
+        timestamp: new Date().toISOString()
+      }, 'config');
+    }
+    
+    const envPath = path.join(process.cwd(), '.env');
+    const envExists = await fs.pathExists(envPath);
+    
+    if (envExists) {
+      dotenv.config({ path: envPath });
+      
+      // Pattern 2: User Activity Logs (successful operation)
+      MonitoringService.info('Environment file loaded successfully', {
+        envPath,
+        duration: Date.now() - startTime,
+        timestamp: new Date().toISOString()
+      }, 'config');
+    } else {
+      // Pattern 2: User Activity Logs (no .env file found)
+      MonitoringService.info('No .env file found, using environment variables only', {
+        envPath,
+        duration: Date.now() - startTime,
+        timestamp: new Date().toISOString()
+      }, 'config');
+    }
+    
+  } catch (error) {
+    // Pattern 3: Infrastructure Error Logging
+    const mcpError = ErrorService.createError(
+      'config',
+      'Failed to load .env file',
+      'error',
+      {
+        envPath: path.join(process.cwd(), '.env'),
+        error: error.message,
+        stack: error.stack,
+        duration: Date.now() - startTime,
+        timestamp: new Date().toISOString()
+      }
+    );
+    MonitoringService.logError(mcpError);
+    
+    // Pattern 4: User Error Tracking
+    MonitoringService.error('Environment file loading failed', {
+      error: error.message,
+      timestamp: new Date().toISOString()
+    }, 'config');
+    
+    throw error;
   }
 }
 
 // Async loader for secrets from environment variables
 async function loadSecrets() {
-  // Example: MICROSOFT_CLIENT_SECRET from environment variable
-  const MICROSOFT_CLIENT_SECRET = process.env.MICROSOFT_CLIENT_SECRET || '';
+  const startTime = Date.now();
   
-  return {
-    MICROSOFT_CLIENT_SECRET
-  };
+  try {
+    // Pattern 1: Development Debug Logs
+    if (process.env.NODE_ENV === 'development') {
+      MonitoringService.debug('Loading secrets from environment variables', {
+        timestamp: new Date().toISOString()
+      }, 'config');
+    }
+    
+    // Example: MICROSOFT_CLIENT_SECRET from environment variable
+    const MICROSOFT_CLIENT_SECRET = process.env.MICROSOFT_CLIENT_SECRET || '';
+    
+    const secrets = {
+      MICROSOFT_CLIENT_SECRET
+    };
+    
+    // Pattern 2: User Activity Logs (successful operation)
+    MonitoringService.info('Secrets loaded successfully', {
+      secretsLoaded: Object.keys(secrets).length,
+      clientSecretSet: !!MICROSOFT_CLIENT_SECRET,
+      duration: Date.now() - startTime,
+      timestamp: new Date().toISOString()
+    }, 'config');
+    
+    return secrets;
+    
+  } catch (error) {
+    // Pattern 3: Infrastructure Error Logging
+    const mcpError = ErrorService.createError(
+      'config',
+      'Failed to load secrets from environment',
+      'error',
+      {
+        error: error.message,
+        stack: error.stack,
+        duration: Date.now() - startTime,
+        timestamp: new Date().toISOString()
+      }
+    );
+    MonitoringService.logError(mcpError);
+    
+    // Pattern 4: User Error Tracking
+    MonitoringService.error('Secrets loading failed', {
+      error: error.message,
+      timestamp: new Date().toISOString()
+    }, 'config');
+    
+    throw error;
+  }
 }
 
 // Production environment validation
 function validateProductionEnvironment(config) {
-  if (config.NODE_ENV !== 'production') {
-    return; // Only validate in production
-  }
+  const startTime = Date.now();
   
-  const missingVars = [];
-  const warnings = [];
-  
-  // Check required production variables
-  PRODUCTION_REQUIRED.forEach(varName => {
-    if (!config[varName] || config[varName] === DEFAULTS[varName]) {
-      missingVars.push(varName);
+  try {
+    // Pattern 1: Development Debug Logs
+    if (process.env.NODE_ENV === 'development') {
+      MonitoringService.debug('Starting production environment validation', {
+        nodeEnv: config.NODE_ENV,
+        timestamp: new Date().toISOString()
+      }, 'config');
     }
-  });
-  
-  // Security warnings
-  if (config.ENABLE_HTTPS === false) {
-    warnings.push('HTTPS is disabled in production - this is not recommended');
-  }
-  
-  if (config.JWT_SECRET && config.JWT_SECRET.length < 64) {
-    warnings.push('JWT_SECRET should be at least 64 characters for production');
-  }
-  
-  if (config.CORS_ALLOWED_ORIGINS === DEFAULTS.CORS_ALLOWED_ORIGINS) {
-    warnings.push('CORS_ALLOWED_ORIGINS should be configured for production domains');
-  }
-  
-  if (config.LOG_LEVEL === 'debug') {
-    warnings.push('Debug logging is enabled in production - consider using "info" or "warn"');
-  }
-  
-  // Throw error for missing required variables
-  if (missingVars.length > 0) {
-    const error = new Error(
-      `Production environment validation failed. Missing required environment variables: ${missingVars.join(', ')}\n` +
-      'Please check your .env file or environment configuration.'
-    );
-    error.missingVars = missingVars;
-    throw error;
-  }
-  
-  // Log warnings
-  if (warnings.length > 0) {
-    MonitoringService.warn('Production environment warnings', {
-      warnings,
+    
+    if (config.NODE_ENV !== 'production') {
+      // Pattern 2: User Activity Logs (skipping validation)
+      MonitoringService.info('Production validation skipped for non-production environment', {
+        nodeEnv: config.NODE_ENV,
+        duration: Date.now() - startTime,
+        timestamp: new Date().toISOString()
+      }, 'config');
+      return; // Only validate in production
+    }
+    
+    const missingVars = [];
+    const warnings = [];
+    
+    // Check required production variables
+    PRODUCTION_REQUIRED.forEach(varName => {
+      if (!config[varName] || config[varName] === DEFAULTS[varName]) {
+        missingVars.push(varName);
+      }
+    });
+    
+    // Security warnings
+    if (config.ENABLE_HTTPS === false) {
+      warnings.push('HTTPS is disabled in production - this is not recommended');
+    }
+    
+    if (config.JWT_SECRET && config.JWT_SECRET.length < 64) {
+      warnings.push('JWT_SECRET should be at least 64 characters for production');
+    }
+    
+    if (config.CORS_ALLOWED_ORIGINS === DEFAULTS.CORS_ALLOWED_ORIGINS) {
+      warnings.push('CORS_ALLOWED_ORIGINS should be configured for production domains');
+    }
+    
+    if (config.LOG_LEVEL === 'debug') {
+      warnings.push('Debug logging is enabled in production - consider using "info" or "warn"');
+    }
+    
+    // Throw error for missing required variables
+    if (missingVars.length > 0) {
+      const error = new Error(
+        `Production environment validation failed. Missing required environment variables: ${missingVars.join(', ')}\n` +
+        'Please check your .env file or environment configuration.'
+      );
+      error.missingVars = missingVars;
+      
+      // Pattern 3: Infrastructure Error Logging
+      const mcpError = ErrorService.createError(
+        'config',
+        'Production environment validation failed',
+        'critical',
+        {
+          missingVars,
+          requiredVars: PRODUCTION_REQUIRED,
+          error: error.message,
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }
+      );
+      MonitoringService.logError(mcpError);
+      
+      // Pattern 4: User Error Tracking
+      MonitoringService.error('Production environment validation failed', {
+        missingVars,
+        error: error.message,
+        timestamp: new Date().toISOString()
+      }, 'config');
+      
+      throw error;
+    }
+    
+    // Log warnings
+    if (warnings.length > 0) {
+      MonitoringService.warn('Production environment warnings', {
+        warnings,
+        warningCount: warnings.length,
+        timestamp: new Date().toISOString()
+      }, 'config');
+    }
+    
+    // Pattern 2: User Activity Logs (successful validation)
+    MonitoringService.info('Production environment validation passed', {
+      httpsEnabled: config.ENABLE_HTTPS,
+      corsConfigured: config.CORS_ALLOWED_ORIGINS !== DEFAULTS.CORS_ALLOWED_ORIGINS,
+      warningCount: warnings.length,
+      duration: Date.now() - startTime,
       timestamp: new Date().toISOString()
     }, 'config');
+    
+  } catch (error) {
+    // If error wasn't already handled above, handle it here
+    if (!error.missingVars) {
+      // Pattern 3: Infrastructure Error Logging
+      const mcpError = ErrorService.createError(
+        'config',
+        'Unexpected error during production environment validation',
+        'error',
+        {
+          error: error.message,
+          stack: error.stack,
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }
+      );
+      MonitoringService.logError(mcpError);
+      
+      // Pattern 4: User Error Tracking
+      MonitoringService.error('Production environment validation failed unexpectedly', {
+        error: error.message,
+        timestamp: new Date().toISOString()
+      }, 'config');
+    }
+    
+    throw error;
   }
-  
-  MonitoringService.info('Production environment validation passed', {
-    httpsEnabled: config.ENABLE_HTTPS,
-    corsConfigured: config.CORS_ALLOWED_ORIGINS !== DEFAULTS.CORS_ALLOWED_ORIGINS,
-    timestamp: new Date().toISOString()
-  }, 'config');
 }
 
 /**
@@ -242,9 +409,21 @@ function validateProductionEnvironment(config) {
  * @returns {Promise<Object>} Validated config object
  */
 async function getConfig() {
+  const startTime = Date.now();
+  
   try {
+    // Pattern 1: Development Debug Logs
+    if (process.env.NODE_ENV === 'development') {
+      MonitoringService.debug('Starting configuration loading process', {
+        cwd: process.cwd(),
+        nodeEnv: process.env.NODE_ENV,
+        timestamp: new Date().toISOString()
+      }, 'config');
+    }
+    
     await loadDotenv();
     const secrets = await loadSecrets();
+    
     // Merge: defaults < env < secrets
     const merged = {
       ...DEFAULTS,
@@ -252,50 +431,83 @@ async function getConfig() {
       ...secrets,
     };
     
+    // Pattern 1: Development Debug Logs (configuration details)
     if (process.env.NODE_ENV === 'development') {
-      MonitoringService.debug('Configuration loaded successfully', {
+      MonitoringService.debug('Configuration merged successfully', {
         port: merged.PORT,
         nodeEnv: merged.NODE_ENV,
         clientIdSet: !!merged.MICROSOFT_CLIENT_ID,
+        tenantIdSet: !!merged.MICROSOFT_TENANT_ID,
+        httpsEnabled: merged.ENABLE_HTTPS,
+        dbType: merged.DB_TYPE,
         timestamp: new Date().toISOString()
       }, 'config');
     }
     
     const { value, error } = configSchema.validate(merged, { abortEarly: false, allowUnknown: true });
     if (error) {
+      // Pattern 3: Infrastructure Error Logging
       const mcpError = ErrorService.createError(
-        ErrorService.CATEGORIES.SYSTEM,
+        'config',
         'Configuration validation failed',
-        ErrorService.SEVERITIES.CRITICAL,
+        'critical',
         {
           details: error.details.map(e => e.message),
+          validationErrors: error.details.length,
+          duration: Date.now() - startTime,
           timestamp: new Date().toISOString()
         }
       );
       MonitoringService.logError(mcpError);
+      
+      // Pattern 4: User Error Tracking
+      MonitoringService.error('Configuration validation failed', {
+        validationErrors: error.details.length,
+        firstError: error.details[0]?.message,
+        timestamp: new Date().toISOString()
+      }, 'config');
+      
       throw new Error('Config validation failed: ' + error.details.map(e => e.message).join('; '));
     }
     
     validateProductionEnvironment(value);
     
-    MonitoringService.info('Configuration validation successful', {
+    // Pattern 2: User Activity Logs (successful configuration loading)
+    MonitoringService.info('Configuration loaded and validated successfully', {
       nodeEnv: value.NODE_ENV,
       port: value.PORT,
+      httpsEnabled: value.ENABLE_HTTPS,
+      dbType: value.DB_TYPE,
+      clientIdConfigured: !!value.MICROSOFT_CLIENT_ID,
+      tenantIdConfigured: !!value.MICROSOFT_TENANT_ID,
+      duration: Date.now() - startTime,
       timestamp: new Date().toISOString()
     }, 'config');
     
     return value;
+    
   } catch (error) {
+    // Pattern 3: Infrastructure Error Logging
     const mcpError = ErrorService.createError(
-      ErrorService.CATEGORIES.SYSTEM,
+      'config',
       `Configuration loading failed: ${error.message}`,
-      ErrorService.SEVERITIES.CRITICAL,
+      'critical',
       {
+        error: error.message,
         stack: error.stack,
+        duration: Date.now() - startTime,
         timestamp: new Date().toISOString()
       }
     );
     MonitoringService.logError(mcpError);
+    
+    // Pattern 4: User Error Tracking
+    MonitoringService.error('Configuration loading failed', {
+      error: error.message,
+      duration: Date.now() - startTime,
+      timestamp: new Date().toISOString()
+    }, 'config');
+    
     throw error;
   }
 }
