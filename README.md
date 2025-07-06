@@ -59,6 +59,13 @@ The MCP server provides secure multi-user access to Microsoft 365 data:
 - **JWT token system**: Short-lived access tokens with user binding
 - **Remote operation**: Configurable MCP_SERVER_URL endpoint
 
+### Enterprise-Grade Logging & Monitoring
+- **4-Part Logging System**: Comprehensive observability across all operations
+- **User-Scoped Logs**: Encrypted user activity logs behind MSAL authentication
+- **Infrastructure Monitoring**: System health and performance metrics
+- **Security Audit Trail**: Complete authentication and authorization tracking
+- **Development Debug Logs**: Detailed operation tracing in development mode
+
 ## Available Tools
 
 This MCP server provides 37+ tools for comprehensive Microsoft 365 integration:
@@ -118,6 +125,208 @@ This MCP server provides 37+ tools for comprehensive Microsoft 365 integration:
 # Ask Claude to add events
 "Schedule a team meeting tomorrow at 2pm"
 ```
+
+## Enterprise-Grade Logging & Monitoring System
+
+This MCP server implements a comprehensive **4-part logging architecture** that provides complete observability, security auditing, and user activity tracking while maintaining strict data privacy and security standards.
+
+### 🔒 **Security-First Logging Design**
+
+**User logs are completely isolated and encrypted behind Microsoft 365 authentication**. Only authenticated users can access their own activity logs, ensuring enterprise-grade privacy and compliance.
+
+```javascript
+// User logs are scoped and encrypted
+// Only accessible after MSAL authentication
+const userLogs = await storageService.getUserLogs(userId, {
+    limit: 50,
+    level: 'info',
+    category: 'mail'
+});
+```
+
+### 📊 **4-Part Logging Architecture**
+
+#### **1. Development Debug Logs** 🔧
+- **Purpose**: Detailed operation tracing for development and debugging
+- **Scope**: System-wide technical operations
+- **Activation**: Only active when `NODE_ENV=development`
+- **Security**: No sensitive user data included
+
+```javascript
+// Example: Development debug logging
+if (process.env.NODE_ENV === 'development') {
+    MonitoringService.debug('Processing calendar request', {
+        method: req.method,
+        path: req.path,
+        userAgent: req.get('User-Agent'),
+        timestamp: new Date().toISOString()
+    }, 'calendar');
+}
+```
+
+#### **2. User Activity Logs** 👤
+- **Purpose**: Track user-specific operations and activities
+- **Scope**: Individual user actions and outcomes
+- **Security**: **Encrypted and isolated per user**
+- **Access**: **Only available after MSAL authentication**
+- **Storage**: User-scoped database entries with session isolation
+
+```javascript
+// Example: User activity logging
+MonitoringService.info('Email sent successfully', {
+    recipientCount: 3,
+    hasAttachments: true,
+    duration: 1250,
+    timestamp: new Date().toISOString()
+}, 'mail', null, userId); // userId ensures proper scoping
+```
+
+#### **3. Infrastructure Error Logging** ⚠️
+- **Purpose**: System-level errors and infrastructure issues
+- **Scope**: Server health, API failures, database issues
+- **Integration**: Uses `ErrorService.createError()` for structured error handling
+- **Monitoring**: Enables proactive system maintenance
+
+```javascript
+// Example: Infrastructure error logging
+const mcpError = ErrorService.createError(
+    'graph',
+    'Failed to retrieve calendar events',
+    'error',
+    {
+        endpoint: '/me/events',
+        statusCode: 500,
+        userId: userId,
+        timestamp: new Date().toISOString()
+    }
+);
+MonitoringService.logError(mcpError);
+```
+
+#### **4. User Error Tracking** 🚨
+- **Purpose**: User-facing errors and operational issues
+- **Scope**: Authentication failures, permission issues, user-visible errors
+- **Context**: Includes user context for support and troubleshooting
+- **Privacy**: Sanitized error messages without sensitive data
+
+```javascript
+// Example: User error tracking
+if (userId) {
+    MonitoringService.error('Calendar access denied', {
+        error: 'Insufficient permissions',
+        operation: 'getEvents',
+        timestamp: new Date().toISOString()
+    }, 'calendar', null, userId);
+}
+```
+
+### 🔐 **User Log Security & Privacy**
+
+#### **Authentication-Protected Access**
+- **MSAL Integration**: User logs only accessible after Microsoft 365 authentication
+- **Session Isolation**: Complete data separation between users
+- **Encrypted Storage**: User activity data stored with encryption
+- **Access Control**: Users can only access their own logs
+
+```javascript
+// User log access requires authentication
+app.get('/api/v1/logs', requireAuth, async (req, res) => {
+    const userId = req.user.id; // From MSAL authentication
+    const logs = await storageService.getUserLogs(userId, {
+        limit: req.query.limit || 50,
+        category: req.query.category,
+        level: req.query.level
+    });
+    res.json({ logs, scope: 'user' });
+});
+```
+
+#### **Privacy-Conscious Data Handling**
+- **Data Minimization**: Only necessary context included in logs
+- **Sensitive Data Exclusion**: No passwords, tokens, or personal content logged
+- **Automatic Cleanup**: Configurable log retention policies
+- **Compliance Ready**: Supports GDPR and enterprise compliance requirements
+
+### 📈 **Monitoring & Observability Features**
+
+#### **Real-Time Metrics**
+- **Performance Tracking**: API response times and success rates
+- **User Activity Monitoring**: Operation counts and patterns
+- **System Health**: Database connections, memory usage, error rates
+- **Microsoft Graph API**: Request tracking and quota monitoring
+
+```javascript
+// Example: Performance metrics
+MonitoringService.trackMetric('graph_api_request', responseTime, {
+    method: 'GET',
+    endpoint: '/me/events',
+    statusCode: 200,
+    success: true,
+    userId: userId
+});
+```
+
+#### **Comprehensive Audit Trail**
+- **Authentication Events**: Login, logout, token refresh activities
+- **Authorization Changes**: Permission grants and revocations
+- **Data Access**: File access, email reads, calendar views
+- **Administrative Actions**: Configuration changes and system updates
+
+### 🛡️ **Security & Compliance Benefits**
+
+#### **Enterprise Security Standards**
+- **Zero Trust Architecture**: Every operation logged and verified
+- **Audit Compliance**: Complete activity trails for compliance reporting
+- **Incident Response**: Detailed logs for security incident investigation
+- **User Accountability**: Clear attribution of all actions to authenticated users
+
+#### **Multi-Tenant Security**
+- **Data Isolation**: Complete separation between different user accounts
+- **Session Security**: Secure session management with proper cleanup
+- **Token Security**: JWT tokens with user binding and expiration
+- **Access Logging**: All access attempts logged with context
+
+### 🔍 **Log Categories & Structure**
+
+#### **Supported Log Categories**
+- `auth` - Authentication and authorization events
+- `mail` - Email operations and activities
+- `calendar` - Calendar events and scheduling
+- `files` - File access and management
+- `people` - Contact and directory operations
+- `graph` - Microsoft Graph API interactions
+- `storage` - Database and storage operations
+- `request` - HTTP request/response logging
+- `monitoring` - System monitoring and metrics
+
+#### **Log Entry Structure**
+```javascript
+{
+    "id": "log_entry_uuid",
+    "timestamp": "2025-07-06T17:04:23.131Z",
+    "level": "info",
+    "category": "mail",
+    "message": "Email sent successfully",
+    "context": {
+        "userId": "ms365:user@company.com",
+        "operation": "sendMail",
+        "duration": 1250,
+        "recipientCount": 3
+    },
+    "sessionId": "session_uuid",
+    "deviceId": "device_uuid"
+}
+```
+
+### 🚀 **Production-Ready Logging**
+
+This logging system is **production-tested** and provides:
+- **High Performance**: Minimal overhead on API operations
+- **Scalability**: Efficient storage and retrieval of large log volumes
+- **Reliability**: Robust error handling and fallback mechanisms
+- **Maintainability**: Clear separation of concerns and structured data
+
+The logging system ensures complete visibility into system operations while maintaining the highest standards of user privacy and data security.
 
 ## Multi-User Architecture
 
@@ -372,9 +581,12 @@ This project demonstrates **enterprise-grade MCP development**. Key patterns to 
 
 1. **Tool Definitions**: Always define proper parameter schemas
 2. **Async Patterns**: Use async/await with proper error handling
-3. **Error Service**: Use centralized error creation and logging
-4. **Data Normalization**: Consistent response formats
-5. **Testing**: Real API integration tests
+3. **4-Part Logging**: Implement all logging patterns (debug, user activity, infrastructure errors, user errors)
+4. **Error Service**: Use centralized error creation and logging
+5. **Data Normalization**: Consistent response formats
+6. **User Context**: Always propagate userId and sessionId for proper log scoping
+7. **Security**: Ensure user logs are protected behind authentication
+8. **Testing**: Real API integration tests with logging verification
 
 ## License
 

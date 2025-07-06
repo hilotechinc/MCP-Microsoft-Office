@@ -153,51 +153,85 @@ function decrypt(data) {
     }
 }
 
-async function init() {
+async function init(userId, sessionId) {
     const startTime = Date.now();
     
     try {
-        MonitoringService.info('Storage service initialization started', {
-            timestamp: new Date().toISOString()
-        }, 'storage');
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Storage service initialization started', {
+                userId,
+                sessionId,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
         
         // Get config asynchronously
         const config = await getConfig();
         
         // Initialize database factory first
-        await databaseFactory.init(config);
+        await databaseFactory.init(config, userId, sessionId);
         
-        migrationManager = new MigrationManager(databaseFactory);
-        backupManager = new BackupManager(config);
+        migrationManager = new MigrationManager(databaseFactory, userId, sessionId);
+        backupManager = new BackupManager(config, userId, sessionId);
         
-        await migrationManager.migrate();
+        await migrationManager.migrate(userId, sessionId);
         
         initialized = true;
         
         const executionTime = Date.now() - startTime;
+        
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('Storage service initialized successfully', {
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('Storage service initialized with session', {
+                sessionId,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
+        
         MonitoringService.trackMetric('storage_init_success', executionTime, {
             timestamp: new Date().toISOString()
         });
         
-        MonitoringService.info('Storage service initialized successfully', {
-            executionTimeMs: executionTime,
-            timestamp: new Date().toISOString()
-        }, 'storage');
-        
     } catch (error) {
         const executionTime = Date.now() - startTime;
         
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.DATABASE,
+            'storage',
             `Storage initialization failed: ${error.message}`,
-            ErrorService.SEVERITIES.CRITICAL,
+            'error',
             {
                 stack: error.stack,
+                userId,
+                sessionId,
                 timestamp: new Date().toISOString()
             }
         );
-        
         MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('Storage initialization failed', {
+                error: error.message,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('Storage initialization failed', {
+                sessionId,
+                error: error.message,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
+        
         MonitoringService.trackMetric('storage_init_failure', executionTime, {
             errorType: error.code || 'unknown',
             timestamp: new Date().toISOString()
@@ -207,23 +241,45 @@ async function init() {
     }
 }
 
-async function setSetting(key, value, userId) {
+async function setSetting(key, value, userId, sessionId) {
     const startTime = Date.now();
     
-    if (process.env.NODE_ENV === 'development') {
-        MonitoringService.debug('Setting storage operation started', {
-            key,
-            valueType: typeof value,
-            timestamp: new Date().toISOString()
-        }, 'storage');
-    }
-    
     try {
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Setting storage operation started', {
+                key,
+                valueType: typeof value,
+                userId,
+                sessionId,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
+        
         const connection = await getConnection();
         await connection.query('INSERT OR REPLACE INTO settings (key, value, user_id) VALUES (?, ?, ?)', [key, JSON.stringify(value), userId]);
         connection.release();
         
         const executionTime = Date.now() - startTime;
+        
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('Setting stored successfully', {
+                key,
+                valueType: typeof value,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('Setting stored with session', {
+                sessionId,
+                key,
+                valueType: typeof value,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
+        
         MonitoringService.trackMetric('storage_set_setting_success', executionTime, {
             key,
             timestamp: new Date().toISOString()
@@ -232,19 +288,40 @@ async function setSetting(key, value, userId) {
     } catch (error) {
         const executionTime = Date.now() - startTime;
         
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.DATABASE,
+            'storage',
             `Failed to set setting: ${error.message}`,
-            ErrorService.SEVERITIES.ERROR,
+            'error',
             {
                 key,
                 valueType: typeof value,
                 stack: error.stack,
+                userId,
+                sessionId,
                 timestamp: new Date().toISOString()
             }
         );
-        
         MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('Setting storage failed', {
+                key,
+                error: error.message,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('Setting storage failed', {
+                sessionId,
+                key,
+                error: error.message,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
+        
         MonitoringService.trackMetric('storage_set_setting_failure', executionTime, {
             key,
             errorType: error.code || 'unknown',
@@ -255,23 +332,44 @@ async function setSetting(key, value, userId) {
     }
 }
 
-async function getSetting(key, userId) {
+async function getSetting(key, userId, sessionId) {
     const startTime = Date.now();
     
-    if (process.env.NODE_ENV === 'development') {
-        MonitoringService.debug('Getting setting operation started', {
-            key,
-            timestamp: new Date().toISOString()
-        }, 'storage');
-    }
-    
     try {
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Getting setting operation started', {
+                key,
+                userId,
+                sessionId,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
+        
         const connection = await getConnection();
         const row = await connection.query('SELECT value FROM settings WHERE key = ? AND user_id = ?', [key, userId]);
         connection.release();
         
         const result = row && row.length > 0 ? JSON.parse(row[0].value) : null;
         const executionTime = Date.now() - startTime;
+        
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('Setting retrieved successfully', {
+                key,
+                found: !!result,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('Setting retrieved with session', {
+                sessionId,
+                key,
+                found: !!result,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
         
         MonitoringService.trackMetric('storage_get_setting_success', executionTime, {
             key,
@@ -284,18 +382,39 @@ async function getSetting(key, userId) {
     } catch (error) {
         const executionTime = Date.now() - startTime;
         
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.DATABASE,
+            'storage',
             `Failed to get setting: ${error.message}`,
-            ErrorService.SEVERITIES.ERROR,
+            'error',
             {
                 key,
                 stack: error.stack,
+                userId,
+                sessionId,
                 timestamp: new Date().toISOString()
             }
         );
-        
         MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('Setting retrieval failed', {
+                key,
+                error: error.message,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('Setting retrieval failed', {
+                sessionId,
+                key,
+                error: error.message,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
+        
         MonitoringService.trackMetric('storage_get_setting_failure', executionTime, {
             key,
             errorType: error.code || 'unknown',
@@ -306,50 +425,87 @@ async function getSetting(key, userId) {
     }
 }
 
-async function setSecure(key, value, userId) {
+async function setSecure(key, value, userId, sessionId) {
     const startTime = Date.now();
     
-    if (process.env.NODE_ENV === 'development') {
-        MonitoringService.debug('Secure setting storage operation started', {
-            key,
-            valueLength: value.length,
-            timestamp: new Date().toISOString()
-        }, 'storage');
-    }
-    
     try {
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Secure setting storage operation started', {
+                key,
+                valueLength: value.length,
+                userId,
+                sessionId,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
+        
         const enc = encrypt(value);
         const connection = await getConnection();
         await connection.query('INSERT OR REPLACE INTO secure_settings (key, encrypted_value, user_id) VALUES (?, ?, ?)', [key, enc, userId]);
         connection.release();
         
         const executionTime = Date.now() - startTime;
+        
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('Secure setting stored successfully', {
+                key,
+                valueLength: value.length,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('Secure setting stored with session', {
+                sessionId,
+                key,
+                valueLength: value.length,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
+        
         MonitoringService.trackMetric('storage_set_secure_success', executionTime, {
             key,
             timestamp: new Date().toISOString()
         });
         
-        MonitoringService.info('Secure value stored successfully', {
-            key,
-            executionTimeMs: executionTime,
-            timestamp: new Date().toISOString()
-        }, 'storage');
-        
     } catch (error) {
         const executionTime = Date.now() - startTime;
         
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.DATABASE,
+            'storage',
             `Failed to set secure setting: ${error.message}`,
-            ErrorService.SEVERITIES.ERROR,
+            'error',
             {
                 key,
                 stack: error.stack,
+                userId,
+                sessionId,
                 timestamp: new Date().toISOString()
             }
         );
-        
         MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('Secure setting storage failed', {
+                key,
+                error: error.message,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('Secure setting storage failed', {
+                sessionId,
+                key,
+                error: error.message,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
+        
         MonitoringService.trackMetric('storage_set_secure_failure', executionTime, {
             key,
             errorType: error.code || 'unknown',
@@ -360,23 +516,44 @@ async function setSecure(key, value, userId) {
     }
 }
 
-async function getSecure(key, userId) {
+async function getSecure(key, userId, sessionId) {
     const startTime = Date.now();
     
-    if (process.env.NODE_ENV === 'development') {
-        MonitoringService.debug('Getting secure setting operation started', {
-            key,
-            timestamp: new Date().toISOString()
-        }, 'storage');
-    }
-    
     try {
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Getting secure setting operation started', {
+                key,
+                userId,
+                sessionId,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
+        
         const connection = await getConnection();
         const row = await connection.query('SELECT encrypted_value FROM secure_settings WHERE key = ? AND user_id = ?', [key, userId]);
         connection.release();
         
         const result = row && row.length > 0 ? decrypt(row[0].encrypted_value) : null;
         const executionTime = Date.now() - startTime;
+        
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('Secure setting retrieved successfully', {
+                key,
+                found: !!result,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('Secure setting retrieved with session', {
+                sessionId,
+                key,
+                found: !!result,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
         
         MonitoringService.trackMetric('storage_get_secure_success', executionTime, {
             key,
@@ -389,18 +566,38 @@ async function getSecure(key, userId) {
     } catch (error) {
         const executionTime = Date.now() - startTime;
         
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.DATABASE,
+            'storage',
             `Failed to get secure setting: ${error.message}`,
-            ErrorService.SEVERITIES.ERROR,
+            'error',
             {
                 key,
                 stack: error.stack,
+                userId,
+                sessionId,
                 timestamp: new Date().toISOString()
             }
         );
-        
         MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('Secure setting retrieval failed', {
+                key,
+                error: error.message,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('Secure setting retrieval failed', {
+                sessionId,
+                key,
+                error: error.message,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
         MonitoringService.trackMetric('storage_get_secure_failure', executionTime, {
             key,
             errorType: error.code || 'unknown',
@@ -422,10 +619,12 @@ async function getSecure(key, userId) {
  * @param {string} [deviceId] - Device ID that generated the log
  * @returns {Promise<Object>} The stored log entry
  */
-async function addUserLog(userId, level, message, category = null, context = null, traceId = null, deviceId = null) {
+async function addUserLog(userId, level, message, category = null, context = null, traceId = null, deviceId = null, sessionId = null) {
   const startTime = Date.now();
   
   try {
+    // Skip all logging in addUserLog to prevent recursive loops
+    
     if (!userId) {
       throw new Error('userId is required for user log storage');
     }
@@ -457,15 +656,9 @@ async function addUserLog(userId, level, message, category = null, context = nul
     }
 
     const executionTime = Date.now() - startTime;
-    // Skip metrics for storage operations to prevent recursive loops
-    if (category !== 'metrics' && level !== 'metric') {
-      MonitoringService.trackMetric('storage_add_user_log_success', executionTime, {
-        userId: userId,
-        level: level,
-        category: category || 'unknown',
-        timestamp: new Date().toISOString()
-      }, 'storage');
-    }
+    
+    // Skip all logging in addUserLog to prevent recursive loops
+    // The MonitoringService likely calls back to addUserLog, creating infinite recursion
 
     // Return the created log entry
     return {
@@ -480,22 +673,24 @@ async function addUserLog(userId, level, message, category = null, context = nul
       deviceId
     };
   } catch (error) {
-    const executionTime = Date.now() - startTime;
-    MonitoringService.trackMetric('storage_add_user_log_failure', executionTime, {
-      userId: userId,
-      level: level,
-      category: category || 'unknown',
-      error: error.message,
-      timestamp: new Date().toISOString()
-    }, 'storage');
-
+    // Skip all logging in addUserLog to prevent recursive loops
+    // Just create a simple error and throw it
     const mcpError = ErrorService.createError(
-      ErrorService.CATEGORIES.DATABASE,
+      'storage',
       `Failed to add user log: ${error.message}`,
-      ErrorService.SEVERITIES.ERROR,
-      { userId, level, message, error: error.stack }
+      'error',
+      { 
+        userId, 
+        level, 
+        message, 
+        category: category || 'unknown',
+        sessionId,
+        deviceId,
+        error: error.stack,
+        timestamp: new Date().toISOString()
+      }
     );
-    MonitoringService.logError(mcpError);
+    
     throw mcpError;
   }
 }
@@ -513,10 +708,20 @@ async function addUserLog(userId, level, message, category = null, context = nul
  * @param {Date} [options.endDate] - End date for filtering
  * @returns {Promise<Array>} Array of log entries
  */
-async function getUserLogs(userId, options = {}) {
+async function getUserLogs(userId, options = {}, sessionId = null) {
   const startTime = Date.now();
 
   try {
+    // Pattern 1: Development Debug Logs
+    if (process.env.NODE_ENV === 'development') {
+      MonitoringService.debug('User logs retrieval operation started', {
+        userId,
+        options: JSON.stringify(options),
+        sessionId,
+        timestamp: new Date().toISOString()
+      }, 'storage');
+    }
+    
     if (!userId) {
       throw new Error('userId is required for retrieving user logs');
     }
@@ -576,6 +781,25 @@ async function getUserLogs(userId, options = {}) {
     db.release();
     
     const executionTime = Date.now() - startTime;
+    
+    // Pattern 2: User Activity Logs
+    if (userId) {
+      MonitoringService.info('User logs retrieved successfully', {
+        resultCount: rows.length,
+        filters: JSON.stringify(options),
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'storage', null, userId);
+    } else if (sessionId) {
+      MonitoringService.info('User logs retrieved with session', {
+        sessionId,
+        resultCount: rows.length,
+        filters: JSON.stringify(options),
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'storage');
+    }
+    
     MonitoringService.trackMetric('storage_get_user_logs_success', executionTime, {
       userId: userId,
       resultCount: rows.length,
@@ -609,20 +833,47 @@ async function getUserLogs(userId, options = {}) {
     });
   } catch (error) {
     const executionTime = Date.now() - startTime;
+    
+    // Pattern 3: Infrastructure Error Logging
+    const mcpError = ErrorService.createError(
+      'storage',
+      `Failed to get user logs: ${error.message}`,
+      'error',
+      { 
+        userId, 
+        options, 
+        sessionId,
+        error: error.stack,
+        timestamp: new Date().toISOString()
+      }
+    );
+    MonitoringService.logError(mcpError);
+    
+    // Pattern 4: User Error Tracking
+    if (userId) {
+      MonitoringService.error('User logs retrieval failed', {
+        filters: JSON.stringify(options),
+        error: error.message,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'storage', null, userId);
+    } else if (sessionId) {
+      MonitoringService.error('User logs retrieval failed', {
+        sessionId,
+        filters: JSON.stringify(options),
+        error: error.message,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'storage');
+    }
+    
     MonitoringService.trackMetric('storage_get_user_logs_failure', executionTime, {
       userId: userId,
       filters: JSON.stringify(options),
       error: error.message,
       timestamp: new Date().toISOString()
     }, 'storage');
-
-    const mcpError = ErrorService.createError(
-      ErrorService.CATEGORIES.DATABASE,
-      `Failed to get user logs: ${error.message}`,
-      ErrorService.SEVERITIES.ERROR,
-      { userId, options, error: error.stack }
-    );
-    MonitoringService.logError(mcpError);
+    
     throw mcpError;
   }
 }
@@ -633,10 +884,20 @@ async function getUserLogs(userId, options = {}) {
  * @param {Object} options - Filter options
  * @returns {Promise<number>} Total count of logs
  */
-async function countUserLogs(userId, options = {}) {
+async function countUserLogs(userId, options = {}, sessionId = null) {
   const startTime = Date.now();
 
   try {
+    // Pattern 1: Development Debug Logs
+    if (process.env.NODE_ENV === 'development') {
+      MonitoringService.debug('User logs count operation started', {
+        userId,
+        options: JSON.stringify(options),
+        sessionId,
+        timestamp: new Date().toISOString()
+      }, 'storage');
+    }
+    
     if (!userId) {
       throw new Error('userId is required for counting user logs');
     }
@@ -690,29 +951,76 @@ async function countUserLogs(userId, options = {}) {
     db.release();
     
     const executionTime = Date.now() - startTime;
+    const count = parseInt(result[0].count, 10);
+    
+    // Pattern 2: User Activity Logs
+    if (userId) {
+      MonitoringService.info('User logs count retrieved successfully', {
+        count,
+        filters: JSON.stringify(options),
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'storage', null, userId);
+    } else if (sessionId) {
+      MonitoringService.info('User logs count retrieved with session', {
+        sessionId,
+        count,
+        filters: JSON.stringify(options),
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'storage');
+    }
+    
     MonitoringService.trackMetric('storage_count_user_logs_success', executionTime, {
       userId: userId,
       filters: JSON.stringify(options),
       timestamp: new Date().toISOString()
     }, 'storage');
     
-    return parseInt(result[0].count, 10);
+    return count;
   } catch (error) {
     const executionTime = Date.now() - startTime;
+    
+    // Pattern 3: Infrastructure Error Logging
+    const mcpError = ErrorService.createError(
+      'storage',
+      `Failed to count user logs: ${error.message}`,
+      'error',
+      { 
+        userId, 
+        options, 
+        sessionId,
+        error: error.stack,
+        timestamp: new Date().toISOString()
+      }
+    );
+    MonitoringService.logError(mcpError);
+    
+    // Pattern 4: User Error Tracking
+    if (userId) {
+      MonitoringService.error('User logs count failed', {
+        filters: JSON.stringify(options),
+        error: error.message,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'storage', null, userId);
+    } else if (sessionId) {
+      MonitoringService.error('User logs count failed', {
+        sessionId,
+        filters: JSON.stringify(options),
+        error: error.message,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'storage');
+    }
+    
     MonitoringService.trackMetric('storage_count_user_logs_failure', executionTime, {
       userId: userId,
       filters: JSON.stringify(options),
       error: error.message,
       timestamp: new Date().toISOString()
     }, 'storage');
-
-    const mcpError = ErrorService.createError(
-      ErrorService.CATEGORIES.DATABASE,
-      `Failed to count user logs: ${error.message}`,
-      ErrorService.SEVERITIES.ERROR,
-      { userId, options, error: error.stack }
-    );
-    MonitoringService.logError(mcpError);
+    
     throw mcpError;
   }
 }
@@ -726,10 +1034,20 @@ async function countUserLogs(userId, options = {}) {
  * @param {string} [options.category] - Delete logs in this category
  * @returns {Promise<number>} Number of logs deleted
  */
-async function clearUserLogs(userId, options = {}) {
+async function clearUserLogs(userId, options = {}, sessionId = null) {
   const startTime = Date.now();
 
   try {
+    // Pattern 1: Development Debug Logs
+    if (process.env.NODE_ENV === 'development') {
+      MonitoringService.debug('User logs clear operation started', {
+        userId,
+        options: JSON.stringify(options),
+        sessionId,
+        timestamp: new Date().toISOString()
+      }, 'storage');
+    }
+    
     if (!userId) {
       throw new Error('userId is required for clearing user logs');
     }
@@ -784,6 +1102,25 @@ async function clearUserLogs(userId, options = {}) {
     }
     
     const executionTime = Date.now() - startTime;
+    
+    // Pattern 2: User Activity Logs
+    if (userId) {
+      MonitoringService.info('User logs cleared successfully', {
+        deletedCount: deletedRows,
+        filters: JSON.stringify(options),
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'storage', null, userId);
+    } else if (sessionId) {
+      MonitoringService.info('User logs cleared with session', {
+        sessionId,
+        deletedCount: deletedRows,
+        filters: JSON.stringify(options),
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'storage');
+    }
+    
     MonitoringService.trackMetric('storage_clear_user_logs_success', executionTime, {
       userId: userId,
       deletedCount: deletedRows,
@@ -794,41 +1131,90 @@ async function clearUserLogs(userId, options = {}) {
     return deletedRows;
   } catch (error) {
     const executionTime = Date.now() - startTime;
+    
+    // Pattern 3: Infrastructure Error Logging
+    const mcpError = ErrorService.createError(
+      'storage',
+      `Failed to clear user logs: ${error.message}`,
+      'error',
+      { 
+        userId, 
+        options, 
+        sessionId,
+        error: error.stack,
+        timestamp: new Date().toISOString()
+      }
+    );
+    MonitoringService.logError(mcpError);
+    
+    // Pattern 4: User Error Tracking
+    if (userId) {
+      MonitoringService.error('User logs clear failed', {
+        filters: JSON.stringify(options),
+        error: error.message,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'storage', null, userId);
+    } else if (sessionId) {
+      MonitoringService.error('User logs clear failed', {
+        sessionId,
+        filters: JSON.stringify(options),
+        error: error.message,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'storage');
+    }
+    
     MonitoringService.trackMetric('storage_clear_user_logs_failure', executionTime, {
       userId: userId,
       filters: JSON.stringify(options),
       error: error.message,
       timestamp: new Date().toISOString()
     }, 'storage');
-
-    const mcpError = ErrorService.createError(
-      ErrorService.CATEGORIES.DATABASE,
-      `Failed to clear user logs: ${error.message}`,
-      ErrorService.SEVERITIES.ERROR,
-      { userId, options, error: error.stack }
-    );
-    MonitoringService.logError(mcpError);
+    
     throw mcpError;
   }
 }
 
-async function addHistory(event, payload) {
+async function addHistory(event, payload, userId, sessionId) {
     const startTime = Date.now();
     
-    if (process.env.NODE_ENV === 'development') {
-        MonitoringService.debug('Adding history entry', {
-            event,
-            payloadSize: JSON.stringify(payload).length,
-            timestamp: new Date().toISOString()
-        }, 'storage');
-    }
-    
     try {
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Adding history entry', {
+                event,
+                payloadSize: JSON.stringify(payload).length,
+                userId,
+                sessionId,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
+        
         const connection = await getConnection();
         await connection.query('INSERT INTO history (event, payload) VALUES (?, ?)', [event, JSON.stringify(payload)]);
         connection.release();
         
         const executionTime = Date.now() - startTime;
+        
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('History entry added successfully', {
+                event,
+                payloadSize: JSON.stringify(payload).length,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('History entry added with session', {
+                sessionId,
+                event,
+                payloadSize: JSON.stringify(payload).length,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
+        
         MonitoringService.trackMetric('storage_add_history_success', executionTime, {
             event,
             timestamp: new Date().toISOString()
@@ -837,18 +1223,39 @@ async function addHistory(event, payload) {
     } catch (error) {
         const executionTime = Date.now() - startTime;
         
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.DATABASE,
+            'storage',
             `Failed to add history entry: ${error.message}`,
-            ErrorService.SEVERITIES.ERROR,
+            'error',
             {
                 event,
                 stack: error.stack,
+                userId,
+                sessionId,
                 timestamp: new Date().toISOString()
             }
         );
-        
         MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('History entry addition failed', {
+                event,
+                error: error.message,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('History entry addition failed', {
+                sessionId,
+                event,
+                error: error.message,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
+        
         MonitoringService.trackMetric('storage_add_history_failure', executionTime, {
             event,
             errorType: error.code || 'unknown',
@@ -859,23 +1266,44 @@ async function addHistory(event, payload) {
     }
 }
 
-async function getHistory(limit = 50) {
+async function getHistory(limit = 50, userId, sessionId) {
     const startTime = Date.now();
     
-    if (process.env.NODE_ENV === 'development') {
-        MonitoringService.debug('Getting history entries', {
-            limit,
-            timestamp: new Date().toISOString()
-        }, 'storage');
-    }
-    
     try {
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Getting history entries', {
+                limit,
+                userId,
+                sessionId,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
+        
         const connection = await getConnection();
         const rows = await connection.query('SELECT event, payload, ts FROM history ORDER BY ts DESC LIMIT ?', [limit]);
         connection.release();
         
         const result = rows && rows.length > 0 ? rows.map(row => ({ event: row.event, payload: JSON.parse(row.payload), ts: row.ts })) : [];
         const executionTime = Date.now() - startTime;
+        
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('History entries retrieved successfully', {
+                limit,
+                resultCount: result.length,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('History entries retrieved with session', {
+                sessionId,
+                limit,
+                resultCount: result.length,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
         
         MonitoringService.trackMetric('storage_get_history_success', executionTime, {
             limit,
@@ -888,18 +1316,38 @@ async function getHistory(limit = 50) {
     } catch (error) {
         const executionTime = Date.now() - startTime;
         
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.DATABASE,
+            'storage',
             `Failed to get history: ${error.message}`,
-            ErrorService.SEVERITIES.ERROR,
+            'error',
             {
                 limit,
                 stack: error.stack,
+                userId,
+                sessionId,
                 timestamp: new Date().toISOString()
             }
         );
-        
         MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('History retrieval failed', {
+                limit,
+                error: error.message,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('History retrieval failed', {
+                sessionId,
+                limit,
+                error: error.message,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
         MonitoringService.trackMetric('storage_get_history_failure', executionTime, {
             limit,
             errorType: error.code || 'unknown',
@@ -910,21 +1358,39 @@ async function getHistory(limit = 50) {
     }
 }
 
-async function registerDevice(deviceId, deviceSecret, deviceCode, userCode, verificationUri, expiresAt) {
+async function registerDevice(deviceId, deviceSecret, deviceCode, userCode, verificationUri, expiresAt, userId, sessionId) {
     const startTime = Date.now();
     
-    if (!deviceId || !deviceSecret) {
-        const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.VALIDATION,
-            'Device ID and secret are required',
-            ErrorService.SEVERITIES.ERROR,
-            { deviceId: !!deviceId, deviceSecret: !!deviceSecret }
-        );
-        MonitoringService.logError(mcpError);
-        throw mcpError;
-    }
-    
     try {
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Device registration operation started', {
+                deviceId: deviceId?.substring(0, 8) + '...',
+                userCode,
+                verificationUri,
+                userId,
+                sessionId,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
+        
+        if (!deviceId || !deviceSecret) {
+            const mcpError = ErrorService.createError(
+                'storage',
+                'Device ID and secret are required',
+                'error',
+                { 
+                    deviceId: !!deviceId, 
+                    deviceSecret: !!deviceSecret,
+                    userId,
+                    sessionId,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            MonitoringService.logError(mcpError);
+            throw mcpError;
+        }
+        
         const connection = await getConnection();
         await connection.query(`INSERT OR REPLACE INTO devices 
             (device_id, device_secret, device_code, user_code, verification_uri, expires_at, created_at, is_authorized) 
@@ -933,55 +1399,106 @@ async function registerDevice(deviceId, deviceSecret, deviceCode, userCode, veri
         connection.release();
         
         const executionTime = Date.now() - startTime;
+        
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('Device registered successfully', {
+                deviceId: deviceId?.substring(0, 8) + '...',
+                userCode,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('Device registered with session', {
+                sessionId,
+                deviceId: deviceId?.substring(0, 8) + '...',
+                userCode,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
+        
         MonitoringService.trackMetric('storage_register_device_success', executionTime, {
             deviceId: deviceId,
             timestamp: new Date().toISOString()
         }, 'storage');
         
-        MonitoringService.info('Device registered successfully', {
-            deviceId: deviceId,
-            executionTime: executionTime,
-            timestamp: new Date().toISOString()
-        }, 'storage');
-        
     } catch (error) {
         const executionTime = Date.now() - startTime;
+        
+        // Pattern 3: Infrastructure Error Logging
+        const mcpError = ErrorService.createError(
+            'storage',
+            `Failed to register device: ${error.message}`,
+            'error',
+            {
+                deviceId: deviceId,
+                stack: error.stack,
+                userId,
+                sessionId,
+                timestamp: new Date().toISOString()
+            }
+        );
+        MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('Device registration failed', {
+                deviceId: deviceId?.substring(0, 8) + '...',
+                error: error.message,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('Device registration failed', {
+                sessionId,
+                deviceId: deviceId?.substring(0, 8) + '...',
+                error: error.message,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
+        
         MonitoringService.trackMetric('storage_register_device_error', executionTime, {
             deviceId: deviceId,
             error: error.message,
             timestamp: new Date().toISOString()
         }, 'storage');
         
-        const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.STORAGE,
-            `Failed to register device: ${error.message}`,
-            ErrorService.SEVERITIES.ERROR,
-            {
-                deviceId: deviceId,
-                stack: error.stack,
-                timestamp: new Date().toISOString()
-            }
-        );
-        MonitoringService.logError(mcpError);
         throw mcpError;
     }
 }
 
-async function getDevice(deviceId) {
+async function getDevice(deviceId, userId, sessionId) {
     const startTime = Date.now();
     
-    if (!deviceId) {
-        const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.VALIDATION,
-            'Device ID is required',
-            ErrorService.SEVERITIES.ERROR,
-            { deviceId: deviceId }
-        );
-        MonitoringService.logError(mcpError);
-        throw mcpError;
-    }
-    
     try {
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Device retrieval operation started', {
+                deviceId: deviceId?.substring(0, 8) + '...',
+                userId,
+                sessionId,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
+        
+        if (!deviceId) {
+            const mcpError = ErrorService.createError(
+                'storage',
+                'Device ID is required',
+                'error',
+                { 
+                    deviceId: deviceId,
+                    userId,
+                    sessionId,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            MonitoringService.logError(mcpError);
+            throw mcpError;
+        }
+        
         const connection = await getConnection();
         const row = await connection.query('SELECT * FROM devices WHERE device_id = ?', [deviceId]);
         connection.release();
@@ -1001,73 +1518,145 @@ async function getDevice(deviceId) {
         } : null;
         
         const executionTime = Date.now() - startTime;
-        MonitoringService.trackMetric('storage_get_device_success', executionTime, {
-            deviceId: deviceId,
-            found: !!result,
-            timestamp: new Date().toISOString()
-        }, 'storage');
+        
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('Device retrieved successfully', {
+                deviceId: deviceId?.substring(0, 8) + '...',
+                found: !!result,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('Device retrieved with session', {
+                sessionId,
+                deviceId: deviceId?.substring(0, 8) + '...',
+                found: !!result,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
         
         return result;
         
     } catch (error) {
         const executionTime = Date.now() - startTime;
-        MonitoringService.trackMetric('storage_get_device_error', executionTime, {
-            deviceId: deviceId,
-            error: error.message,
-            timestamp: new Date().toISOString()
-        }, 'storage');
         
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.STORAGE,
+            'storage',
             `Failed to get device: ${error.message}`,
-            ErrorService.SEVERITIES.ERROR,
+            'error',
             {
                 deviceId: deviceId,
                 stack: error.stack,
+                userId,
+                sessionId,
                 timestamp: new Date().toISOString()
             }
         );
         MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('Device retrieval failed', {
+                deviceId: deviceId?.substring(0, 8) + '...',
+                error: error.message,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('Device retrieval failed', {
+                sessionId,
+                deviceId: deviceId?.substring(0, 8) + '...',
+                error: error.message,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
+        
         throw mcpError;
     }
 }
 
-async function authorizeDevice(deviceId, userId) {
+async function authorizeDevice(deviceId, userId, sessionId) {
     const startTime = Date.now();
     
-    if (!deviceId || !userId) {
-        const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.VALIDATION,
-            'Device ID and user ID are required',
-            ErrorService.SEVERITIES.ERROR,
-            { deviceId: !!deviceId, userId: !!userId }
-        );
-        MonitoringService.logError(mcpError);
-        throw mcpError;
-    }
-    
     try {
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Device authorization operation started', {
+                deviceId: deviceId?.substring(0, 8) + '...',
+                userId,
+                sessionId,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
+        
+        if (!deviceId || !userId) {
+            const mcpError = ErrorService.createError(
+                'storage',
+                'Device ID and user ID are required',
+                'error',
+                { 
+                    deviceId: !!deviceId, 
+                    userId: !!userId,
+                    sessionId,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            MonitoringService.logError(mcpError);
+            throw mcpError;
+        }
+        
         const connection = await getConnection();
         await connection.query('UPDATE devices SET is_authorized = TRUE, user_id = ?, last_seen = ? WHERE device_id = ?', 
             [userId, Date.now(), deviceId]);
         connection.release();
         
         const executionTime = Date.now() - startTime;
+        
+        // Pattern 2: User Activity Logs
+        MonitoringService.info('Device authorized successfully', {
+            deviceId: deviceId?.substring(0, 8) + '...',
+            userId,
+            executionTimeMs: executionTime,
+            timestamp: new Date().toISOString()
+        }, 'storage', null, userId);
+        
         MonitoringService.trackMetric('storage_authorize_device_success', executionTime, {
             deviceId: deviceId,
             userId: userId,
             timestamp: new Date().toISOString()
         }, 'storage');
         
-        MonitoringService.info('Device authorized successfully', {
-            deviceId: deviceId,
-            userId: userId,
-            executionTime: executionTime,
-            timestamp: new Date().toISOString()
-        }, 'storage');
-        
     } catch (error) {
         const executionTime = Date.now() - startTime;
+        
+        // Pattern 3: Infrastructure Error Logging
+        const mcpError = ErrorService.createError(
+            'storage',
+            `Failed to authorize device: ${error.message}`,
+            'error',
+            {
+                deviceId: deviceId,
+                userId: userId,
+                stack: error.stack,
+                sessionId,
+                timestamp: new Date().toISOString()
+            }
+        );
+        MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        MonitoringService.error('Device authorization failed', {
+            deviceId: deviceId?.substring(0, 8) + '...',
+            userId,
+            error: error.message,
+            executionTimeMs: executionTime,
+            timestamp: new Date().toISOString()
+        }, 'storage', null, userId);
+        
         MonitoringService.trackMetric('storage_authorize_device_error', executionTime, {
             deviceId: deviceId,
             userId: userId,
@@ -1075,43 +1664,66 @@ async function authorizeDevice(deviceId, userId) {
             timestamp: new Date().toISOString()
         }, 'storage');
         
-        const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.STORAGE,
-            `Failed to authorize device: ${error.message}`,
-            ErrorService.SEVERITIES.ERROR,
-            {
-                deviceId: deviceId,
-                userId: userId,
-                stack: error.stack,
-                timestamp: new Date().toISOString()
-            }
-        );
-        MonitoringService.logError(mcpError);
         throw mcpError;
     }
 }
 
-async function updateDeviceMetadata(deviceId, metadata) {
+async function updateDeviceMetadata(deviceId, metadata, userId, sessionId) {
     const startTime = Date.now();
     
-    if (!deviceId) {
-        const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.VALIDATION,
-            'Device ID is required',
-            ErrorService.SEVERITIES.ERROR,
-            { deviceId: deviceId }
-        );
-        MonitoringService.logError(mcpError);
-        throw mcpError;
-    }
-    
     try {
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Device metadata update operation started', {
+                deviceId: deviceId?.substring(0, 8) + '...',
+                hasMetadata: !!metadata,
+                userId,
+                sessionId,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
+        
+        if (!deviceId) {
+            const mcpError = ErrorService.createError(
+                'storage',
+                'Device ID is required',
+                'error',
+                { 
+                    deviceId: deviceId,
+                    userId,
+                    sessionId,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            MonitoringService.logError(mcpError);
+            throw mcpError;
+        }
+        
         const connection = await getConnection();
         await connection.query('UPDATE devices SET metadata = ?, last_seen = ? WHERE device_id = ?', 
             [JSON.stringify(metadata), Date.now(), deviceId]);
         connection.release();
         
         const executionTime = Date.now() - startTime;
+        
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('Device metadata updated successfully', {
+                deviceId: deviceId?.substring(0, 8) + '...',
+                hasMetadata: !!metadata,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('Device metadata updated with session', {
+                sessionId,
+                deviceId: deviceId?.substring(0, 8) + '...',
+                hasMetadata: !!metadata,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
+        
         MonitoringService.trackMetric('storage_update_device_metadata_success', executionTime, {
             deviceId: deviceId,
             timestamp: new Date().toISOString()
@@ -1119,23 +1731,46 @@ async function updateDeviceMetadata(deviceId, metadata) {
         
     } catch (error) {
         const executionTime = Date.now() - startTime;
+        
+        // Pattern 3: Infrastructure Error Logging
+        const mcpError = ErrorService.createError(
+            'storage',
+            `Failed to update device metadata: ${error.message}`,
+            'error',
+            {
+                deviceId: deviceId,
+                stack: error.stack,
+                userId,
+                sessionId,
+                timestamp: new Date().toISOString()
+            }
+        );
+        MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('Device metadata update failed', {
+                deviceId: deviceId?.substring(0, 8) + '...',
+                error: error.message,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('Device metadata update failed', {
+                sessionId,
+                deviceId: deviceId?.substring(0, 8) + '...',
+                error: error.message,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
+        
         MonitoringService.trackMetric('storage_update_device_metadata_error', executionTime, {
             deviceId: deviceId,
             error: error.message,
             timestamp: new Date().toISOString()
         }, 'storage');
         
-        const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.STORAGE,
-            `Failed to update device metadata: ${error.message}`,
-            ErrorService.SEVERITIES.ERROR,
-            {
-                deviceId: deviceId,
-                stack: error.stack,
-                timestamp: new Date().toISOString()
-            }
-        );
-        MonitoringService.logError(mcpError);
         throw mcpError;
     }
 }
@@ -1163,18 +1798,81 @@ function getMigrationManager() {
 /**
  * Health check for storage service
  */
-async function healthCheck() {
+async function healthCheck(userId, sessionId) {
+    const startTime = Date.now();
+    
     try {
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Storage health check operation started', {
+                userId,
+                sessionId,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
+        
         const connection = await getConnection();
         const result = await connection.query('SELECT 1 as test', []);
         connection.release();
         
-        return {
+        const executionTime = Date.now() - startTime;
+        const healthResult = {
             status: 'healthy',
             database: databaseFactory.getConfig().type,
             timestamp: new Date().toISOString()
         };
+        
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('Storage health check completed successfully', {
+                status: 'healthy',
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('Storage health check completed with session', {
+                sessionId,
+                status: 'healthy',
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
+        
+        return healthResult;
+        
     } catch (error) {
+        const executionTime = Date.now() - startTime;
+        
+        // Pattern 3: Infrastructure Error Logging
+        const mcpError = ErrorService.createError(
+            'storage',
+            `Storage health check failed: ${error.message}`,
+            'error',
+            {
+                stack: error.stack,
+                userId,
+                sessionId,
+                timestamp: new Date().toISOString()
+            }
+        );
+        MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('Storage health check failed', {
+                error: error.message,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('Storage health check failed', {
+                sessionId,
+                error: error.message,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'storage');
+        }
+        
         return {
             status: 'unhealthy',
             error: error.message,
