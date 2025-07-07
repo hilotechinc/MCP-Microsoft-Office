@@ -19,15 +19,25 @@ MonitoringService?.info?.('Graph Client initialized', {
 /**
  * Creates an authenticated Graph client.
  * @param {Object} req - Express request object (optional)
+ * @param {string} userId - User ID for logging context (optional)
+ * @param {string} sessionId - Session ID for logging context (optional)
  * @returns {Promise<GraphClient>}
  */
-async function createClient(req) {
+async function createClient(req, userId, sessionId) {
     const startTime = Date.now();
     
+    // Extract user context from request if not provided
+    const contextUserId = userId || req?.user?.userId || req?.user?.deviceId;
+    const contextSessionId = sessionId || req?.session?.id;
+    
+    // Pattern 1: Development Debug Logs
     if (process.env.NODE_ENV === 'development') {
-        MonitoringService?.debug('Graph client creation started', {
+        MonitoringService.debug('Graph client creation started', {
             method: 'createClient',
             hasRequest: !!req,
+            userId: contextUserId,
+            sessionId: contextSessionId,
+            userAgent: req?.get?.('User-Agent'),
             timestamp: new Date().toISOString()
         }, 'graph');
     }
@@ -41,70 +51,50 @@ async function createClient(req) {
             (req.user && req.user.deviceId && req.user.deviceId.startsWith('mcp-token-'))
         );
         
-        // Debug logging for setFileContent issue
-        if (req && req.path === '/content') {
-            console.log('[GRAPH CLIENT] setFileContent request details:', {
-                path: req.path,
-                originalUrl: req.originalUrl,
-                mcpHeader: req.headers?.['x-mcp-internal-call'],
-                isApiCall,
-                hasUser: !!req.user,
-                userDeviceId: req.user?.deviceId
-            });
-        }
-        
+        // Pattern 1: Development Debug Logs - Request type determination
         if (process.env.NODE_ENV === 'development') {
-            MonitoringService?.debug('Graph client creation type determined', {
+            MonitoringService.debug('Graph client creation type determined', {
                 isApiCall,
                 requestType: isApiCall ? 'API call' : 'regular request',
                 hasRequest: !!req,
                 requestPath: req?.path,
                 hasHeaders: !!req?.headers,
                 mcpHeader: req?.headers?.['x-mcp-internal-call'],
-                allHeaders: req?.headers ? Object.keys(req.headers) : [],
+                userId: contextUserId,
+                sessionId: contextSessionId,
                 timestamp: new Date().toISOString()
             }, 'graph');
         }
         
         let token;
         
-        // Debug the exact flow
-        console.log('[GRAPH CLIENT] Token retrieval flow:', {
-            isApiCall,
-            willUseMostRecentToken: isApiCall,
-            willUseGetAccessToken: !isApiCall,
-            requestPath: req?.path,
-            mcpHeader: req?.headers?.['x-mcp-internal-call'],
-            userDeviceId: req?.user?.deviceId
-        });
-        
         // For API calls (including internal MCP calls), use the stored token
         if (isApiCall) {
-            console.log('[GRAPH CLIENT] Taking API call branch - using getMostRecentToken');
-            
             // Extract user ID from request for MCP calls
-            let userId = null;
+            let tokenUserId = null;
             if (req?.user?.deviceId && req.user.deviceId.startsWith('mcp-token-')) {
-                userId = req.user.deviceId;
+                tokenUserId = req.user.deviceId;
             } else if (req?.user?.userId) {
-                userId = req.user.userId;
+                tokenUserId = req.user.userId;
             }
             
-            console.log('[GRAPH CLIENT] Extracted userId:', userId);
-            
+            // Pattern 1: Development Debug Logs - Token retrieval
             if (process.env.NODE_ENV === 'development') {
-                MonitoringService?.debug('Getting stored token for API call', {
-                    userId,
+                MonitoringService.debug('Getting stored token for API call', {
+                    tokenUserId,
+                    userId: contextUserId,
+                    sessionId: contextSessionId,
                     timestamp: new Date().toISOString()
                 }, 'graph');
             }
-            token = await msalService.getMostRecentToken(userId);
+            token = await msalService.getMostRecentToken(tokenUserId);
         } else {
-            console.log('[GRAPH CLIENT] Taking regular request branch - using getAccessToken');
-            
             // Normal flow - get token from session
+            // Pattern 1: Development Debug Logs - Session token retrieval
             if (process.env.NODE_ENV === 'development') {
-                MonitoringService?.debug('Getting token from session', {
+                MonitoringService.debug('Getting token from session', {
+                    userId: contextUserId,
+                    sessionId: contextSessionId,
                     timestamp: new Date().toISOString()
                 }, 'graph');
             }
@@ -112,34 +102,74 @@ async function createClient(req) {
         }
         
         if (!token) {
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.AUTH,
+                'graph',
                 'No access token available for Graph client',
-                ErrorService.SEVERITIES.ERROR,
+                'error',
                 {
                     service: 'graph-client',
                     method: 'createClient',
                     isApiCall,
+                    userId: contextUserId,
+                    sessionId: contextSessionId,
                     timestamp: new Date().toISOString()
                 }
             );
-            MonitoringService?.logError(mcpError);
+            MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (contextUserId) {
+                MonitoringService.error('Graph client creation failed - no access token', {
+                    error: 'No access token available',
+                    isApiCall,
+                    timestamp: new Date().toISOString()
+                }, 'graph', null, contextUserId);
+            } else if (contextSessionId) {
+                MonitoringService.error('Graph client creation failed - no access token', {
+                    sessionId: contextSessionId,
+                    error: 'No access token available',
+                    isApiCall,
+                    timestamp: new Date().toISOString()
+                }, 'graph');
+            }
+            
             throw mcpError;
         }
         
         const client = new GraphClient(token);
         const executionTime = Date.now() - startTime;
         
-        MonitoringService?.trackMetric('graph_client_creation_success', executionTime, {
+        // Pattern 2: User Activity Logs
+        if (contextUserId) {
+            MonitoringService.info('Graph client created successfully', {
+                isApiCall,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'graph', null, contextUserId);
+        } else if (contextSessionId) {
+            MonitoringService.info('Graph client created successfully', {
+                sessionId: contextSessionId,
+                isApiCall,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'graph');
+        }
+        
+        MonitoringService.trackMetric('graph_client_creation_success', executionTime, {
             service: 'graph-client',
             method: 'createClient',
             isApiCall,
+            userId: contextUserId,
             timestamp: new Date().toISOString()
         });
         
+        // Pattern 1: Development Debug Logs - Success
         if (process.env.NODE_ENV === 'development') {
-            MonitoringService?.debug('Graph client created successfully', {
+            MonitoringService.debug('Graph client created successfully', {
                 executionTimeMs: executionTime,
+                userId: contextUserId,
+                sessionId: contextSessionId,
                 timestamp: new Date().toISOString()
             }, 'graph');
         }
@@ -150,35 +180,70 @@ async function createClient(req) {
         
         // If it's already an MCP error, just track metrics and rethrow
         if (error.category) {
-            MonitoringService?.trackMetric('graph_client_creation_failure', executionTime, {
+            MonitoringService.trackMetric('graph_client_creation_failure', executionTime, {
                 service: 'graph-client',
                 method: 'createClient',
                 errorType: error.code || 'auth_error',
+                userId: contextUserId,
                 timestamp: new Date().toISOString()
             });
+            
+            // Pattern 4: User Error Tracking for existing MCP errors
+            if (contextUserId) {
+                MonitoringService.error('Graph client creation failed', {
+                    error: error.message,
+                    errorCode: error.code,
+                    timestamp: new Date().toISOString()
+                }, 'graph', null, contextUserId);
+            } else if (contextSessionId) {
+                MonitoringService.error('Graph client creation failed', {
+                    sessionId: contextSessionId,
+                    error: error.message,
+                    errorCode: error.code,
+                    timestamp: new Date().toISOString()
+                }, 'graph');
+            }
+            
             throw error;
         }
         
-        // Otherwise, wrap in MCP error
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.SYSTEM,
+            'graph',
             `Graph client creation failed: ${error.message}`,
-            ErrorService.SEVERITIES.ERROR,
+            'error',
             {
                 service: 'graph-client',
                 method: 'createClient',
                 stack: error.stack,
+                userId: contextUserId,
+                sessionId: contextSessionId,
                 timestamp: new Date().toISOString()
             }
         );
         
-        MonitoringService?.logError(mcpError);
-        MonitoringService?.trackMetric('graph_client_creation_failure', executionTime, {
+        MonitoringService.logError(mcpError);
+        MonitoringService.trackMetric('graph_client_creation_failure', executionTime, {
             service: 'graph-client',
             method: 'createClient',
             errorType: error.code || 'unknown',
+            userId: contextUserId,
             timestamp: new Date().toISOString()
         });
+        
+        // Pattern 4: User Error Tracking
+        if (contextUserId) {
+            MonitoringService.error('Graph client creation failed', {
+                error: error.message,
+                timestamp: new Date().toISOString()
+            }, 'graph', null, contextUserId);
+        } else if (contextSessionId) {
+            MonitoringService.error('Graph client creation failed', {
+                sessionId: contextSessionId,
+                error: error.message,
+                timestamp: new Date().toISOString()
+            }, 'graph');
+        }
         
         throw mcpError;
     }
@@ -192,24 +257,26 @@ class GraphClient {
     /**
      * Returns a request builder for a Graph API endpoint.
      * @param {string} path - The Graph API path (e.g., '/me')
+     * @param {string} userId - User ID for logging context (optional)
+     * @param {string} sessionId - Session ID for logging context (optional)
      */
-    api(path) {
+    api(path, userId, sessionId) {
         const self = this;
         return {
             async get(options = {}) {
-                return await _fetchWithRetry(path, self.token, 'GET', null, options);
+                return await _fetchWithRetry(path, self.token, 'GET', null, options, 2, userId, sessionId);
             },
             async post(body, options = {}) {
-                return await _fetchWithRetry(path, self.token, 'POST', body, options);
+                return await _fetchWithRetry(path, self.token, 'POST', body, options, 2, userId, sessionId);
             },
             async put(body, options = {}) {
-                return await _fetchWithRetry(path, self.token, 'PUT', body, options);
+                return await _fetchWithRetry(path, self.token, 'PUT', body, options, 2, userId, sessionId);
             },
             async patch(body, options = {}) {
-                return await _fetchWithRetry(path, self.token, 'PATCH', body, options);
+                return await _fetchWithRetry(path, self.token, 'PATCH', body, options, 2, userId, sessionId);
             },
             async delete(options = {}) {
-                return await _fetchWithRetry(path, self.token, 'DELETE', null, options);
+                return await _fetchWithRetry(path, self.token, 'DELETE', null, options, 2, userId, sessionId);
             }
         };
     }
@@ -226,9 +293,6 @@ class GraphClient {
 }
 
 /**
- * Helper to fetch with retry logic.
- */
-/**
  * Helper to fetch with retry logic and respect for Microsoft Graph rate limiting.
  * Retries on 429 (Too Many Requests) using the retry-after header if present.
  * @param {string} path
@@ -237,8 +301,10 @@ class GraphClient {
  * @param {object|null} body
  * @param {object} options
  * @param {number} retries
+ * @param {string} userId - User ID for logging context (optional)
+ * @param {string} sessionId - Session ID for logging context (optional)
  */
-async function _fetchWithRetry(path, token, method, body, options, retries = 2) {
+async function _fetchWithRetry(path, token, method, body, options, retries = 2, userId, sessionId) {
     const startTime = Date.now();
     const url = (path.startsWith('http') ? path : `https://graph.microsoft.com/v1.0${path}`);
     const headers = Object.assign({
@@ -246,12 +312,15 @@ async function _fetchWithRetry(path, token, method, body, options, retries = 2) 
         'Content-Type': 'application/json'
     }, options.headers || {});
     
+    // Pattern 1: Development Debug Logs
     if (process.env.NODE_ENV === 'development') {
-        MonitoringService?.debug('Graph API request started', {
+        MonitoringService.debug('Graph API request started', {
             method,
             path,
             url,
             hasBody: !!body,
+            userId,
+            sessionId,
             timestamp: new Date().toISOString()
         }, 'graph');
     }
@@ -270,23 +339,49 @@ async function _fetchWithRetry(path, token, method, body, options, retries = 2) 
             const totalTime = Date.now() - startTime;
             
             // Track all Graph API requests
-            MonitoringService?.trackMetric('graph_api_request', responseTime, {
+            MonitoringService.trackMetric('graph_api_request', responseTime, {
                 method: method,
                 endpoint: path,
                 statusCode: res.status,
                 success: res.ok,
                 attempt: attempt + 1,
+                userId,
                 timestamp: new Date().toISOString()
             });
             
             if (res.ok) {
+                // Pattern 2: User Activity Logs
+                if (userId) {
+                    MonitoringService.info('Graph API request successful', {
+                        method,
+                        path: path.substring(0, 50) + (path.length > 50 ? '...' : ''),
+                        status: res.status,
+                        responseTimeMs: responseTime,
+                        attempt: attempt + 1,
+                        timestamp: new Date().toISOString()
+                    }, 'graph', null, userId);
+                } else if (sessionId) {
+                    MonitoringService.info('Graph API request successful', {
+                        sessionId,
+                        method,
+                        path: path.substring(0, 50) + (path.length > 50 ? '...' : ''),
+                        status: res.status,
+                        responseTimeMs: responseTime,
+                        attempt: attempt + 1,
+                        timestamp: new Date().toISOString()
+                    }, 'graph');
+                }
+                
+                // Pattern 1: Development Debug Logs
                 if (process.env.NODE_ENV === 'development') {
-                    MonitoringService?.debug('Graph API request successful', {
+                    MonitoringService.debug('Graph API request successful', {
                         method,
                         path,
                         status: res.status,
                         responseTimeMs: responseTime,
                         totalTimeMs: totalTime,
+                        userId,
+                        sessionId,
                         timestamp: new Date().toISOString()
                     }, 'graph');
                 }
@@ -314,19 +409,21 @@ async function _fetchWithRetry(path, token, method, body, options, retries = 2) 
             if (res.status === 429) {
                 const retryAfter = Number(res.headers.get('retry-after')) || 1;
                 
-                MonitoringService?.trackMetric('graph_api_throttled', responseTime, {
+                MonitoringService.trackMetric('graph_api_throttled', responseTime, {
                     method,
                     endpoint: path,
                     attempt: attempt + 1,
                     retryAfter,
+                    userId,
                     timestamp: new Date().toISOString()
                 });
                 
                 if (attempt === retries) {
+                    // Pattern 3: Infrastructure Error Logging
                     const mcpError = ErrorService.createError(
-                        ErrorService.CATEGORIES.API,
+                        'graph',
                         `Graph API throttled (429) after ${retries+1} attempts`,
-                        ErrorService.SEVERITIES.ERROR,
+                        'error',
                         {
                             service: 'graph-client',
                             method: '_fetchWithRetry',
@@ -334,19 +431,45 @@ async function _fetchWithRetry(path, token, method, body, options, retries = 2) 
                             httpMethod: method,
                             attempts: retries + 1,
                             retryAfter,
+                            userId,
+                            sessionId,
                             timestamp: new Date().toISOString()
                         }
                     );
-                    MonitoringService?.logError(mcpError);
+                    MonitoringService.logError(mcpError);
+                    
+                    // Pattern 4: User Error Tracking
+                    if (userId) {
+                        MonitoringService.error('Graph API throttled after max retries', {
+                            method,
+                            path: path.substring(0, 50) + (path.length > 50 ? '...' : ''),
+                            attempts: retries + 1,
+                            retryAfter,
+                            timestamp: new Date().toISOString()
+                        }, 'graph', null, userId);
+                    } else if (sessionId) {
+                        MonitoringService.error('Graph API throttled after max retries', {
+                            sessionId,
+                            method,
+                            path: path.substring(0, 50) + (path.length > 50 ? '...' : ''),
+                            attempts: retries + 1,
+                            retryAfter,
+                            timestamp: new Date().toISOString()
+                        }, 'graph');
+                    }
+                    
                     throw mcpError;
                 }
                 
+                // Pattern 1: Development Debug Logs
                 if (process.env.NODE_ENV === 'development') {
-                    MonitoringService?.debug('Graph API throttled, retrying', {
+                    MonitoringService.debug('Graph API throttled, retrying', {
                         method,
                         path,
                         attempt: attempt + 1,
                         retryAfter,
+                        userId,
+                        sessionId,
                         timestamp: new Date().toISOString()
                     }, 'graph');
                 }
@@ -360,12 +483,13 @@ async function _fetchWithRetry(path, token, method, body, options, retries = 2) 
                 try {
                     const errorData = await res.json();
                     
+                    // Pattern 3: Infrastructure Error Logging
                     const mcpError = ErrorService.createError(
-                        ErrorService.CATEGORIES.API,
+                        'graph',
                         errorData.error ? 
                             `Graph API request failed: ${res.status} - ${errorData.error.code}: ${errorData.error.message}` :
                             `Graph API request failed: ${res.status}`,
-                        ErrorService.SEVERITIES.ERROR,
+                        'error',
                         {
                             service: 'graph-client',
                             method: '_fetchWithRetry',
@@ -374,28 +498,54 @@ async function _fetchWithRetry(path, token, method, body, options, retries = 2) 
                             statusCode: res.status,
                             graphError: errorData.error,
                             attempts: retries + 1,
+                            userId,
+                            sessionId,
                             timestamp: new Date().toISOString()
                         }
                     );
                     
-                    MonitoringService?.logError(mcpError);
-                    MonitoringService?.trackMetric('graph_api_error', totalTime, {
+                    MonitoringService.logError(mcpError);
+                    MonitoringService.trackMetric('graph_api_error', totalTime, {
                         method,
                         endpoint: path,
                         statusCode: res.status,
                         errorCode: errorData.error?.code || 'unknown',
+                        userId,
                         timestamp: new Date().toISOString()
                     });
+                    
+                    // Pattern 4: User Error Tracking
+                    if (userId) {
+                        MonitoringService.error('Graph API request failed', {
+                            method,
+                            path: path.substring(0, 50) + (path.length > 50 ? '...' : ''),
+                            statusCode: res.status,
+                            errorCode: errorData.error?.code || 'unknown',
+                            errorMessage: errorData.error?.message || 'Unknown error',
+                            timestamp: new Date().toISOString()
+                        }, 'graph', null, userId);
+                    } else if (sessionId) {
+                        MonitoringService.error('Graph API request failed', {
+                            sessionId,
+                            method,
+                            path: path.substring(0, 50) + (path.length > 50 ? '...' : ''),
+                            statusCode: res.status,
+                            errorCode: errorData.error?.code || 'unknown',
+                            errorMessage: errorData.error?.message || 'Unknown error',
+                            timestamp: new Date().toISOString()
+                        }, 'graph');
+                    }
                     
                     throw mcpError;
                 } catch (parseError) {
                     // If we can't parse the error response as JSON
                     const errorText = await res.text().catch(() => 'Unable to read error response');
                     
+                    // Pattern 3: Infrastructure Error Logging
                     const mcpError = ErrorService.createError(
-                        ErrorService.CATEGORIES.API,
+                        'graph',
                         `Graph API request failed: ${res.status} - ${errorText.substring(0, 200)}`,
-                        ErrorService.SEVERITIES.ERROR,
+                        'error',
                         {
                             service: 'graph-client',
                             method: '_fetchWithRetry',
@@ -405,18 +555,41 @@ async function _fetchWithRetry(path, token, method, body, options, retries = 2) 
                             errorText: errorText.substring(0, 200),
                             parseError: parseError.message,
                             attempts: retries + 1,
+                            userId,
+                            sessionId,
                             timestamp: new Date().toISOString()
                         }
                     );
                     
-                    MonitoringService?.logError(mcpError);
-                    MonitoringService?.trackMetric('graph_api_error', totalTime, {
+                    MonitoringService.logError(mcpError);
+                    MonitoringService.trackMetric('graph_api_error', totalTime, {
                         method,
                         endpoint: path,
                         statusCode: res.status,
                         errorType: 'parse_error',
+                        userId,
                         timestamp: new Date().toISOString()
                     });
+                    
+                    // Pattern 4: User Error Tracking
+                    if (userId) {
+                        MonitoringService.error('Graph API request failed with parse error', {
+                            method,
+                            path: path.substring(0, 50) + (path.length > 50 ? '...' : ''),
+                            statusCode: res.status,
+                            errorType: 'parse_error',
+                            timestamp: new Date().toISOString()
+                        }, 'graph', null, userId);
+                    } else if (sessionId) {
+                        MonitoringService.error('Graph API request failed with parse error', {
+                            sessionId,
+                            method,
+                            path: path.substring(0, 50) + (path.length > 50 ? '...' : ''),
+                            statusCode: res.status,
+                            errorType: 'parse_error',
+                            timestamp: new Date().toISOString()
+                        }, 'graph');
+                    }
                     
                     throw mcpError;
                 }
@@ -431,10 +604,11 @@ async function _fetchWithRetry(path, token, method, body, options, retries = 2) 
             
             // Network or other fetch errors
             if (attempt === retries) {
+                // Pattern 3: Infrastructure Error Logging
                 const mcpError = ErrorService.createError(
-                    ErrorService.CATEGORIES.SYSTEM,
+                    'graph',
                     `Graph API network error: ${error.message}`,
-                    ErrorService.SEVERITIES.ERROR,
+                    'error',
                     {
                         service: 'graph-client',
                         method: '_fetchWithRetry',
@@ -442,17 +616,40 @@ async function _fetchWithRetry(path, token, method, body, options, retries = 2) 
                         httpMethod: method,
                         networkError: error.message,
                         attempts: retries + 1,
+                        userId,
+                        sessionId,
                         timestamp: new Date().toISOString()
                     }
                 );
                 
-                MonitoringService?.logError(mcpError);
-                MonitoringService?.trackMetric('graph_api_network_error', responseTime, {
+                MonitoringService.logError(mcpError);
+                MonitoringService.trackMetric('graph_api_network_error', responseTime, {
                     method,
                     endpoint: path,
                     errorType: 'network',
+                    userId,
                     timestamp: new Date().toISOString()
                 });
+                
+                // Pattern 4: User Error Tracking
+                if (userId) {
+                    MonitoringService.error('Graph API network error', {
+                        method,
+                        path: path.substring(0, 50) + (path.length > 50 ? '...' : ''),
+                        errorType: 'network',
+                        errorMessage: error.message,
+                        timestamp: new Date().toISOString()
+                    }, 'graph', null, userId);
+                } else if (sessionId) {
+                    MonitoringService.error('Graph API network error', {
+                        sessionId,
+                        method,
+                        path: path.substring(0, 50) + (path.length > 50 ? '...' : ''),
+                        errorType: 'network',
+                        errorMessage: error.message,
+                        timestamp: new Date().toISOString()
+                    }, 'graph');
+                }
                 
                 throw mcpError;
             }
@@ -462,14 +659,21 @@ async function _fetchWithRetry(path, token, method, body, options, retries = 2) 
 
 /**
  * Enhanced batch method: retries only failed requests (429) after retry-after delay.
+ * @param {Array} requests - Array of batch requests
+ * @param {number} retries - Number of retry attempts (default: 2)
+ * @param {string} userId - User ID for logging context (optional)
+ * @param {string} sessionId - Session ID for logging context (optional)
  */
-GraphClient.prototype.batch = async function(requests, retries = 2) {
+GraphClient.prototype.batch = async function(requests, retries = 2, userId, sessionId) {
     const startTime = Date.now();
     
+    // Pattern 1: Development Debug Logs
     if (process.env.NODE_ENV === 'development') {
-        MonitoringService?.debug('Graph API batch request started', {
+        MonitoringService.debug('Graph API batch request started', {
             method: 'batch',
             requestCount: requests.length,
+            userId,
+            sessionId,
             timestamp: new Date().toISOString()
         }, 'graph');
     }
@@ -481,12 +685,13 @@ GraphClient.prototype.batch = async function(requests, retries = 2) {
         
         while (pending.length && attempts <= retries) {
             const batchStartTime = Date.now();
-            const response = await _fetchWithRetry('/$batch', this.token, 'POST', { requests: pending }, {});
+            const response = await _fetchWithRetry('/$batch', this.token, 'POST', { requests: pending }, {}, 2, userId, sessionId);
             const batchTime = Date.now() - batchStartTime;
             
-            MonitoringService?.trackMetric('graph_api_batch_request', batchTime, {
+            MonitoringService.trackMetric('graph_api_batch_request', batchTime, {
                 requestCount: pending.length,
                 attempt: attempts + 1,
+                userId,
                 timestamp: new Date().toISOString()
             });
             
@@ -508,13 +713,16 @@ GraphClient.prototype.batch = async function(requests, retries = 2) {
                 }
             });
             
+            // Pattern 1: Development Debug Logs
             if (process.env.NODE_ENV === 'development') {
-                MonitoringService?.debug('Graph API batch attempt completed', {
+                MonitoringService.debug('Graph API batch attempt completed', {
                     attempt: attempts + 1,
                     successCount,
                     throttledCount,
                     pendingCount: retryRequests.length,
                     maxRetryAfter,
+                    userId,
+                    sessionId,
                     timestamp: new Date().toISOString()
                 }, 'graph');
             }
@@ -522,10 +730,11 @@ GraphClient.prototype.batch = async function(requests, retries = 2) {
             if (!retryRequests.length) break;
             
             if (attempts === retries) {
+                // Pattern 3: Infrastructure Error Logging
                 const mcpError = ErrorService.createError(
-                    ErrorService.CATEGORIES.API,
+                    'graph',
                     'Graph API batch throttled (429) after max retries',
-                    ErrorService.SEVERITIES.ERROR,
+                    'error',
                     {
                         service: 'graph-client',
                         method: 'batch',
@@ -533,10 +742,33 @@ GraphClient.prototype.batch = async function(requests, retries = 2) {
                         throttledRequests: retryRequests.length,
                         attempts: retries + 1,
                         maxRetryAfter,
+                        userId,
+                        sessionId,
                         timestamp: new Date().toISOString()
                     }
                 );
-                MonitoringService?.logError(mcpError);
+                MonitoringService.logError(mcpError);
+                
+                // Pattern 4: User Error Tracking
+                if (userId) {
+                    MonitoringService.error('Graph API batch throttled after max retries', {
+                        totalRequests: requests.length,
+                        throttledRequests: retryRequests.length,
+                        attempts: retries + 1,
+                        maxRetryAfter,
+                        timestamp: new Date().toISOString()
+                    }, 'graph', null, userId);
+                } else if (sessionId) {
+                    MonitoringService.error('Graph API batch throttled after max retries', {
+                        sessionId,
+                        totalRequests: requests.length,
+                        throttledRequests: retryRequests.length,
+                        attempts: retries + 1,
+                        maxRetryAfter,
+                        timestamp: new Date().toISOString()
+                    }, 'graph');
+                }
+                
                 throw mcpError;
             }
             
@@ -546,19 +778,42 @@ GraphClient.prototype.batch = async function(requests, retries = 2) {
         }
         
         const executionTime = Date.now() - startTime;
-        MonitoringService?.trackMetric('graph_api_batch_success', executionTime, {
+        
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('Graph API batch completed successfully', {
+                totalRequests: requests.length,
+                totalAttempts: attempts + 1,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'graph', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('Graph API batch completed successfully', {
+                sessionId,
+                totalRequests: requests.length,
+                totalAttempts: attempts + 1,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'graph');
+        }
+        
+        MonitoringService.trackMetric('graph_api_batch_success', executionTime, {
             service: 'graph-client',
             method: 'batch',
             totalRequests: requests.length,
             totalAttempts: attempts + 1,
+            userId,
             timestamp: new Date().toISOString()
         });
         
+        // Pattern 1: Development Debug Logs
         if (process.env.NODE_ENV === 'development') {
-            MonitoringService?.debug('Graph API batch completed successfully', {
+            MonitoringService.debug('Graph API batch completed successfully', {
                 totalRequests: requests.length,
                 totalAttempts: attempts + 1,
                 executionTimeMs: executionTime,
+                userId,
+                sessionId,
                 timestamp: new Date().toISOString()
             }, 'graph');
         }
@@ -569,38 +824,77 @@ GraphClient.prototype.batch = async function(requests, retries = 2) {
         
         // If it's already an MCP error, just track metrics and rethrow
         if (error.category) {
-            MonitoringService?.trackMetric('graph_api_batch_failure', executionTime, {
+            MonitoringService.trackMetric('graph_api_batch_failure', executionTime, {
                 service: 'graph-client',
                 method: 'batch',
                 totalRequests: requests.length,
                 errorType: error.code || 'api_error',
+                userId,
                 timestamp: new Date().toISOString()
             });
+            
+            // Pattern 4: User Error Tracking for existing MCP errors
+            if (userId) {
+                MonitoringService.error('Graph API batch operation failed', {
+                    totalRequests: requests.length,
+                    errorType: error.code || 'api_error',
+                    errorMessage: error.message,
+                    timestamp: new Date().toISOString()
+                }, 'graph', null, userId);
+            } else if (sessionId) {
+                MonitoringService.error('Graph API batch operation failed', {
+                    sessionId,
+                    totalRequests: requests.length,
+                    errorType: error.code || 'api_error',
+                    errorMessage: error.message,
+                    timestamp: new Date().toISOString()
+                }, 'graph');
+            }
+            
             throw error;
         }
         
-        // Otherwise, wrap in MCP error
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.API,
+            'graph',
             `Graph API batch operation failed: ${error.message}`,
-            ErrorService.SEVERITIES.ERROR,
+            'error',
             {
                 service: 'graph-client',
                 method: 'batch',
                 totalRequests: requests.length,
                 stack: error.stack,
+                userId,
+                sessionId,
                 timestamp: new Date().toISOString()
             }
         );
         
-        MonitoringService?.logError(mcpError);
-        MonitoringService?.trackMetric('graph_api_batch_failure', executionTime, {
+        MonitoringService.logError(mcpError);
+        MonitoringService.trackMetric('graph_api_batch_failure', executionTime, {
             service: 'graph-client',
             method: 'batch',
             totalRequests: requests.length,
             errorType: error.code || 'unknown',
+            userId,
             timestamp: new Date().toISOString()
         });
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('Graph API batch operation failed', {
+                totalRequests: requests.length,
+                errorMessage: error.message,
+                timestamp: new Date().toISOString()
+            }, 'graph', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('Graph API batch operation failed', {
+                sessionId,
+                totalRequests: requests.length,
+                errorMessage: error.message,
+                timestamp: new Date().toISOString()
+            }, 'graph');
+        }
         
         throw mcpError;
     }

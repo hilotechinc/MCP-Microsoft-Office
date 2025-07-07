@@ -37,66 +37,93 @@ function normalizeEmail(graphEmail) {
  * Retrieves inbox emails.
  * @param {object} options
  * @param {object} req - Express request object
+ * @param {string} userId - User ID for logging context
+ * @param {string} sessionId - Session ID for logging context
  * @returns {Promise<Array<object>>}
  */
-async function getInbox(options = {}, req) {
+async function getInbox(options = {}, req, userId, sessionId) {
   const startTime = Date.now();
   
+  // Extract user context from request if not provided
+  const contextUserId = userId || req?.user?.userId;
+  const contextSessionId = sessionId || req?.session?.id;
+  
+  // Pattern 1: Development Debug Logs
   if (process.env.NODE_ENV === 'development') {
     MonitoringService.debug('Mail getInbox operation started', {
       method: 'getInbox',
       optionKeys: Object.keys(options),
+      sessionId: contextSessionId,
+      userAgent: req?.get('User-Agent'),
       timestamp: new Date().toISOString()
-    }, 'graph');
+    }, 'mail');
   }
   
   try {
-    const client = await graphClientFactory.createClient(req);
+    const client = await graphClientFactory.createClient(req, contextUserId, contextSessionId);
     const top = options.top || options.limit || 10;
-    const res = await client.api(`/me/mailFolders/inbox/messages?$top=${top}`).get();
+    const res = await client.api(`/me/mailFolders/inbox/messages?$top=${top}`, contextUserId, contextSessionId).get();
     const emails = (res.value || []).map(normalizeEmail);
     
     const executionTime = Date.now() - startTime;
-    MonitoringService.trackMetric('graph_mail_get_inbox_success', executionTime, {
-      service: 'graph-mail-service',
-      method: 'getInbox',
-      emailCount: emails.length,
-      requestedTop: top,
-      timestamp: new Date().toISOString()
-    });
     
-    if (process.env.NODE_ENV === 'development') {
-      MonitoringService.debug('Mail getInbox operation completed', {
+    // Pattern 2: User Activity Logs
+    if (contextUserId) {
+      MonitoringService.info('Retrieved inbox emails successfully', {
         emailCount: emails.length,
+        requestedTop: top,
         executionTimeMs: executionTime,
         timestamp: new Date().toISOString()
-      }, 'graph');
+      }, 'mail', null, contextUserId);
+    } else if (contextSessionId) {
+      MonitoringService.info('Retrieved inbox emails with session', {
+        sessionId: contextSessionId,
+        emailCount: emails.length,
+        requestedTop: top,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail');
     }
     
     return emails;
   } catch (error) {
     const executionTime = Date.now() - startTime;
     
+    // Pattern 3: Infrastructure Error Logging
     const mcpError = ErrorService.createError(
-      ErrorService.CATEGORIES.API,
+      'mail',
       `Failed to get inbox emails: ${error.message}`,
-      ErrorService.SEVERITIES.ERROR,
+      'error',
       {
         service: 'graph-mail-service',
         method: 'getInbox',
         requestedTop: options.top || options.limit || 10,
+        executionTimeMs: executionTime,
+        error: error.message,
         stack: error.stack,
         timestamp: new Date().toISOString()
       }
     );
     
     MonitoringService.logError(mcpError);
-    MonitoringService.trackMetric('graph_mail_get_inbox_failure', executionTime, {
-      service: 'graph-mail-service',
-      method: 'getInbox',
-      errorType: error.code || 'unknown',
-      timestamp: new Date().toISOString()
-    });
+    
+    // Pattern 4: User Error Tracking
+    if (contextUserId) {
+      MonitoringService.error('Failed to retrieve inbox emails', {
+        error: error.message,
+        requestedTop: options.top || options.limit || 10,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail', null, contextUserId);
+    } else if (contextSessionId) {
+      MonitoringService.error('Failed to retrieve inbox emails', {
+        sessionId: contextSessionId,
+        error: error.message,
+        requestedTop: options.top || options.limit || 10,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail');
+    }
     
     throw mcpError;
   }
@@ -107,29 +134,36 @@ async function getInbox(options = {}, req) {
  * @param {string} query - KQL search query (e.g., "from:user@domain.com subject:meeting")
  * @param {object} options
  * @param {object} req - Express request object
+ * @param {string} userId - User ID for logging context
+ * @param {string} sessionId - Session ID for logging context
  * @returns {Promise<Array<object>>}
  */
-async function searchEmails(query, options = {}, req) {
+async function searchEmails(query, options = {}, req, userId, sessionId) {
   const startTime = Date.now();
   
-  // Always log detailed information about the search operation regardless of environment
-  MonitoringService.debug('Mail searchEmails operation started', {
-    method: 'searchEmails',
-    query: query, // Log the actual query for debugging
-    queryLength: query ? query.length : 0,
-    options: JSON.stringify(options),
-    optionKeys: Object.keys(options),
-    hasReq: !!req,
-    hasReqUser: req && !!req.user,
-    timestamp: new Date().toISOString()
-  }, 'graph');
+  // Extract user context from request if not provided
+  const contextUserId = userId || req?.user?.userId;
+  const contextSessionId = sessionId || req?.session?.id;
+  
+  // Pattern 1: Development Debug Logs
+  if (process.env.NODE_ENV === 'development') {
+    MonitoringService.debug('Mail searchEmails operation started', {
+      method: 'searchEmails',
+      query: query ? query.substring(0, 50) + '...' : null, // Truncate for privacy
+      queryLength: query ? query.length : 0,
+      optionKeys: Object.keys(options),
+      sessionId: contextSessionId,
+      userAgent: req?.get('User-Agent'),
+      timestamp: new Date().toISOString()
+    }, 'mail');
+  }
   
   try {
     if (!query || typeof query !== 'string') {
       const mcpError = ErrorService.createError(
-        ErrorService.CATEGORIES.VALIDATION,
+        'mail',
         'Search query must be a non-empty string',
-        ErrorService.SEVERITIES.WARNING,
+        'warning',
         {
           service: 'graph-mail-service',
           method: 'searchEmails',
@@ -141,169 +175,95 @@ async function searchEmails(query, options = {}, req) {
       throw mcpError;
     }
     
-    // Log authentication details (safely)
-    MonitoringService.debug('Authentication context for mail search', {
-      hasReq: !!req,
-      hasReqUser: req && !!req.user,
-      userIdFormat: req && req.user ? typeof req.user.userId : 'undefined',
-      timestamp: new Date().toISOString()
-    }, 'graph');
-    
-    // Log the attempt to create a Graph client
-    MonitoringService.debug('Creating Graph client for mail search', {
-      timestamp: new Date().toISOString()
-    }, 'graph');
-    
-    const client = await graphClientFactory.createClient(req);
-    
-    MonitoringService.debug('Graph client created successfully', {
-      clientType: client ? typeof client : 'undefined',
-      hasApiMethod: client && typeof client.api === 'function',
-      timestamp: new Date().toISOString()
-    }, 'graph');
-    
+    const client = await graphClientFactory.createClient(req, contextUserId, contextSessionId);
     const top = options.top || options.limit || 10;
     
-    // Format the query for KQL syntax according to Microsoft Graph API requirements
-    // Microsoft Graph KQL syntax doesn't use colons or equals signs, but uses specific operators
+    // Format the query for KQL syntax
     let cleanQuery = query.trim();
-    
-    // If the query is wrapped in quotes, remove them to avoid double-wrapping
     if (cleanQuery.startsWith('"') && cleanQuery.endsWith('"')) {
       cleanQuery = cleanQuery.slice(1, -1);
     }
     
     // Fix common KQL syntax issues
-    // 1. For property:value format, we need to use proper KQL syntax
-    // KQL uses simple terms for most searches, not property:value format
-    // For example, 'from:Christie' should just be 'Christie'
-    
-    // For specific property searches, we need to use proper KQL operators
-    // Extract property:value pairs and convert to proper KQL
     if (cleanQuery.match(/([\w]+):(\S+)/)) {
-      // For 'from:value', convert to just the value as KQL doesn't use property specifiers in $search
       cleanQuery = cleanQuery.replace(/from:(\S+)/gi, '$1');
-      
-      // For 'subject:value', convert to just the value
       cleanQuery = cleanQuery.replace(/subject:(\S+)/gi, '$1');
-      
-      // For date-based searches, we can't use them in $search parameter
-      // Instead, we should use $filter parameter, but for now just simplify
       cleanQuery = cleanQuery.replace(/received:(\S+)/gi, '$1');
     }
     
-    // Log the transformed query
-    MonitoringService.debug('Transformed KQL query', {
-      originalQuery: query,
-      transformedQuery: cleanQuery,
-      timestamp: new Date().toISOString()
-    }, 'graph');
-    
-    // Build the search URL with proper KQL syntax
     const searchUrl = `/me/messages?$search=${encodeURIComponent(cleanQuery)}&$top=${top}`;
-    
-    MonitoringService.debug('Executing mail search with KQL', {
-      originalQuery: query,
-      cleanedQuery: cleanQuery,
-      searchUrl: searchUrl.replace(/&/g, '&'), // For logging readability
-      timestamp: new Date().toISOString()
-    }, 'graph');
-  
-    // Log the API call attempt
-    MonitoringService.debug('Making Graph API call for mail search', {
-      searchUrl,
-      timestamp: new Date().toISOString()
-    }, 'graph');
-    
-    const res = await client.api(searchUrl).get();
-    
-    // Log the raw response for debugging
-    MonitoringService.debug('Graph API search response received', {
-      status: 'success',
-      hasValue: !!res.value,
-      valueLength: res.value ? res.value.length : 0,
-      responseKeys: Object.keys(res),
-      timestamp: new Date().toISOString()
-    }, 'graph');
-    
+    const res = await client.api(searchUrl, contextUserId, contextSessionId).get();
     const emails = (res.value || []).map(normalizeEmail);
     
     const executionTime = Date.now() - startTime;
-    MonitoringService.trackMetric('graph_mail_search_emails_success', executionTime, {
-      service: 'graph-mail-service',
-      method: 'searchEmails',
-      queryLength: query.length,
-      resultCount: emails.length,
-      requestedTop: top,
-      timestamp: new Date().toISOString()
-    });
     
-    if (process.env.NODE_ENV === 'development') {
-      MonitoringService.debug('Mail searchEmails operation completed', {
+    // Pattern 2: User Activity Logs
+    if (contextUserId) {
+      MonitoringService.info('Searched emails successfully', {
         queryLength: query.length,
         resultCount: emails.length,
+        requestedTop: top,
         executionTimeMs: executionTime,
         timestamp: new Date().toISOString()
-      }, 'graph');
+      }, 'mail', null, contextUserId);
+    } else if (contextSessionId) {
+      MonitoringService.info('Searched emails with session', {
+        sessionId: contextSessionId,
+        queryLength: query.length,
+        resultCount: emails.length,
+        requestedTop: top,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail');
     }
     
     return emails;
   } catch (error) {
     const executionTime = Date.now() - startTime;
     
-    // Enhanced error logging with detailed diagnostic information
-    MonitoringService.error('Mail search operation failed', {
-      errorMessage: error.message,
-      errorName: error.name,
-      errorCode: error.code || error.statusCode,
-      errorBody: error.body || null,
-      errorResponse: error.response || null,
-      query: query,
-      options: JSON.stringify(options),
-      hasReq: !!req,
-      hasReqUser: req && !!req.user,
-      stack: error.stack,
-      timestamp: new Date().toISOString()
-    }, 'graph');
-    
-    // If it's already an MCP error, just track metrics and rethrow
+    // If it's already an MCP error, just track and rethrow
     if (error.category) {
-      MonitoringService.trackMetric('graph_mail_search_emails_failure', executionTime, {
-        service: 'graph-mail-service',
-        method: 'searchEmails',
-        errorType: error.code || 'validation_error',
-        errorMessage: error.message,
-        timestamp: new Date().toISOString()
-      });
       throw error;
     }
     
+    // Pattern 3: Infrastructure Error Logging
     const mcpError = ErrorService.createError(
-      ErrorService.CATEGORIES.API,
+      'mail',
       `Failed to search emails: ${error.message}`,
-      ErrorService.SEVERITIES.ERROR,
+      'error',
       {
         service: 'graph-mail-service',
         method: 'searchEmails',
-        query,
+        query: query ? query.substring(0, 50) + '...' : null,
         requestedTop: options.top || options.limit || 10,
-        errorName: error.name,
-        errorCode: error.code || error.statusCode,
-        errorBody: error.body || null,
-        errorResponse: error.response || null,
+        executionTimeMs: executionTime,
+        error: error.message,
         stack: error.stack,
         timestamp: new Date().toISOString()
       }
     );
     
     MonitoringService.logError(mcpError);
-    MonitoringService.trackMetric('graph_mail_search_emails_failure', executionTime, {
-      service: 'graph-mail-service',
-      method: 'searchEmails',
-      errorType: error.code || 'unknown',
-      errorMessage: error.message,
-      timestamp: new Date().toISOString()
-    });
+    
+    // Pattern 4: User Error Tracking
+    if (contextUserId) {
+      MonitoringService.error('Failed to search emails', {
+        error: error.message,
+        queryLength: query ? query.length : 0,
+        requestedTop: options.top || options.limit || 10,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail', null, contextUserId);
+    } else if (contextSessionId) {
+      MonitoringService.error('Failed to search emails', {
+        sessionId: contextSessionId,
+        error: error.message,
+        queryLength: query ? query.length : 0,
+        requestedTop: options.top || options.limit || 10,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail');
+    }
     
     throw mcpError;
   }
@@ -313,18 +273,27 @@ async function searchEmails(query, options = {}, req) {
  * Sends an email.
  * @param {object} emailData
  * @param {object} req - Express request object
+ * @param {string} userId - User ID for logging context
+ * @param {string} sessionId - Session ID for logging context
  * @returns {Promise<boolean>}
  */
-async function sendEmail(emailData, req) {
+async function sendEmail(emailData, req, userId, sessionId) {
   const startTime = Date.now();
   
+  // Extract user context from request if not provided
+  const contextUserId = userId || req?.user?.userId;
+  const contextSessionId = sessionId || req?.session?.id;
+  
+  // Pattern 1: Development Debug Logs
   if (process.env.NODE_ENV === 'development') {
     MonitoringService.debug('Mail sendEmail operation started', {
       method: 'sendEmail',
       hasAttachments: emailData.attachments && Array.isArray(emailData.attachments),
       attachmentCount: emailData.attachments ? emailData.attachments.length : 0,
+      sessionId: contextSessionId,
+      userAgent: req?.get('User-Agent'),
       timestamp: new Date().toISOString()
-    }, 'graph');
+    }, 'mail');
   }
   
   try {
@@ -415,9 +384,9 @@ async function sendEmail(emailData, req) {
               };
             } catch (fileError) {
               const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.API,
+                'mail',
                 `Error retrieving file for email attachment: ${fileError.message}`,
-                ErrorService.SEVERITIES.WARNING,
+                'warning',
                 {
                   service: 'graph-mail-service',
                   method: 'sendEmail',
@@ -475,9 +444,9 @@ async function sendEmail(emailData, req) {
           };
         } catch (attachmentError) {
           const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.SYSTEM,
+            'mail',
             `Error processing email attachment: ${attachmentError.message}`,
-            ErrorService.SEVERITIES.WARNING,
+            'warning',
             {
               service: 'graph-mail-service',
               method: 'sendEmail',
@@ -536,6 +505,27 @@ async function sendEmail(emailData, req) {
     await client.api('/me/sendMail').post(requestBody);
     
     const executionTime = Date.now() - startTime;
+    
+    // Pattern 2: User Activity Logs
+    if (contextUserId) {
+      MonitoringService.info('Email sent successfully', {
+        recipientCount: message.toRecipients ? message.toRecipients.length : 0,
+        hasAttachments: !!(message.attachments && message.attachments.length > 0),
+        attachmentCount: message.attachments ? message.attachments.length : 0,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail', null, contextUserId);
+    } else if (contextSessionId) {
+      MonitoringService.info('Email sent with session', {
+        sessionId: contextSessionId,
+        recipientCount: message.toRecipients ? message.toRecipients.length : 0,
+        hasAttachments: !!(message.attachments && message.attachments.length > 0),
+        attachmentCount: message.attachments ? message.attachments.length : 0,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail');
+    }
+    
     MonitoringService.trackMetric('graph_mail_send_email_success', executionTime, {
       service: 'graph-mail-service',
       method: 'sendEmail',
@@ -547,33 +537,47 @@ async function sendEmail(emailData, req) {
       timestamp: new Date().toISOString()
     });
     
-    if (process.env.NODE_ENV === 'development') {
-      MonitoringService.debug('Email sent successfully via Graph API', {
-        executionTimeMs: executionTime,
-        timestamp: new Date().toISOString()
-      }, 'graph');
-    }
-    
     return true;
   } catch (error) {
     const executionTime = Date.now() - startTime;
     
+    // Pattern 3: Infrastructure Error Logging
     const mcpError = ErrorService.createError(
-      ErrorService.CATEGORIES.API,
+      'mail',
       `Failed to send email: ${error.message}`,
-      ErrorService.SEVERITIES.ERROR,
+      'error',
       {
         service: 'graph-mail-service',
         method: 'sendEmail',
         hasSubject: emailData.subject && emailData.subject.length > 0,
         hasTo: emailData.to && emailData.to.length > 0,
         attachmentCount: emailData.attachments ? emailData.attachments.length : 0,
+        graphMessage: error.message,
         stack: error.stack,
         timestamp: new Date().toISOString()
       }
     );
     
     MonitoringService.logError(mcpError);
+    
+    // Pattern 4: User Error Tracking
+    if (contextUserId) {
+      MonitoringService.error('User experienced error sending email', {
+        errorMessage: 'Failed to send email',
+        hasAttachments: !!(emailData.attachments && emailData.attachments.length > 0),
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail', null, contextUserId);
+    } else if (contextSessionId) {
+      MonitoringService.error('Session experienced error sending email', {
+        sessionId: contextSessionId,
+        errorMessage: 'Failed to send email',
+        hasAttachments: !!(emailData.attachments && emailData.attachments.length > 0),
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail');
+    }
+    
     MonitoringService.trackMetric('graph_mail_send_email_failure', executionTime, {
       service: 'graph-mail-service',
       method: 'sendEmail',
@@ -590,26 +594,35 @@ async function sendEmail(emailData, req) {
  * @param {string} id - Email ID
  * @param {boolean} flag - Flag state
  * @param {object} req - Express request object
+ * @param {string} userId - User ID for logging context
+ * @param {string} sessionId - Session ID for logging context
  * @returns {Promise<boolean>}
  */
-async function flagEmail(id, flag = true, req) {
+async function flagEmail(id, flag = true, req, userId, sessionId) {
   const startTime = Date.now();
   
+  // Extract user context from request if not provided
+  const contextUserId = userId || req?.user?.userId;
+  const contextSessionId = sessionId || req?.session?.id;
+  
+  // Pattern 1: Development Debug Logs
   if (process.env.NODE_ENV === 'development') {
     MonitoringService.debug('Mail flagEmail operation started', {
       method: 'flagEmail',
-      emailId: id,
+      emailId: id ? id.substring(0, 20) + '...' : null,
       flagState: flag,
+      sessionId: contextSessionId,
+      userAgent: req?.get('User-Agent'),
       timestamp: new Date().toISOString()
-    }, 'graph');
+    }, 'mail');
   }
   
   try {
     if (!id || typeof id !== 'string') {
       const mcpError = ErrorService.createError(
-        ErrorService.CATEGORIES.VALIDATION,
+        'mail',
         'Email ID must be a non-empty string',
-        ErrorService.SEVERITIES.WARNING,
+        'warning',
         {
           service: 'graph-mail-service',
           method: 'flagEmail',
@@ -621,55 +634,78 @@ async function flagEmail(id, flag = true, req) {
       throw mcpError;
     }
     
-    const client = await graphClientFactory.createClient(req);
-    await client.api(`/me/messages/${id}`).patch({
+    const client = await graphClientFactory.createClient(req, contextUserId, contextSessionId);
+    await client.api(`/me/messages/${id}`, contextUserId, contextSessionId).patch({
       flag: { flagStatus: flag ? 'flagged' : 'notFlagged' }
     });
     
     const executionTime = Date.now() - startTime;
-    MonitoringService.trackMetric('graph_mail_flag_email_success', executionTime, {
-      service: 'graph-mail-service',
-      method: 'flagEmail',
-      flagState: flag,
-      timestamp: new Date().toISOString()
-    });
+    
+    // Pattern 2: User Activity Logs
+    if (contextUserId) {
+      MonitoringService.info('Email flagged successfully', {
+        emailId: id ? id.substring(0, 20) + '...' : null,
+        flagState: flag,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail', null, contextUserId);
+    } else if (contextSessionId) {
+      MonitoringService.info('Email flagged with session', {
+        sessionId: contextSessionId,
+        emailId: id ? id.substring(0, 20) + '...' : null,
+        flagState: flag,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail');
+    }
     
     return true;
   } catch (error) {
     const executionTime = Date.now() - startTime;
     
-    // If it's already an MCP error, just track metrics and rethrow
+    // If it's already an MCP error, just rethrow
     if (error.category) {
-      MonitoringService.trackMetric('graph_mail_flag_email_failure', executionTime, {
-        service: 'graph-mail-service',
-        method: 'flagEmail',
-        errorType: error.code || 'validation_error',
-        timestamp: new Date().toISOString()
-      });
       throw error;
     }
     
+    // Pattern 3: Infrastructure Error Logging
     const mcpError = ErrorService.createError(
-      ErrorService.CATEGORIES.API,
+      'mail',
       `Failed to flag email: ${error.message}`,
-      ErrorService.SEVERITIES.ERROR,
+      'error',
       {
         service: 'graph-mail-service',
         method: 'flagEmail',
-        emailId: id,
+        emailId: id ? id.substring(0, 20) + '...' : null,
         flagState: flag,
+        executionTimeMs: executionTime,
+        error: error.message,
         stack: error.stack,
         timestamp: new Date().toISOString()
       }
     );
     
     MonitoringService.logError(mcpError);
-    MonitoringService.trackMetric('graph_mail_flag_email_failure', executionTime, {
-      service: 'graph-mail-service',
-      method: 'flagEmail',
-      errorType: error.code || 'unknown',
-      timestamp: new Date().toISOString()
-    });
+    
+    // Pattern 4: User Error Tracking
+    if (contextUserId) {
+      MonitoringService.error('Failed to flag email', {
+        error: error.message,
+        emailId: id ? id.substring(0, 20) + '...' : null,
+        flagState: flag,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail', null, contextUserId);
+    } else if (contextSessionId) {
+      MonitoringService.error('Failed to flag email', {
+        sessionId: contextSessionId,
+        error: error.message,
+        emailId: id ? id.substring(0, 20) + '...' : null,
+        flagState: flag,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail');
+    }
     
     throw mcpError;
   }
@@ -679,25 +715,34 @@ async function flagEmail(id, flag = true, req) {
  * Retrieves attachments for an email.
  * @param {string} id
  * @param {object} req - Express request object
+ * @param {string} userId - User ID for logging context
+ * @param {string} sessionId - Session ID for logging context
  * @returns {Promise<Array<object>>}
  */
-async function getAttachments(id, req) {
+async function getAttachments(id, req, userId, sessionId) {
   const startTime = Date.now();
   
+  // Extract user context from request if not provided
+  const contextUserId = userId || req?.user?.userId;
+  const contextSessionId = sessionId || req?.session?.id;
+  
+  // Pattern 1: Development Debug Logs
   if (process.env.NODE_ENV === 'development') {
     MonitoringService.debug('Mail getAttachments operation started', {
       method: 'getAttachments',
-      emailId: id,
+      emailId: id ? id.substring(0, 20) + '...' : null,
+      sessionId: contextSessionId,
+      userAgent: req?.get('User-Agent'),
       timestamp: new Date().toISOString()
-    }, 'graph');
+    }, 'mail');
   }
   
   try {
     if (!id || typeof id !== 'string') {
       const mcpError = ErrorService.createError(
-        ErrorService.CATEGORIES.VALIDATION,
+        'mail',
         'Email ID must be a non-empty string',
-        ErrorService.SEVERITIES.WARNING,
+        'warning',
         {
           service: 'graph-mail-service',
           method: 'getAttachments',
@@ -709,7 +754,7 @@ async function getAttachments(id, req) {
       throw mcpError;
     }
     
-    const client = await graphClientFactory.createClient(req);
+    const client = await graphClientFactory.createClient(req, contextUserId, contextSessionId);
     
     // First check if the email exists and has attachments
     try {
@@ -770,21 +815,29 @@ async function getAttachments(id, req) {
     }));
     
     const executionTime = Date.now() - startTime;
+    
+    // Pattern 2: User Activity Logs
+    if (contextUserId) {
+      MonitoringService.info('Email attachments retrieved successfully', {
+        attachmentCount: normalizedAttachments.length,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail', null, contextUserId);
+    } else if (contextSessionId) {
+      MonitoringService.info('Email attachments retrieved with session', {
+        sessionId: contextSessionId,
+        attachmentCount: normalizedAttachments.length,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail');
+    }
+    
     MonitoringService.trackMetric('graph_mail_get_attachments_success', executionTime, {
       service: 'graph-mail-service',
       method: 'getAttachments',
       attachmentCount: normalizedAttachments.length,
       timestamp: new Date().toISOString()
     });
-    
-    if (process.env.NODE_ENV === 'development') {
-      MonitoringService.debug('Mail getAttachments operation completed', {
-        emailId: id,
-        attachmentCount: normalizedAttachments.length,
-        executionTimeMs: executionTime,
-        timestamp: new Date().toISOString()
-      }, 'graph');
-    }
     
     return normalizedAttachments;
   } catch (error) {
@@ -801,20 +854,39 @@ async function getAttachments(id, req) {
       throw error;
     }
     
+    // Pattern 3: Infrastructure Error Logging
     const mcpError = ErrorService.createError(
-      ErrorService.CATEGORIES.API,
+      'mail',
       `Failed to get email attachments: ${error.message}`,
-      ErrorService.SEVERITIES.ERROR,
+      'error',
       {
         service: 'graph-mail-service',
         method: 'getAttachments',
-        emailId: id,
+        emailId: id ? id.substring(0, 20) + '...' : null,
+        graphMessage: error.message,
         stack: error.stack,
         timestamp: new Date().toISOString()
       }
     );
     
     MonitoringService.logError(mcpError);
+    
+    // Pattern 4: User Error Tracking
+    if (contextUserId) {
+      MonitoringService.error('User experienced error retrieving email attachments', {
+        errorMessage: 'Failed to retrieve email attachments',
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail', null, contextUserId);
+    } else if (contextSessionId) {
+      MonitoringService.error('Session experienced error retrieving email attachments', {
+        sessionId: contextSessionId,
+        errorMessage: 'Failed to retrieve email attachments',
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail');
+    }
+    
     MonitoringService.trackMetric('graph_mail_get_attachments_failure', executionTime, {
       service: 'graph-mail-service',
       method: 'getAttachments',
@@ -830,48 +902,93 @@ async function getAttachments(id, req) {
  * Retrieves raw inbox data (no normalization).
  * @param {object} options
  * @param {object} req - Express request object
+ * @param {string} userId - User ID for logging context
+ * @param {string} sessionId - Session ID for logging context
  * @returns {Promise<Array<object>>}
  */
-async function getInboxRaw(options = {}, req) {
+async function getInboxRaw(options = {}, req, userId, sessionId) {
   const startTime = Date.now();
   
+  // Extract user context from request if not provided
+  const contextUserId = userId || req?.user?.userId;
+  const contextSessionId = sessionId || req?.session?.id;
+  
+  // Pattern 1: Development Debug Logs
+  if (process.env.NODE_ENV === 'development') {
+    MonitoringService.debug('Mail getInboxRaw operation started', {
+      method: 'getInboxRaw',
+      optionKeys: Object.keys(options),
+      sessionId: contextSessionId,
+      userAgent: req?.get('User-Agent'),
+      timestamp: new Date().toISOString()
+    }, 'mail');
+  }
+  
   try {
-    const client = await graphClientFactory.createClient(req);
+    const client = await graphClientFactory.createClient(req, contextUserId, contextSessionId);
     const top = options.top || options.limit || 10;
-    const res = await client.api(`/me/mailFolders/inbox/messages?$top=${top}`).get();
+    const res = await client.api(`/me/mailFolders/inbox/messages?$top=${top}`, contextUserId, contextSessionId).get();
     const emails = res.value || [];
     
     const executionTime = Date.now() - startTime;
-    MonitoringService.trackMetric('graph_mail_get_inbox_raw_success', executionTime, {
-      service: 'graph-mail-service',
-      method: 'getInboxRaw',
-      emailCount: emails.length,
-      timestamp: new Date().toISOString()
-    });
+    
+    // Pattern 2: User Activity Logs
+    if (contextUserId) {
+      MonitoringService.info('Retrieved raw inbox emails successfully', {
+        emailCount: emails.length,
+        requestedTop: top,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail', null, contextUserId);
+    } else if (contextSessionId) {
+      MonitoringService.info('Retrieved raw inbox emails with session', {
+        sessionId: contextSessionId,
+        emailCount: emails.length,
+        requestedTop: top,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail');
+    }
     
     return emails;
   } catch (error) {
     const executionTime = Date.now() - startTime;
     
+    // Pattern 3: Infrastructure Error Logging
     const mcpError = ErrorService.createError(
-      ErrorService.CATEGORIES.API,
-      `Failed to get raw inbox data: ${error.message}`,
-      ErrorService.SEVERITIES.ERROR,
+      'mail',
+      `Failed to get raw inbox emails: ${error.message}`,
+      'error',
       {
         service: 'graph-mail-service',
         method: 'getInboxRaw',
+        requestedTop: options.top || options.limit || 10,
+        executionTimeMs: executionTime,
+        error: error.message,
         stack: error.stack,
         timestamp: new Date().toISOString()
       }
     );
     
     MonitoringService.logError(mcpError);
-    MonitoringService.trackMetric('graph_mail_get_inbox_raw_failure', executionTime, {
-      service: 'graph-mail-service',
-      method: 'getInboxRaw',
-      errorType: error.code || 'unknown',
-      timestamp: new Date().toISOString()
-    });
+    
+    // Pattern 4: User Error Tracking
+    if (contextUserId) {
+      MonitoringService.error('Failed to retrieve raw inbox emails', {
+        error: error.message,
+        requestedTop: options.top || options.limit || 10,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail', null, contextUserId);
+    } else if (contextSessionId) {
+      MonitoringService.error('Failed to retrieve raw inbox emails', {
+        sessionId: contextSessionId,
+        error: error.message,
+        requestedTop: options.top || options.limit || 10,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail');
+    }
     
     throw mcpError;
   }
@@ -881,17 +998,34 @@ async function getInboxRaw(options = {}, req) {
  * Retrieves detailed information for a specific email by ID.
  * @param {string} id - Email ID
  * @param {object} req - Express request object
+ * @param {string} userId - User ID for logging context
+ * @param {string} sessionId - Session ID for logging context
  * @returns {Promise<object>}
  */
-async function getEmailDetails(id, req) {
+async function getEmailDetails(id, req, userId, sessionId) {
   const startTime = Date.now();
+  
+  // Extract user context from request if not provided
+  const contextUserId = userId || req?.user?.userId;
+  const contextSessionId = sessionId || req?.session?.id;
+  
+  // Pattern 1: Development Debug Logs
+  if (process.env.NODE_ENV === 'development') {
+    MonitoringService.debug('Mail getEmailDetails operation started', {
+      method: 'getEmailDetails',
+      emailId: id ? id.substring(0, 20) + '...' : null,
+      sessionId: contextSessionId,
+      userAgent: req?.get('User-Agent'),
+      timestamp: new Date().toISOString()
+    }, 'mail');
+  }
   
   try {
     if (!id || typeof id !== 'string') {
       const mcpError = ErrorService.createError(
-        ErrorService.CATEGORIES.VALIDATION,
+        'mail',
         'Email ID must be a non-empty string',
-        ErrorService.SEVERITIES.WARNING,
+        'warning',
         {
           service: 'graph-mail-service',
           method: 'getEmailDetails',
@@ -903,18 +1037,18 @@ async function getEmailDetails(id, req) {
       throw mcpError;
     }
     
-    const client = await graphClientFactory.createClient(req);
-    const message = await client.api(`/me/messages/${id}`).get();
+    const client = await graphClientFactory.createClient(req, contextUserId, contextSessionId);
+    const message = await client.api(`/me/messages/${id}`, contextUserId, contextSessionId).get();
     
     if (!message) {
       const mcpError = ErrorService.createError(
-        ErrorService.CATEGORIES.API,
+        'mail',
         `No message found with ID: ${id}`,
-        ErrorService.SEVERITIES.WARNING,
+        'warning',
         {
           service: 'graph-mail-service',
           method: 'getEmailDetails',
-          emailId: id,
+          emailId: id ? id.substring(0, 20) + '...' : null,
           timestamp: new Date().toISOString()
         }
       );
@@ -952,48 +1086,69 @@ async function getEmailDetails(id, req) {
     };
     
     const executionTime = Date.now() - startTime;
-    MonitoringService.trackMetric('graph_mail_get_email_details_success', executionTime, {
-      service: 'graph-mail-service',
-      method: 'getEmailDetails',
-      hasAttachments: emailDetails.hasAttachments,
-      timestamp: new Date().toISOString()
-    });
+    
+    // Pattern 2: User Activity Logs
+    if (contextUserId) {
+      MonitoringService.info('Retrieved email details successfully', {
+        emailId: id ? id.substring(0, 20) + '...' : null,
+        hasAttachments: emailDetails.hasAttachments,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail', null, contextUserId);
+    } else if (contextSessionId) {
+      MonitoringService.info('Retrieved email details with session', {
+        sessionId: contextSessionId,
+        emailId: id ? id.substring(0, 20) + '...' : null,
+        hasAttachments: emailDetails.hasAttachments,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail');
+    }
     
     return emailDetails;
   } catch (error) {
     const executionTime = Date.now() - startTime;
     
-    // If it's already an MCP error, just track metrics and rethrow
+    // If it's already an MCP error, just rethrow
     if (error.category) {
-      MonitoringService.trackMetric('graph_mail_get_email_details_failure', executionTime, {
-        service: 'graph-mail-service',
-        method: 'getEmailDetails',
-        errorType: error.code || 'validation_error',
-        timestamp: new Date().toISOString()
-      });
       throw error;
     }
     
+    // Pattern 3: Infrastructure Error Logging
     const mcpError = ErrorService.createError(
-      ErrorService.CATEGORIES.API,
+      'mail',
       `Failed to get email details: ${error.message}`,
-      ErrorService.SEVERITIES.ERROR,
+      'error',
       {
         service: 'graph-mail-service',
         method: 'getEmailDetails',
-        emailId: id,
+        emailId: id ? id.substring(0, 20) + '...' : null,
+        executionTimeMs: executionTime,
+        error: error.message,
         stack: error.stack,
         timestamp: new Date().toISOString()
       }
     );
     
     MonitoringService.logError(mcpError);
-    MonitoringService.trackMetric('graph_mail_get_email_details_failure', executionTime, {
-      service: 'graph-mail-service',
-      method: 'getEmailDetails',
-      errorType: error.code || 'unknown',
-      timestamp: new Date().toISOString()
-    });
+    
+    // Pattern 4: User Error Tracking
+    if (contextUserId) {
+      MonitoringService.error('Failed to retrieve email details', {
+        error: error.message,
+        emailId: id ? id.substring(0, 20) + '...' : null,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail', null, contextUserId);
+    } else if (contextSessionId) {
+      MonitoringService.error('Failed to retrieve email details', {
+        sessionId: contextSessionId,
+        error: error.message,
+        emailId: id ? id.substring(0, 20) + '...' : null,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail');
+    }
     
     throw mcpError;
   }
@@ -1004,17 +1159,35 @@ async function getEmailDetails(id, req) {
  * @param {string} id - Email ID
  * @param {boolean} isRead - Read status to set
  * @param {object} req - Express request object
+ * @param {string} userId - User ID for logging context
+ * @param {string} sessionId - Session ID for logging context
  * @returns {Promise<boolean>}
  */
-async function markAsRead(id, isRead = true, req) {
+async function markAsRead(id, isRead = true, req, userId, sessionId) {
   const startTime = Date.now();
+  
+  // Extract user context from request if not provided
+  const contextUserId = userId || req?.user?.userId;
+  const contextSessionId = sessionId || req?.session?.id;
+  
+  // Pattern 1: Development Debug Logs
+  if (process.env.NODE_ENV === 'development') {
+    MonitoringService.debug('Mail markAsRead operation started', {
+      method: 'markAsRead',
+      emailId: id ? id.substring(0, 20) + '...' : null,
+      isRead,
+      sessionId: contextSessionId,
+      userAgent: req?.get('User-Agent'),
+      timestamp: new Date().toISOString()
+    }, 'mail');
+  }
   
   try {
     if (!id || typeof id !== 'string') {
       const mcpError = ErrorService.createError(
-        ErrorService.CATEGORIES.VALIDATION,
+        'mail',
         'Email ID must be a non-empty string',
-        ErrorService.SEVERITIES.WARNING,
+        'warning',
         {
           service: 'graph-mail-service',
           method: 'markAsRead',
@@ -1026,55 +1199,78 @@ async function markAsRead(id, isRead = true, req) {
       throw mcpError;
     }
     
-    const client = await graphClientFactory.createClient(req);
-    await client.api(`/me/messages/${id}`).patch({
-      isRead
+    const client = await graphClientFactory.createClient(req, contextUserId, contextSessionId);
+    await client.api(`/me/messages/${id}`, contextUserId, contextSessionId).patch({
+      isRead: isRead
     });
     
     const executionTime = Date.now() - startTime;
-    MonitoringService.trackMetric('graph_mail_mark_as_read_success', executionTime, {
-      service: 'graph-mail-service',
-      method: 'markAsRead',
-      isRead,
-      timestamp: new Date().toISOString()
-    });
+    
+    // Pattern 2: User Activity Logs
+    if (contextUserId) {
+      MonitoringService.info('Email marked as read successfully', {
+        emailId: id ? id.substring(0, 20) + '...' : null,
+        isRead,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail', null, contextUserId);
+    } else if (contextSessionId) {
+      MonitoringService.info('Email marked as read with session', {
+        sessionId: contextSessionId,
+        emailId: id ? id.substring(0, 20) + '...' : null,
+        isRead,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail');
+    }
     
     return true;
   } catch (error) {
     const executionTime = Date.now() - startTime;
     
-    // If it's already an MCP error, just track metrics and rethrow
+    // If it's already an MCP error, just rethrow
     if (error.category) {
-      MonitoringService.trackMetric('graph_mail_mark_as_read_failure', executionTime, {
-        service: 'graph-mail-service',
-        method: 'markAsRead',
-        errorType: error.code || 'validation_error',
-        timestamp: new Date().toISOString()
-      });
       throw error;
     }
     
+    // Pattern 3: Infrastructure Error Logging
     const mcpError = ErrorService.createError(
-      ErrorService.CATEGORIES.API,
+      'mail',
       `Failed to mark email as read: ${error.message}`,
-      ErrorService.SEVERITIES.ERROR,
+      'error',
       {
         service: 'graph-mail-service',
         method: 'markAsRead',
-        emailId: id,
+        emailId: id ? id.substring(0, 20) + '...' : null,
         isRead,
+        executionTimeMs: executionTime,
+        error: error.message,
         stack: error.stack,
         timestamp: new Date().toISOString()
       }
     );
     
     MonitoringService.logError(mcpError);
-    MonitoringService.trackMetric('graph_mail_mark_as_read_failure', executionTime, {
-      service: 'graph-mail-service',
-      method: 'markAsRead',
-      errorType: error.code || 'unknown',
-      timestamp: new Date().toISOString()
-    });
+    
+    // Pattern 4: User Error Tracking
+    if (contextUserId) {
+      MonitoringService.error('Failed to mark email as read', {
+        error: error.message,
+        emailId: id ? id.substring(0, 20) + '...' : null,
+        isRead,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail', null, contextUserId);
+    } else if (contextSessionId) {
+      MonitoringService.error('Failed to mark email as read', {
+        sessionId: contextSessionId,
+        error: error.message,
+        emailId: id ? id.substring(0, 20) + '...' : null,
+        isRead,
+        executionTimeMs: executionTime,
+        timestamp: new Date().toISOString()
+      }, 'mail');
+    }
     
     throw mcpError;
   }
@@ -1089,17 +1285,35 @@ async function markAsRead(id, isRead = true, req) {
  * @param {string} attachment.contentBytes - Base64 encoded content
  * @param {boolean} [attachment.isInline=false] - Whether the attachment is inline
  * @param {object} req - Express request object
+ * @param {string} userId - User ID for logging context
+ * @param {string} sessionId - Session ID for logging context
  * @returns {Promise<object>} Created attachment object
  */
-async function addMailAttachment(messageId, attachment, req) {
+async function addMailAttachment(messageId, attachment, req, userId, sessionId) {
   const startTime = Date.now();
+  
+  // Extract user context from request if not provided
+  const contextUserId = userId || req?.user?.userId;
+  const contextSessionId = sessionId || req?.session?.id;
+  
+  // Pattern 1: Development Debug Logs
+  if (process.env.NODE_ENV === 'development') {
+    MonitoringService.debug('Mail addMailAttachment operation started', {
+      method: 'addMailAttachment',
+      messageId: messageId ? messageId.substring(0, 20) + '...' : null,
+      attachmentName: attachment?.name,
+      sessionId: contextSessionId,
+      userAgent: req?.get('User-Agent'),
+      timestamp: new Date().toISOString()
+    }, 'mail');
+  }
   
   try {
     if (!messageId || typeof messageId !== 'string') {
       const mcpError = ErrorService.createError(
-        ErrorService.CATEGORIES.VALIDATION,
+        'mail',
         'Message ID must be a non-empty string',
-        ErrorService.SEVERITIES.WARNING,
+        'warning',
         {
           service: 'graph-mail-service',
           method: 'addMailAttachment',
@@ -1113,9 +1327,9 @@ async function addMailAttachment(messageId, attachment, req) {
     
     if (!attachment || !attachment.name || !attachment.contentBytes) {
       const mcpError = ErrorService.createError(
-        ErrorService.CATEGORIES.VALIDATION,
+        'mail',
         'Attachment must have name and contentBytes',
-        ErrorService.SEVERITIES.WARNING,
+        'warning',
         {
           service: 'graph-mail-service',
           method: 'addMailAttachment',
@@ -1202,17 +1416,35 @@ async function addMailAttachment(messageId, attachment, req) {
  * @param {string} messageId - ID of the email message
  * @param {string} attachmentId - ID of the attachment to remove
  * @param {object} req - Express request object
+ * @param {string} userId - User ID for logging context
+ * @param {string} sessionId - Session ID for logging context
  * @returns {Promise<object>} Success status
  */
-async function removeMailAttachment(messageId, attachmentId, req) {
+async function removeMailAttachment(messageId, attachmentId, req, userId, sessionId) {
   const startTime = Date.now();
+  
+  // Extract user context from request if not provided
+  const contextUserId = userId || req?.user?.userId;
+  const contextSessionId = sessionId || req?.session?.id;
+  
+  // Pattern 1: Development Debug Logs
+  if (process.env.NODE_ENV === 'development') {
+    MonitoringService.debug('Mail removeMailAttachment operation started', {
+      method: 'removeMailAttachment',
+      messageId: messageId ? messageId.substring(0, 20) + '...' : null,
+      attachmentId: attachmentId ? attachmentId.substring(0, 20) + '...' : null,
+      sessionId: contextSessionId,
+      userAgent: req?.get('User-Agent'),
+      timestamp: new Date().toISOString()
+    }, 'mail');
+  }
   
   try {
     if (!messageId || typeof messageId !== 'string') {
       const mcpError = ErrorService.createError(
-        ErrorService.CATEGORIES.VALIDATION,
+        'mail',
         'Message ID must be a non-empty string',
-        ErrorService.SEVERITIES.WARNING,
+        'warning',
         {
           service: 'graph-mail-service',
           method: 'removeMailAttachment',
@@ -1226,9 +1458,9 @@ async function removeMailAttachment(messageId, attachmentId, req) {
     
     if (!attachmentId || typeof attachmentId !== 'string') {
       const mcpError = ErrorService.createError(
-        ErrorService.CATEGORIES.VALIDATION,
+        'mail',
         'Attachment ID must be a non-empty string',
-        ErrorService.SEVERITIES.WARNING,
+        'warning',
         {
           service: 'graph-mail-service',
           method: 'removeMailAttachment',

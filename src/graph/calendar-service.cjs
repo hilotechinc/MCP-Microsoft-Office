@@ -456,7 +456,34 @@ async function getEvents(options = {}) {
   // Use limit or top, with default of 50
   const maxResults = limit || top || 50;
   
+  // Extract user context for logging
+  const requestUserId = req?.user?.userId;
+  const sessionId = req?.session?.id;
+  const deviceId = req?.user?.deviceId;
+  
+  // Pattern 1: Development Debug Logs
+  if (process.env.NODE_ENV === 'development') {
+    MonitoringService.debug('Processing getEvents request', {
+      method: req?.method,
+      path: req?.path,
+      sessionId,
+      userAgent: req?.get('User-Agent'),
+      timestamp: new Date().toISOString(),
+      userId: requestUserId,
+      deviceId,
+      parameters: {
+        start,
+        end,
+        maxResults,
+        orderby,
+        timeframe,
+        targetUserId: userId
+      }
+    }, 'calendar');
+  }
+  
   let endpoint;
+  const startTime = Date.now();
   
   try {
     const client = await graphClientFactory.createClient(req);
@@ -679,6 +706,29 @@ async function getEvents(options = {}) {
       }, 'calendar');
     }
     
+    // Pattern 2: User Activity Logs - Log successful operations
+    const duration = Date.now() - startTime;
+    if (requestUserId) {
+      MonitoringService.info('Calendar events retrieved successfully', {
+        eventCount: events.length,
+        duration,
+        timeRange: { start: effectiveStart, end: effectiveEnd },
+        hasFilters: queryParams.length > 2,
+        targetUserId: userId,
+        timestamp: new Date().toISOString()
+      }, 'calendar', null, requestUserId, deviceId);
+    } else if (sessionId) {
+      MonitoringService.info('Calendar events retrieved successfully', {
+        sessionId,
+        eventCount: events.length,
+        duration,
+        timeRange: { start: effectiveStart, end: effectiveEnd },
+        hasFilters: queryParams.length > 2,
+        targetUserId: userId,
+        timestamp: new Date().toISOString()
+      }, 'calendar');
+    }
+    
     // Return events
     return events;
   } catch (error) {
@@ -699,12 +749,30 @@ async function getEvents(options = {}) {
       }
     );
     
-    // Log the error using the standardized error service
+    // Pattern 3: Infrastructure Error Logging
     if (MonitoringService?.logError) {
       MonitoringService.logError(mcpError);
     } else {
       // Fallback only if MonitoringService.logError is not available
       console.error('[CALENDAR] Error fetching calendar events:', error.message || 'Unknown error');
+    }
+    
+    // Pattern 4: User Error Tracking - Log errors with user context
+    if (requestUserId) {
+      MonitoringService.error('Failed to retrieve calendar events', {
+        error: error.message,
+        targetUserId: userId,
+        duration: Date.now() - startTime,
+        timestamp: new Date().toISOString()
+      }, 'calendar', null, requestUserId, deviceId);
+    } else if (sessionId) {
+      MonitoringService.error('Failed to retrieve calendar events', {
+        sessionId,
+        error: error.message,
+        targetUserId: userId,
+        duration: Date.now() - startTime,
+        timestamp: new Date().toISOString()
+      }, 'calendar');
     }
     
     // In production, throw the error to be handled by the caller
@@ -724,11 +792,33 @@ async function getEvents(options = {}) {
  * @returns {Promise<object>} Normalized created event
  */
 async function createEvent(eventData, userId = 'me', options = {}) {
-  MonitoringService?.debug('Creating calendar event', {
-    userId: redactSensitiveData({ userId }),
-    eventData: redactSensitiveData(eventData),
-    timestamp: new Date().toISOString()
-  }, 'calendar');
+  // Extract user context for logging
+  const req = options.req;
+  const requestUserId = req?.user?.userId;
+  const sessionId = req?.session?.id;
+  const deviceId = req?.user?.deviceId;
+  
+  // Pattern 1: Development Debug Logs
+  if (process.env.NODE_ENV === 'development') {
+    MonitoringService.debug('Processing createEvent request', {
+      method: req?.method,
+      path: req?.path,
+      sessionId,
+      userAgent: req?.get('User-Agent'),
+      timestamp: new Date().toISOString(),
+      userId: requestUserId,
+      deviceId,
+      parameters: {
+        targetUserId: userId,
+        eventSubject: eventData?.subject,
+        hasAttendees: eventData?.attendees?.length > 0,
+        startTime: eventData?.start?.dateTime,
+        endTime: eventData?.end?.dateTime
+      }
+    }, 'calendar');
+  }
+  
+  const createStartTime = Date.now();
   // TODO: Uncomment when Joi is available
   // const eventSchema = Joi.object({
   //   subject: Joi.string().required(),
@@ -1003,6 +1093,29 @@ async function createEvent(eventData, userId = 'me', options = {}) {
         timestamp: new Date().toISOString()
       });
 
+      // Pattern 2: User Activity Logs - Log successful event creation
+      const duration = Date.now() - createStartTime;
+      if (requestUserId) {
+        MonitoringService.info('Calendar event created successfully', {
+          eventId: normalizedEvent.id,
+          subject: normalizedEvent.subject,
+          duration,
+          hasAttendees: normalizedEvent.attendees && normalizedEvent.attendees.length > 0,
+          targetUserId: userId,
+          timestamp: new Date().toISOString()
+        }, 'calendar', null, requestUserId, deviceId);
+      } else if (sessionId) {
+        MonitoringService.info('Calendar event created successfully', {
+          sessionId,
+          eventId: normalizedEvent.id,
+          subject: normalizedEvent.subject,
+          duration,
+          hasAttendees: normalizedEvent.attendees && normalizedEvent.attendees.length > 0,
+          targetUserId: userId,
+          timestamp: new Date().toISOString()
+        }, 'calendar');
+      }
+
       // Return normalized event
       return normalizedEvent;
     } catch (error) {
@@ -1048,14 +1161,27 @@ async function createEvent(eventData, userId = 'me', options = {}) {
         }
       );
       
-      // Log the error
+      // Pattern 3: Infrastructure Error Logging
       if (MonitoringService?.logError) {
         MonitoringService.logError(mcpError);
-        
-        MonitoringService?.error(`Error creating calendar event`, {
-          userId: redactSensitiveData({ userId }),
-          errorMessage: error.message || 'No message',
-          statusCode: error.statusCode || 'unknown',
+      }
+      
+      // Pattern 4: User Error Tracking - Log errors with user context
+      if (requestUserId) {
+        MonitoringService.error('Failed to create calendar event', {
+          error: error.message,
+          targetUserId: userId,
+          duration: Date.now() - createStartTime,
+          retryAttempts: retryCount,
+          timestamp: new Date().toISOString()
+        }, 'calendar', null, requestUserId, deviceId);
+      } else if (sessionId) {
+        MonitoringService.error('Failed to create calendar event', {
+          sessionId,
+          error: error.message,
+          targetUserId: userId,
+          duration: Date.now() - createStartTime,
+          retryAttempts: retryCount,
           timestamp: new Date().toISOString()
         }, 'calendar');
       }
@@ -1108,6 +1234,34 @@ function isValidEmail(email) {
  * @returns {Promise<Array<Object>>} Normalized availability information
  */
 async function getAvailability(emails, start, end, options = {}) {
+  // Extract user context for logging
+  const req = options.req;
+  const requestUserId = req?.user?.userId;
+  const sessionId = req?.session?.id;
+  const deviceId = req?.user?.deviceId;
+  
+  // Pattern 1: Development Debug Logs
+  if (process.env.NODE_ENV === 'development') {
+    MonitoringService.debug('Processing getAvailability request', {
+      method: req?.method,
+      path: req?.path,
+      sessionId,
+      userAgent: req?.get('User-Agent'),
+      timestamp: new Date().toISOString(),
+      userId: requestUserId,
+      deviceId,
+      parameters: {
+        userCount: Array.isArray(emails) ? emails.length : 0,
+        start,
+        end,
+        timeZone: options.timeZone,
+        intervalMinutes: options.intervalMinutes
+      }
+    }, 'calendar');
+  }
+  
+  const availabilityStartTime = Date.now();
+  
   // ENHANCED LOGGING: Log detailed parameter information for debugging
   MonitoringService?.debug('getAvailability service called with parameters:', {
     userCount: Array.isArray(emails) ? emails.length : 0,
@@ -1246,8 +1400,6 @@ async function getAvailability(emails, start, end, options = {}) {
   }
   
   // All validation passed, proceed with getting the client
-  // Extract req from options for authentication
-  const { req, ...otherOptions } = options;
   const client = await graphClientFactory.createClient(req);
   
   // Get the user's preferred time zone if not specified
@@ -1345,16 +1497,30 @@ async function getAvailability(emails, start, end, options = {}) {
         }
       );
       
-      // Log the error
+      // Pattern 3: Infrastructure Error Logging
       MonitoringService?.logError(mcpError);
       
-      MonitoringService?.error(`Error getting availability for batch`, {
-        batchNumber: i + 1,
-        totalBatches: batches.length,
-        errorMessage: error.message || 'No message',
-        statusCode: error.statusCode || 'unknown',
-        timestamp: new Date().toISOString()
-      }, 'calendar');
+      // Pattern 4: User Error Tracking - Log errors with user context
+      if (requestUserId) {
+        MonitoringService.error('Failed to retrieve calendar availability', {
+          error: error.message,
+          batchNumber: i + 1,
+          totalBatches: batches.length,
+          userCount: Array.isArray(emails) ? emails.length : 0,
+          duration: Date.now() - availabilityStartTime,
+          timestamp: new Date().toISOString()
+        }, 'calendar', null, requestUserId, deviceId);
+      } else if (sessionId) {
+        MonitoringService.error('Failed to retrieve calendar availability', {
+          sessionId,
+          error: error.message,
+          batchNumber: i + 1,
+          totalBatches: batches.length,
+          userCount: Array.isArray(emails) ? emails.length : 0,
+          duration: Date.now() - availabilityStartTime,
+          timestamp: new Date().toISOString()
+        }, 'calendar');
+      }
       
       // Create a detailed error object with diagnostic information
       const graphError = new Error(`Failed to get availability for batch ${i + 1}: ${error.message}`);
@@ -1378,10 +1544,27 @@ async function getAvailability(emails, start, end, options = {}) {
     timestamp: new Date().toISOString()
   }, 'calendar');
   const normalizedResults = normalizeAvailabilityResults(availabilityResults);
-  MonitoringService?.info(`Successfully retrieved and normalized availability data`, {
-    resultsCount: normalizedResults.length,
-    timestamp: new Date().toISOString()
-  }, 'calendar');
+  
+  // Pattern 2: User Activity Logs - Log successful availability retrieval
+  const duration = Date.now() - availabilityStartTime;
+  if (requestUserId) {
+    MonitoringService.info('Calendar availability retrieved successfully', {
+      userCount: Array.isArray(emails) ? emails.length : 0,
+      resultsCount: normalizedResults.length,
+      duration,
+      timeRange: { start, end },
+      timestamp: new Date().toISOString()
+    }, 'calendar', null, requestUserId, deviceId);
+  } else if (sessionId) {
+    MonitoringService.info('Calendar availability retrieved successfully', {
+      sessionId,
+      userCount: Array.isArray(emails) ? emails.length : 0,
+      resultsCount: normalizedResults.length,
+      duration,
+      timeRange: { start, end },
+      timestamp: new Date().toISOString()
+    }, 'calendar');
+  }
   
   return normalizedResults;
 }
@@ -1529,7 +1712,33 @@ async function respondToEvent(eventId, responseType, options = {}) {
   }
   
   const { comment = '', userId = 'me', req } = options;
+  
+  // Extract user context for logging
+  const requestUserId = req?.user?.userId;
+  const sessionId = req?.session?.id;
+  const deviceId = req?.user?.deviceId;
+  
+  // Pattern 1: Development Debug Logs
+  if (process.env.NODE_ENV === 'development') {
+    MonitoringService.debug('Processing respondToEvent request', {
+      method: req?.method,
+      path: req?.path,
+      sessionId,
+      userAgent: req?.get('User-Agent'),
+      timestamp: new Date().toISOString(),
+      userId: requestUserId,
+      deviceId,
+      parameters: {
+        eventId,
+        responseType,
+        targetUserId: userId,
+        hasComment: !!comment
+      }
+    }, 'calendar');
+  }
+  
   const client = await graphClientFactory.createClient(req);
+  const respondStartTime = Date.now();
   
   // Set up retry logic for handling 409 conflicts
   const maxRetries = 3;
@@ -1558,6 +1767,29 @@ async function respondToEvent(eventId, responseType, options = {}) {
         responseType,
         timestamp: new Date().toISOString()
       });
+      
+      // Pattern 2: User Activity Logs - Log successful event response
+      const duration = Date.now() - respondStartTime;
+      if (requestUserId) {
+        MonitoringService.info('Calendar event response submitted successfully', {
+          eventId,
+          responseType,
+          duration,
+          hasComment: !!comment,
+          targetUserId: userId,
+          timestamp: new Date().toISOString()
+        }, 'calendar', null, requestUserId, deviceId);
+      } else if (sessionId) {
+        MonitoringService.info('Calendar event response submitted successfully', {
+          sessionId,
+          eventId,
+          responseType,
+          duration,
+          hasComment: !!comment,
+          targetUserId: userId,
+          timestamp: new Date().toISOString()
+        }, 'calendar');
+      }
       
       // Return confirmation response instead of full event
       return {
@@ -1625,17 +1857,34 @@ async function respondToEvent(eventId, responseType, options = {}) {
           }
         );
         
-        // Log the error
+        // Pattern 3: Infrastructure Error Logging
         MonitoringService?.logError(mcpError);
         
-        MonitoringService?.error(`Error responding to event`, {
-          eventId: redactSensitiveData({ eventId }),
-          responseType,
-          statusCode: error.statusCode || 'unknown',
-          errorMessage: error.message || 'No message',
-          isOrganizerError: isOrganizerError || false,
-          timestamp: new Date().toISOString()
-        }, 'calendar');
+        // Pattern 4: User Error Tracking - Log errors with user context
+        if (requestUserId) {
+          MonitoringService.error('Failed to respond to calendar event', {
+            error: error.message,
+            eventId,
+            responseType,
+            targetUserId: userId,
+            duration: Date.now() - respondStartTime,
+            retryAttempts: retryCount,
+            isOrganizerError: isOrganizerError || false,
+            timestamp: new Date().toISOString()
+          }, 'calendar', null, requestUserId, deviceId);
+        } else if (sessionId) {
+          MonitoringService.error('Failed to respond to calendar event', {
+            sessionId,
+            error: error.message,
+            eventId,
+            responseType,
+            targetUserId: userId,
+            duration: Date.now() - respondStartTime,
+            retryAttempts: retryCount,
+            isOrganizerError: isOrganizerError || false,
+            timestamp: new Date().toISOString()
+          }, 'calendar');
+        }
       }
       
       // Check for specific error case: meeting organizer trying to respond to their own meeting
@@ -1949,7 +2198,34 @@ async function findMeetingTimes(options = {}) {
   // Get an authenticated client
   // Extract req from options for authentication
   const { req, userId = 'me', ...otherOptions } = options;
+  
+  // Extract user context for logging
+  const requestUserId = req?.user?.userId;
+  const sessionId = req?.session?.id;
+  const deviceId = req?.user?.deviceId;
+  
+  // Pattern 1: Development Debug Logs
+  if (process.env.NODE_ENV === 'development') {
+    MonitoringService.debug('Processing findMeetingTimes request', {
+      method: req?.method,
+      path: req?.path,
+      sessionId,
+      userAgent: req?.get('User-Agent'),
+      timestamp: new Date().toISOString(),
+      userId: requestUserId,
+      deviceId,
+      parameters: {
+        targetUserId: userId,
+        attendeeCount: options.attendees?.length || options.users?.length || 0,
+        meetingDuration: options.meetingDuration,
+        maxCandidates: options.maxCandidates,
+        hasTimeConstraints: !!options.timeConstraints
+      }
+    }, 'calendar');
+  }
+  
   const client = await graphClientFactory.createClient(req);
+  const findMeetingStartTime = Date.now();
   
   // Process attendees if provided
   let attendees = [];
@@ -2106,13 +2382,37 @@ async function findMeetingTimes(options = {}) {
       timestamp: new Date().toISOString()
     });
     
+    // Pattern 2: User Activity Logs - Log successful meeting time finding
+    const duration = Date.now() - findMeetingStartTime;
+    const suggestionCount = response.meetingTimeSuggestions ? response.meetingTimeSuggestions.length : 0;
+    if (requestUserId) {
+      MonitoringService.info('Meeting times found successfully', {
+        attendeeCount: attendees.length,
+        suggestionCount,
+        duration,
+        meetingDuration: options.meetingDuration,
+        targetUserId: userId,
+        timestamp: new Date().toISOString()
+      }, 'calendar', null, requestUserId, deviceId);
+    } else if (sessionId) {
+      MonitoringService.info('Meeting times found successfully', {
+        sessionId,
+        attendeeCount: attendees.length,
+        suggestionCount,
+        duration,
+        meetingDuration: options.meetingDuration,
+        targetUserId: userId,
+        timestamp: new Date().toISOString()
+      }, 'calendar');
+    }
+    
     // Process and return the response
     return {
       meetingTimeSuggestions: response.meetingTimeSuggestions || [],
       emptySuggestionsReason: response.emptySuggestionsReason || null
     };
   } catch (error) {
-    // Always log detailed error information for debugging
+    // Pattern 3: Infrastructure Error Logging - Detailed error information for debugging
     MonitoringService?.error('Error finding meeting times - DETAILED ERROR', {
       requestBody: JSON.stringify(requestBody, null, 2),
       endpoint: `/users/${userId}/findMeetingTimes`,
@@ -2125,6 +2425,28 @@ async function findMeetingTimes(options = {}) {
       stack: error.stack,
       timestamp: new Date().toISOString()
     }, 'calendar');
+    
+    // Pattern 4: User Error Tracking - Log errors with user context
+    if (requestUserId) {
+      MonitoringService.error('Failed to find meeting times', {
+        error: error.message,
+        attendeeCount: attendees.length,
+        targetUserId: userId,
+        duration: Date.now() - findMeetingStartTime,
+        statusCode: error.statusCode,
+        timestamp: new Date().toISOString()
+      }, 'calendar', null, requestUserId, deviceId);
+    } else if (sessionId) {
+      MonitoringService.error('Failed to find meeting times', {
+        sessionId,
+        error: error.message,
+        attendeeCount: attendees.length,
+        targetUserId: userId,
+        duration: Date.now() - findMeetingStartTime,
+        statusCode: error.statusCode,
+        timestamp: new Date().toISOString()
+      }, 'calendar');
+    }
     
     // Also log to console for immediate visibility during development
     console.error('GRAPH API ERROR:', JSON.stringify({
@@ -3201,18 +3523,36 @@ async function updateEvent(id, eventData, userId = 'me', options = {}) {
     throw new Error('Event data is required for updating an event');
   }
   
+  // Extract user context for logging
+  const req = options.req;
+  const requestUserId = req?.user?.userId;
+  const sessionId = req?.session?.id;
+  const deviceId = req?.user?.deviceId;
+  
+  // Pattern 1: Development Debug Logs
+  if (process.env.NODE_ENV === 'development') {
+    MonitoringService.debug('Processing updateEvent request', {
+      method: req?.method,
+      path: req?.path,
+      sessionId,
+      userAgent: req?.get('User-Agent'),
+      timestamp: new Date().toISOString(),
+      userId: requestUserId,
+      deviceId,
+      parameters: {
+        eventId: id,
+        targetUserId: userId,
+        hasSubjectUpdate: !!eventData.subject,
+        hasTimeUpdate: !!(eventData.start || eventData.end),
+        hasAttendeesUpdate: !!eventData.attendees
+      }
+    }, 'calendar');
+  }
+  
   const client = await graphClientFactory.createClient(options.req);
   
   // Start timer for performance tracking
-  const startTime = Date.now();
-  
-  if (process.env.NODE_ENV !== 'production') {
-    MonitoringService?.debug(`Attempting to update event`, {
-      eventId: redactSensitiveData({ id }),
-      eventData: redactSensitiveData(eventData),
-      timestamp: new Date().toISOString()
-    }, 'calendar');
-  }
+  const updateStartTime = Date.now();
   
   // First, get the current event to obtain the ETag for concurrency control
   let currentEvent;
@@ -3434,19 +3774,11 @@ async function updateEvent(id, eventData, userId = 'me', options = {}) {
       const updatedEvent = await client.api(`${endpoint}?sendUpdates=all`).patch(patch, { headers: options.headers });
 
       // Calculate execution time and track performance
-      const executionTime = Date.now() - startTime;
+      const executionTime = Date.now() - updateStartTime;
       MonitoringService?.trackMetric('calendar_event_update_time', executionTime, {
         eventId: redactSensitiveData({ eventId: updatedEvent.id }),
         timestamp: new Date().toISOString()
       });
-      
-      // Track and log success
-      if (process.env.NODE_ENV !== 'production') {
-        MonitoringService?.info('Event updated successfully', {
-          eventId: redactSensitiveData({ eventId: updatedEvent.id }),
-          timestamp: new Date().toISOString()
-        }, 'calendar');
-      }
       
       // Normalize event for consistent response format
       const normalizedEvent = normalizeEvent(updatedEvent);
@@ -3461,6 +3793,28 @@ async function updateEvent(id, eventData, userId = 'me', options = {}) {
         executionTime,
         timestamp: new Date().toISOString()
       });
+      
+      // Pattern 2: User Activity Logs - Log successful event update
+      if (requestUserId) {
+        MonitoringService.info('Calendar event updated successfully', {
+          eventId: normalizedEvent.id,
+          subject: normalizedEvent.subject,
+          duration: executionTime,
+          hasAttendees: normalizedEvent.attendees && normalizedEvent.attendees.length > 0,
+          targetUserId: userId,
+          timestamp: new Date().toISOString()
+        }, 'calendar', null, requestUserId, deviceId);
+      } else if (sessionId) {
+        MonitoringService.info('Calendar event updated successfully', {
+          sessionId,
+          eventId: normalizedEvent.id,
+          subject: normalizedEvent.subject,
+          duration: executionTime,
+          hasAttendees: normalizedEvent.attendees && normalizedEvent.attendees.length > 0,
+          targetUserId: userId,
+          timestamp: new Date().toISOString()
+        }, 'calendar');
+      }
       
       // Return normalized event
       return normalizedEvent;
@@ -3557,15 +3911,28 @@ async function updateEvent(id, eventData, userId = 'me', options = {}) {
           }
         );
         
-        // Log the error
+        // Pattern 3: Infrastructure Error Logging
         MonitoringService?.logError(mcpError);
         
-        MonitoringService?.error('Error updating event', {
-          eventId: redactSensitiveData({ id }),
-          errorMessage: error.message || 'No message',
-          statusCode: error.statusCode || 'unknown',
-          timestamp: new Date().toISOString()
-        }, 'calendar');
+        // Pattern 4: User Error Tracking - Log errors with user context
+        if (requestUserId) {
+          MonitoringService.error('Failed to update calendar event', {
+            error: error.message,
+            eventId: id,
+            targetUserId: userId,
+            duration: Date.now() - updateStartTime,
+            timestamp: new Date().toISOString()
+          }, 'calendar', null, requestUserId, deviceId);
+        } else if (sessionId) {
+          MonitoringService.error('Failed to update calendar event', {
+            sessionId,
+            error: error.message,
+            eventId: id,
+            targetUserId: userId,
+            duration: Date.now() - updateStartTime,
+            timestamp: new Date().toISOString()
+          }, 'calendar');
+        }
         
         // Enhanced timezone error logging for update events
         MonitoringService?.debug('Timezone debug info for failed update', {
