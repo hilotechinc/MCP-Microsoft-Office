@@ -23,15 +23,20 @@ MonitoringService.info('LLM Service initialized', {
 
 /**
  * Returns true if an LLM API key is configured in the environment.
+ * @param {string} [userId] - User ID for logging context
+ * @param {string} [sessionId] - Session ID for logging context
  * @returns {Promise<boolean>}
  */
-async function isConfigured() {
+async function isConfigured(userId, sessionId) {
     const startTime = Date.now();
     
+    // Pattern 1: Development Debug Logs
     if (process.env.NODE_ENV === 'development') {
         MonitoringService.debug('LLM configuration check started', {
             method: 'isConfigured',
             provider: LLM_PROVIDER,
+            userId: userId ? userId.substring(0, 20) + '...' : 'anonymous',
+            sessionId: sessionId ? sessionId.substring(0, 8) + '...' : 'none',
             timestamp: new Date().toISOString()
         }, 'llm');
     }
@@ -59,6 +64,25 @@ async function isConfigured() {
         }
         
         const executionTime = Date.now() - startTime;
+        
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('LLM configuration check completed successfully', {
+                provider: LLM_PROVIDER,
+                configured: isConfigured,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'llm', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('LLM configuration check completed with session', {
+                sessionId: sessionId.substring(0, 8) + '...',
+                provider: LLM_PROVIDER,
+                configured: isConfigured,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'llm');
+        }
+        
         MonitoringService.trackMetric('llm_is_configured_check', executionTime, {
             service: 'llm-service',
             method: 'isConfigured',
@@ -71,10 +95,11 @@ async function isConfigured() {
     } catch (error) {
         const executionTime = Date.now() - startTime;
         
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.SYSTEM,
+            'llm',
             `LLM configuration check failed: ${error.message}`,
-            ErrorService.SEVERITIES.ERROR,
+            'error',
             {
                 service: 'llm-service',
                 method: 'isConfigured',
@@ -85,6 +110,25 @@ async function isConfigured() {
         );
         
         MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('LLM configuration check failed', {
+                error: error.message,
+                provider: LLM_PROVIDER,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'llm', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('LLM configuration check failed', {
+                sessionId: sessionId.substring(0, 8) + '...',
+                error: error.message,
+                provider: LLM_PROVIDER,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'llm');
+        }
+        
         MonitoringService.trackMetric('llm_is_configured_failure', executionTime, {
             service: 'llm-service',
             method: 'isConfigured',
@@ -98,48 +142,77 @@ async function isConfigured() {
 
 /**
  * Returns details about the current LLM config status.
+ * @param {string} [userId] - User ID for logging context
+ * @param {string} [sessionId] - Session ID for logging context
  * @returns {Promise<object>}
  */
-async function statusDetails() {
+async function statusDetails(userId, sessionId) {
     const startTime = Date.now();
     
+    // Pattern 1: Development Debug Logs
     if (process.env.NODE_ENV === 'development') {
         MonitoringService.debug('LLM status details check started', {
             method: 'statusDetails',
             provider: LLM_PROVIDER,
+            userId: userId ? userId.substring(0, 20) + '...' : 'anonymous',
+            sessionId: sessionId ? sessionId.substring(0, 8) + '...' : 'none',
             timestamp: new Date().toISOString()
         }, 'llm');
     }
     
     try {
+        let result;
+        
         if (LLM_PROVIDER === 'openai' && OPENAI_API_KEY) {
-            return await _checkOpenAIStatus(startTime);
+            result = await _checkOpenAIStatus(startTime, userId, sessionId);
         } else if (LLM_PROVIDER === 'claude' && CLAUDE_API_KEY) {
-            return await _checkClaudeStatus(startTime);
+            result = await _checkClaudeStatus(startTime, userId, sessionId);
+        } else {
+            const executionTime = Date.now() - startTime;
+            
+            result = {
+                provider: LLM_PROVIDER,
+                status: 'not_configured',
+                error: `No API key configured for ${LLM_PROVIDER}`
+            };
+            
+            MonitoringService.trackMetric('llm_status_details_no_config', executionTime, {
+                service: 'llm-service',
+                method: 'statusDetails',
+                provider: LLM_PROVIDER,
+                timestamp: new Date().toISOString()
+            });
         }
         
-        // No API key configured
         const executionTime = Date.now() - startTime;
-        MonitoringService.trackMetric('llm_status_details_no_key', executionTime, {
-            service: 'llm-service',
-            method: 'statusDetails',
-            provider: LLM_PROVIDER,
-            timestamp: new Date().toISOString()
-        });
         
-        return { 
-            provider: LLM_PROVIDER, 
-            apiKey: 'missing', 
-            status: 'error',
-            error: `No API key found for ${LLM_PROVIDER}`
-        };
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('LLM status details check completed successfully', {
+                provider: LLM_PROVIDER,
+                status: result.status,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'llm', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('LLM status details check completed with session', {
+                sessionId: sessionId.substring(0, 8) + '...',
+                provider: LLM_PROVIDER,
+                status: result.status,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'llm');
+        }
+        
+        return result;
     } catch (error) {
         const executionTime = Date.now() - startTime;
         
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.SYSTEM,
-            `LLM status details check failed: ${error.message}`,
-            ErrorService.SEVERITIES.ERROR,
+            'llm',
+            `LLM status check failed: ${error.message}`,
+            'error',
             {
                 service: 'llm-service',
                 method: 'statusDetails',
@@ -150,6 +223,25 @@ async function statusDetails() {
         );
         
         MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('LLM status details check failed', {
+                error: error.message,
+                provider: LLM_PROVIDER,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'llm', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('LLM status details check failed', {
+                sessionId: sessionId.substring(0, 8) + '...',
+                error: error.message,
+                provider: LLM_PROVIDER,
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'llm');
+        }
+        
         MonitoringService.trackMetric('llm_status_details_failure', executionTime, {
             service: 'llm-service',
             method: 'statusDetails',
@@ -164,8 +256,11 @@ async function statusDetails() {
 /**
  * Checks OpenAI API status and available models.
  * @private
+ * @param {number} overallStartTime - Start time for overall operation
+ * @param {string} [userId] - User ID for logging context
+ * @param {string} [sessionId] - Session ID for logging context
  */
-async function _checkOpenAIStatus(overallStartTime) {
+async function _checkOpenAIStatus(overallStartTime, userId, sessionId) {
     const requestStartTime = Date.now();
     
     if (process.env.NODE_ENV === 'development') {
@@ -266,8 +361,11 @@ async function _checkOpenAIStatus(overallStartTime) {
 /**
  * Checks Claude API status with a minimal test message.
  * @private
+ * @param {number} overallStartTime - Start time for overall operation
+ * @param {string} [userId] - User ID for logging context
+ * @param {string} [sessionId] - Session ID for logging context
  */
-async function _checkClaudeStatus(overallStartTime) {
+async function _checkClaudeStatus(overallStartTime, userId, sessionId) {
     const requestStartTime = Date.now();
     
     if (process.env.NODE_ENV === 'development') {

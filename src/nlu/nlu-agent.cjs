@@ -19,37 +19,120 @@ class NLUAgent {
      * @param {function} [options.entityRecognizer]
      * @param {object} [options.contextService]
      * @param {object} [options.llmService] - Optional, for test injection
+     * @param {string} [userId] - User context for logging
+     * @param {string} [sessionId] - Session context for logging
      */
-    constructor({ entityRecognizer, contextService, llmService } = {}) {
-        this.entityRecognizer = entityRecognizer || defaultEntityRecognizer;
-        this.contextService = contextService || null;
-        this.llmService = llmService || require('./llm-service');
+    constructor({ entityRecognizer, contextService, llmService } = {}, userId, sessionId) {
+        const startTime = Date.now();
+        
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('NLU Agent constructor started', {
+                hasEntityRecognizer: !!entityRecognizer,
+                hasContextService: !!contextService,
+                hasLlmService: !!llmService,
+                userId: userId ? userId.substring(0, 20) + '...' : 'none',
+                sessionId: sessionId ? sessionId.substring(0, 8) + '...' : 'none',
+                timestamp: new Date().toISOString()
+            }, 'nlu');
+        }
+        
+        try {
+            this.entityRecognizer = entityRecognizer || defaultEntityRecognizer;
+            this.contextService = contextService || null;
+            this.llmService = llmService || require('./llm-service');
+            
+            const executionTime = Date.now() - startTime;
+            
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                MonitoringService.info('NLU Agent constructor completed successfully', {
+                    hasEntityRecognizer: !!this.entityRecognizer,
+                    hasContextService: !!this.contextService,
+                    hasLlmService: !!this.llmService,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'nlu', null, userId);
+            } else if (sessionId) {
+                MonitoringService.info('NLU Agent constructor completed with session', {
+                    sessionId: sessionId.substring(0, 8) + '...',
+                    hasEntityRecognizer: !!this.entityRecognizer,
+                    hasContextService: !!this.contextService,
+                    hasLlmService: !!this.llmService,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'nlu');
+            }
+            
+        } catch (error) {
+            const executionTime = Date.now() - startTime;
+            
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService.createError(
+                'nlu',
+                `NLU Agent constructor failed: ${error.message}`,
+                'error',
+                {
+                    service: 'nlu-agent',
+                    method: 'constructor',
+                    error: error.message,
+                    stack: error.stack,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('NLU Agent constructor failed', {
+                    error: error.message,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'nlu', null, userId);
+            } else if (sessionId) {
+                MonitoringService.error('NLU Agent constructor failed', {
+                    sessionId: sessionId.substring(0, 8) + '...',
+                    error: error.message,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'nlu');
+            }
+            
+            throw mcpError;
+        }
     }
 
     /**
      * Main query processing pipeline: extract intent, entities, context.
      * @param {string} query - User input
      * @param {object} context - Optional dialog/session context
+     * @param {string} [userId] - User context for logging
+     * @param {string} [sessionId] - Session context for logging
      * @returns {Promise<object>} { intent, entities, confidence, context }
      */
-    async processQuery(query, context = {}) {
+    async processQuery(query, context = {}, userId, sessionId) {
         const startTime = Date.now();
         
+        // Pattern 1: Development Debug Logs
         if (process.env.NODE_ENV === 'development') {
             MonitoringService.debug('NLU query processing started', {
                 method: 'processQuery',
                 queryLength: query ? query.length : 0,
                 hasContext: !!Object.keys(context).length,
+                userId: userId ? userId.substring(0, 20) + '...' : 'none',
+                sessionId: sessionId ? sessionId.substring(0, 8) + '...' : 'none',
                 timestamp: new Date().toISOString()
             }, 'nlu');
         }
         
         try {
             if (!query || typeof query !== 'string') {
+                // Pattern 3: Infrastructure Error Logging
                 const mcpError = ErrorService.createError(
-                    ErrorService.CATEGORIES.VALIDATION,
+                    'nlu',
                     'Query must be a non-empty string',
-                    ErrorService.SEVERITIES.WARNING,
+                    'warning',
                     {
                         service: 'nlu-agent',
                         method: 'processQuery',
@@ -58,6 +141,23 @@ class NLUAgent {
                     }
                 );
                 MonitoringService.logError(mcpError);
+                
+                // Pattern 4: User Error Tracking
+                if (userId) {
+                    MonitoringService.error('Query validation failed', {
+                        error: 'Query must be a non-empty string',
+                        queryType: typeof query,
+                        timestamp: new Date().toISOString()
+                    }, 'nlu', null, userId);
+                } else if (sessionId) {
+                    MonitoringService.error('Query validation failed', {
+                        sessionId: sessionId.substring(0, 8) + '...',
+                        error: 'Query must be a non-empty string',
+                        queryType: typeof query,
+                        timestamp: new Date().toISOString()
+                    }, 'nlu');
+                }
+                
                 throw mcpError;
             }
             
@@ -66,7 +166,7 @@ class NLUAgent {
             try {
                 // 1. Intent extraction via LLM
                 const intentPrompt = `Extract the intent and confidence (0-1) from this query as JSON: ${JSON.stringify({ query })}`;
-                const intentResponse = await this.llmService.completePrompt(intentPrompt);
+                const intentResponse = await this.llmService.completePrompt(intentPrompt, userId, sessionId);
                 let parsed;
                 try {
                     parsed = JSON.parse(intentResponse.replace(/^.*?({|\[)/s, '$1'));
@@ -86,7 +186,7 @@ class NLUAgent {
                 }
                 
                 // 2. Entity recognition
-                entities = await this.entityRecognizer(query);
+                entities = await this.entityRecognizer(query, userId, sessionId);
                 
                 // 3. Context-aware understanding
                 if (this.contextService && typeof this.contextService.enrich === 'function') {
@@ -106,6 +206,29 @@ class NLUAgent {
                     timestamp: new Date().toISOString()
                 });
                 
+                // Pattern 2: User Activity Logs
+                if (userId) {
+                    MonitoringService.info('NLU query processing completed successfully', {
+                        queryLength: query.length,
+                        extractedIntent: intent,
+                        confidence: confidence,
+                        entitiesCount: Object.keys(entities).length,
+                        executionTimeMs: executionTime,
+                        timestamp: new Date().toISOString()
+                    }, 'nlu', null, userId);
+                } else if (sessionId) {
+                    MonitoringService.info('NLU query processing completed with session', {
+                        sessionId: sessionId.substring(0, 8) + '...',
+                        queryLength: query.length,
+                        extractedIntent: intent,
+                        confidence: confidence,
+                        entitiesCount: Object.keys(entities).length,
+                        executionTimeMs: executionTime,
+                        timestamp: new Date().toISOString()
+                    }, 'nlu');
+                }
+                
+                // Pattern 1: Development Debug Logs
                 if (process.env.NODE_ENV === 'development') {
                     MonitoringService.debug('NLU query processing completed', {
                         queryLength: query.length,
@@ -113,6 +236,8 @@ class NLUAgent {
                         confidence: confidence,
                         entitiesCount: Object.keys(entities).length,
                         executionTimeMs: executionTime,
+                        userId: userId ? userId.substring(0, 20) + '...' : 'none',
+                        sessionId: sessionId ? sessionId.substring(0, 8) + '...' : 'none',
                         timestamp: new Date().toISOString()
                     }, 'nlu');
                 }
@@ -131,10 +256,11 @@ class NLUAgent {
                     timestamp: new Date().toISOString()
                 });
                 
-                MonitoringService.logError(ErrorService.createError(
-                    ErrorService.CATEGORIES.SYSTEM,
+                // Pattern 3: Infrastructure Error Logging
+                const mcpError = ErrorService.createError(
+                    'nlu',
                     `NLU processing failed, using fallback: ${processingError.message}`,
-                    ErrorService.SEVERITIES.WARNING,
+                    'warning',
                     {
                         service: 'nlu-agent',
                         method: 'processQuery',
@@ -142,7 +268,24 @@ class NLUAgent {
                         fallbackResult: fallbackResult,
                         timestamp: new Date().toISOString()
                     }
-                ));
+                );
+                MonitoringService.logError(mcpError);
+                
+                // Pattern 4: User Error Tracking
+                if (userId) {
+                    MonitoringService.error('NLU processing failed, using fallback', {
+                        error: processingError.message,
+                        queryLength: query.length,
+                        timestamp: new Date().toISOString()
+                    }, 'nlu', null, userId);
+                } else if (sessionId) {
+                    MonitoringService.error('NLU processing failed, using fallback', {
+                        sessionId: sessionId.substring(0, 8) + '...',
+                        error: processingError.message,
+                        queryLength: query.length,
+                        timestamp: new Date().toISOString()
+                    }, 'nlu');
+                }
                 
                 return fallbackResult;
             }
@@ -161,10 +304,11 @@ class NLUAgent {
                 throw error;
             }
             
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.SYSTEM,
+                'nlu',
                 `NLU query processing failed: ${error.message}`,
-                ErrorService.SEVERITIES.ERROR,
+                'error',
                 {
                     service: 'nlu-agent',
                     method: 'processQuery',
@@ -173,8 +317,24 @@ class NLUAgent {
                     timestamp: new Date().toISOString()
                 }
             );
-            
             MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('NLU query processing failed', {
+                    error: error.message,
+                    queryLength: query ? query.length : 0,
+                    timestamp: new Date().toISOString()
+                }, 'nlu', null, userId);
+            } else if (sessionId) {
+                MonitoringService.error('NLU query processing failed', {
+                    sessionId: sessionId.substring(0, 8) + '...',
+                    error: error.message,
+                    queryLength: query ? query.length : 0,
+                    timestamp: new Date().toISOString()
+                }, 'nlu');
+            }
+            
             MonitoringService.trackMetric('nlu_agent_process_query_failure', executionTime, {
                 service: 'nlu-agent',
                 method: 'processQuery',
@@ -191,25 +351,31 @@ class NLUAgent {
 /**
  * Default entity recognizer (simple regex-based, replace with LLM or NER for prod)
  * @param {string} query
+ * @param {string} [userId] - User context for logging
+ * @param {string} [sessionId] - Session context for logging
  * @returns {Promise<object>} entities
  */
-async function defaultEntityRecognizer(query) {
+async function defaultEntityRecognizer(query, userId, sessionId) {
     const startTime = Date.now();
     
+    // Pattern 1: Development Debug Logs
     if (process.env.NODE_ENV === 'development') {
         MonitoringService.debug('Entity recognition started', {
             method: 'defaultEntityRecognizer',
             queryLength: query ? query.length : 0,
+            userId: userId ? userId.substring(0, 20) + '...' : 'none',
+            sessionId: sessionId ? sessionId.substring(0, 8) + '...' : 'none',
             timestamp: new Date().toISOString()
         }, 'nlu');
     }
     
     try {
         if (!query || typeof query !== 'string') {
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = ErrorService.createError(
-                ErrorService.CATEGORIES.VALIDATION,
+                'nlu',
                 'Query must be a non-empty string for entity recognition',
-                ErrorService.SEVERITIES.WARNING,
+                'warning',
                 {
                     service: 'nlu-agent',
                     method: 'defaultEntityRecognizer',
@@ -218,6 +384,23 @@ async function defaultEntityRecognizer(query) {
                 }
             );
             MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Entity recognition validation failed', {
+                    error: 'Query must be a non-empty string for entity recognition',
+                    queryType: typeof query,
+                    timestamp: new Date().toISOString()
+                }, 'nlu', null, userId);
+            } else if (sessionId) {
+                MonitoringService.error('Entity recognition validation failed', {
+                    sessionId: sessionId.substring(0, 8) + '...',
+                    error: 'Query must be a non-empty string for entity recognition',
+                    queryType: typeof query,
+                    timestamp: new Date().toISOString()
+                }, 'nlu');
+            }
+            
             throw mcpError;
         }
         
@@ -240,12 +423,35 @@ async function defaultEntityRecognizer(query) {
             timestamp: new Date().toISOString()
         });
         
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('Entity recognition completed successfully', {
+                queryLength: query.length,
+                entitiesFound: Object.keys(entities).length,
+                entityTypes: Object.keys(entities),
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'nlu', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('Entity recognition completed with session', {
+                sessionId: sessionId.substring(0, 8) + '...',
+                queryLength: query.length,
+                entitiesFound: Object.keys(entities).length,
+                entityTypes: Object.keys(entities),
+                executionTimeMs: executionTime,
+                timestamp: new Date().toISOString()
+            }, 'nlu');
+        }
+        
+        // Pattern 1: Development Debug Logs
         if (process.env.NODE_ENV === 'development') {
             MonitoringService.debug('Entity recognition completed', {
                 queryLength: query.length,
                 entitiesFound: Object.keys(entities).length,
                 entityTypes: Object.keys(entities),
                 executionTimeMs: executionTime,
+                userId: userId ? userId.substring(0, 20) + '...' : 'none',
+                sessionId: sessionId ? sessionId.substring(0, 8) + '...' : 'none',
                 timestamp: new Date().toISOString()
             }, 'nlu');
         }
@@ -266,10 +472,11 @@ async function defaultEntityRecognizer(query) {
             throw error;
         }
         
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.SYSTEM,
+            'nlu',
             `Entity recognition failed: ${error.message}`,
-            ErrorService.SEVERITIES.ERROR,
+            'error',
             {
                 service: 'nlu-agent',
                 method: 'defaultEntityRecognizer',
@@ -278,8 +485,24 @@ async function defaultEntityRecognizer(query) {
                 timestamp: new Date().toISOString()
             }
         );
-        
         MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('Entity recognition failed', {
+                error: error.message,
+                queryLength: query ? query.length : 0,
+                timestamp: new Date().toISOString()
+            }, 'nlu', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('Entity recognition failed', {
+                sessionId: sessionId.substring(0, 8) + '...',
+                error: error.message,
+                queryLength: query ? query.length : 0,
+                timestamp: new Date().toISOString()
+            }, 'nlu');
+        }
+        
         MonitoringService.trackMetric('nlu_agent_entity_recognition_failure', executionTime, {
             service: 'nlu-agent',
             method: 'defaultEntityRecognizer',

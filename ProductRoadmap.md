@@ -12,7 +12,7 @@ The Microsoft 365 MCP Gateway connects Claude to Microsoft 365 services through 
 ┌────────────────┐      ┌───────────────────┐     ┌─────────────────────┐
 │                │      │                   │     │                     │
 │  Claude LLM    │◄────►│  MCP Adapter      │◄───►│  Dev Server         │
-│                │      │  (mcp-adapter.cjs)│     │  (dev-server.cjs)   │
+│                │      │  (mcp-adapter.cjs)│     │  (src/main/dev-server.cjs) │
 │                │      │                   │     │                     │
 └────────────────┘      └───────────────────┘     └──────────┬──────────┘
                                                              │
