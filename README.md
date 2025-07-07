@@ -228,8 +228,8 @@ echo $MICROSOFT_TENANT_ID
 # Test authentication endpoint
 curl http://localhost:3000/api/auth/status
 
-# Clear session data
-rm -rf data/sessions/*
+# Clear data
+rm -rf data/*
 ```
 
 #### **Permission Errors** 📁
@@ -247,7 +247,7 @@ df -h
 #### **Enable Comprehensive Logging**
 ```bash
 # Full debug mode
-NODE_ENV=development DEBUG=* npm run dev:web
+npm run dev:web
 
 # Specific category logging
 DEBUG=mail,calendar npm run dev:web
@@ -513,7 +513,7 @@ cd MCP-Microsoft-Office
 npm install
 
 # Run in development mode with full logging
-NODE_ENV=development npm run dev:web
+npm run dev:web
 
 # Run tests
 npm test
@@ -525,8 +525,6 @@ npm run lint
 ### **Support & Community**
 - 🐛 **Bug Reports**: [GitHub Issues](https://github.com/Aanerud/MCP-Microsoft-Office/issues)
 - 💡 **Feature Requests**: [GitHub Discussions](https://github.com/Aanerud/MCP-Microsoft-Office/discussions)
-- 📖 **Documentation**: [Wiki](https://github.com/Aanerud/MCP-Microsoft-Office/wiki)
-- 💬 **Community**: [Discord Server](https://discord.gg/mcp-microsoft-office)
 
 ---
 
