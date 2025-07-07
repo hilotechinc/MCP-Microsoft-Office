@@ -17,58 +17,137 @@ const graphService = require('../graph/graph-service.cjs');
  * Handles errors during initialization and logs them appropriately.
  * Tracks performance metrics for the initialization process.
  * @param {object} services - Dependency/service registry to inject
+ * @param {string} userId - User ID for logging context
+ * @param {string} sessionId - Session ID for logging context
  * @returns {Promise<Array<object>>} Array of successfully initialized modules
  * @throws {Object} Will not throw errors from individual module initialization failures
  */
-async function initializeModules(services = {}) {
+async function initializeModules(services = {}, userId, sessionId) {
     const startTime = Date.now();
+    
+    // Pattern 1: Development Debug Logs
+    if (process.env.NODE_ENV === 'development') {
+        MonitoringService.debug('Starting module initialization process', {
+            sessionId: sessionId || 'unknown',
+            userId: userId ? userId.substring(0, 20) + '...' : 'unknown',
+            serviceCount: Object.keys(services).length,
+            timestamp: new Date().toISOString()
+        }, 'modules');
+    }
     
     // Initialize database factory first
     try {
-        MonitoringService?.info('Initializing database factory...', {}, 'database');
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Initializing database factory', {
+                sessionId: sessionId || 'unknown',
+                userId: userId ? userId.substring(0, 20) + '...' : 'unknown',
+                timestamp: new Date().toISOString()
+            }, 'modules');
+        }
+        
         const config = {
             DB_TYPE: 'sqlite',
             DB_PATH: './data/mcp.sqlite'
         };
         await databaseFactory.init(config);
-        MonitoringService?.info('Database factory initialized successfully', {
-            databaseType: config.DB_TYPE,
-            timestamp: new Date().toISOString()
-        }, 'database');
+        
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('Database factory initialized successfully', {
+                databaseType: config.DB_TYPE,
+                timestamp: new Date().toISOString()
+            }, 'modules', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('Database factory initialized with session', {
+                sessionId: sessionId,
+                databaseType: config.DB_TYPE,
+                timestamp: new Date().toISOString()
+            }, 'modules');
+        }
     } catch (error) {
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.STORAGE,
+            'modules',
             `Failed to initialize database factory: ${error.message}`,
-            ErrorService.SEVERITIES.CRITICAL,
+            'critical',
             {
                 error: error.message,
                 stack: error.stack,
                 timestamp: new Date().toISOString()
             }
         );
-        MonitoringService?.logError(mcpError);
+        MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('Database factory initialization failed', {
+                error: error.message,
+                timestamp: new Date().toISOString()
+            }, 'modules', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('Database factory initialization failed', {
+                sessionId: sessionId,
+                error: error.message,
+                timestamp: new Date().toISOString()
+            }, 'modules');
+        }
+        
         throw mcpError;
     }
     
     // Initialize storage service after database factory
     try {
-        MonitoringService?.info('Initializing storage service...', {}, 'storage');
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Initializing storage service', {
+                sessionId: sessionId || 'unknown',
+                userId: userId ? userId.substring(0, 20) + '...' : 'unknown',
+                timestamp: new Date().toISOString()
+            }, 'modules');
+        }
+        
         await StorageService.init();
-        MonitoringService?.info('Storage service initialized successfully', {
-            timestamp: new Date().toISOString()
-        }, 'storage');
+        
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('Storage service initialized successfully', {
+                timestamp: new Date().toISOString()
+            }, 'modules', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('Storage service initialized with session', {
+                sessionId: sessionId,
+                timestamp: new Date().toISOString()
+            }, 'modules');
+        }
     } catch (error) {
+        // Pattern 3: Infrastructure Error Logging
         const mcpError = ErrorService.createError(
-            ErrorService.CATEGORIES.STORAGE,
+            'modules',
             `Failed to initialize storage service: ${error.message}`,
-            ErrorService.SEVERITIES.CRITICAL,
+            'critical',
             {
                 error: error.message,
                 stack: error.stack,
                 timestamp: new Date().toISOString()
             }
         );
-        MonitoringService?.logError(mcpError);
+        MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('Storage service initialization failed', {
+                error: error.message,
+                timestamp: new Date().toISOString()
+            }, 'modules', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('Storage service initialization failed', {
+                sessionId: sessionId,
+                error: error.message,
+                timestamp: new Date().toISOString()
+            }, 'modules');
+        }
+        
         throw mcpError;
     }
     
@@ -92,15 +171,35 @@ async function initializeModules(services = {}) {
     // Log initialization start
     if (MonitoringService) {
         // Use helper function to redact sensitive information
-        const safeServicesInfo = redactSensitiveServiceInfo(enrichedServices);
+        const safeServicesInfo = redactSensitiveServiceInfo(enrichedServices, userId, sessionId);
         
-        MonitoringService.info('Starting module initialization process', { 
-            moduleCount: moduleRegistry.getAllModules().length,
-            servicesProvided: safeServicesInfo
-        }, 'module');
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Starting module initialization with services', {
+                sessionId: sessionId || 'unknown',
+                userId: userId ? userId.substring(0, 20) + '...' : 'unknown',
+                moduleCount: moduleRegistry.getAllModules().length,
+                serviceKeys: safeServicesInfo,
+                timestamp: new Date().toISOString()
+            }, 'modules');
+        }
+        
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('Starting module initialization process', {
+                moduleCount: moduleRegistry.getAllModules().length,
+                servicesProvided: safeServicesInfo
+            }, 'module', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('Starting module initialization with session', {
+                sessionId: sessionId,
+                moduleCount: moduleRegistry.getAllModules().length,
+                servicesProvided: safeServicesInfo
+            }, 'modules');
+        }
     } else {
         // Use helper function to redact sensitive information for fallback logging
-        const safeServicesInfo = redactSensitiveServiceInfo(enrichedServices);
+        const safeServicesInfo = redactSensitiveServiceInfo(enrichedServices, userId, sessionId);
         
         console.info('[MCP MODULE] Starting module initialization process', JSON.stringify({ 
             moduleCount: moduleRegistry.getAllModules().length,
@@ -111,74 +210,105 @@ async function initializeModules(services = {}) {
     const modules = moduleRegistry.getAllModules();
     const initialized = [];
     for (const mod of modules) {
-        if (typeof mod.init === 'function') {
+        if (mod && typeof mod.init === 'function') {
             try {
-                // Log module initialization attempt
-                if (MonitoringService) {
-                    MonitoringService.debug('Initializing module', { 
-                        moduleId: mod.id, 
-                        moduleName: mod.name
-                    }, 'module');
+                // Pattern 1: Development Debug Logs
+                if (process.env.NODE_ENV === 'development') {
+                    MonitoringService.debug('Initializing individual module', {
+                        sessionId: sessionId || 'unknown',
+                        userId: userId ? userId.substring(0, 20) + '...' : 'unknown',
+                        moduleId: mod.id || 'unknown',
+                        moduleName: mod.name || 'unknown',
+                        timestamp: new Date().toISOString()
+                    }, 'modules');
                 }
                 
-                // Use the enriched services object with proper dependency injection
-                const instance = await mod.init(enrichedServices);
+                // Call the module's init function with the services
+                const initializedModule = await mod.init(enrichedServices);
                 
                 // Replace the module in the registry with the initialized instance
-                moduleRegistry.modules.set(mod.id, instance);
-                initialized.push(instance);
+                moduleRegistry.registerModule(initializedModule);
                 
-                // Generate a trace ID for this module initialization
-                const initTraceId = `module-init-${mod.id}-${Date.now()}`;
+                // Add to the list of successfully initialized modules
+                initialized.push(initializedModule);
                 
-                // Log successful initialization
-                if (MonitoringService) {
-                    MonitoringService.info('Module initialized successfully', { 
-                        moduleId: mod.id, 
+                // Pattern 2: User Activity Logs
+                if (userId) {
+                    MonitoringService.info('Module initialized successfully', {
+                        moduleId: mod.id,
                         moduleName: mod.name,
-                        capabilities: Array.isArray(instance.capabilities) ? instance.capabilities : []
-                    }, 'module', initTraceId);
-                } else {
-                    console.info(`[MCP MODULE] Module initialized successfully: ${mod.id}`);
+                        timestamp: new Date().toISOString()
+                    }, 'modules', null, userId);
+                } else if (sessionId) {
+                    MonitoringService.info('Module initialized with session', {
+                        sessionId: sessionId,
+                        moduleId: mod.id,
+                        moduleName: mod.name,
+                        timestamp: new Date().toISOString()
+                    }, 'modules');
                 }
             } catch (error) {
-                // Log initialization error but continue with other modules
-                if (ErrorService && MonitoringService) {
-                    // Generate a trace ID for this error
-                    const errorTraceId = `module-init-error-${mod.id}-${Date.now()}`;
-                    
-                    // Create standardized error
-                    const mcpError = ErrorService.createError(
-                        'module',
-                        `Failed to initialize module: ${mod.id}`,
-                        'error',
-                        { 
-                            moduleId: mod.id, 
-                            moduleName: mod.name,
-                            error: error.message,
-                            stack: error.stack
-                        },
-                        errorTraceId
-                    );
-                    
-                    // Log the error with the monitoring service
-                    MonitoringService.logError(mcpError);
-                } else {
-                    console.error(`[MCP MODULE] Failed to initialize module: ${mod.id}`, JSON.stringify({
-                        error: error.message
-                    }));
+                // Pattern 3: Infrastructure Error Logging
+                const errorTraceId = `module-init-error-${mod.id}-${Date.now()}`;
+                const mcpError = ErrorService.createError(
+                    'modules',
+                    `Failed to initialize module: ${mod.id}`,
+                    'error',
+                    { 
+                        moduleId: mod.id, 
+                        moduleName: mod.name,
+                        error: error.message,
+                        stack: error.stack,
+                        timestamp: new Date().toISOString()
+                    },
+                    errorTraceId
+                );
+                MonitoringService.logError(mcpError);
+                
+                // Pattern 4: User Error Tracking
+                if (userId) {
+                    MonitoringService.error('Module initialization failed', {
+                        moduleId: mod.id,
+                        moduleName: mod.name,
+                        error: error.message,
+                        timestamp: new Date().toISOString()
+                    }, 'modules', null, userId);
+                } else if (sessionId) {
+                    MonitoringService.error('Module initialization failed', {
+                        sessionId: sessionId,
+                        moduleId: mod.id,
+                        moduleName: mod.name,
+                        error: error.message,
+                        timestamp: new Date().toISOString()
+                    }, 'modules');
                 }
             }
         } else {
-            // Log warning for modules without init function
-            if (MonitoringService) {
-                MonitoringService.warn(`Module missing init function`, {
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                MonitoringService.debug('Module missing init function', {
+                    sessionId: sessionId || 'unknown',
+                    userId: userId ? userId.substring(0, 20) + '...' : 'unknown',
                     moduleId: mod.id || 'unknown',
                     moduleName: mod.name || 'unknown',
                     timestamp: new Date().toISOString()
-                }, 'module');
-            } else {
-                console.warn(`[MCP MODULE] Module missing init function: ${mod.id || 'unknown'}`);
+                }, 'modules');
+            }
+            
+            // Pattern 4: User Error Tracking (missing init function is a user-visible issue)
+            if (userId) {
+                MonitoringService.error('Module missing init function', {
+                    moduleId: mod.id || 'unknown',
+                    moduleName: mod.name || 'unknown',
+                    timestamp: new Date().toISOString()
+                }, 'modules', null, userId);
+            } else if (sessionId) {
+                MonitoringService.error('Module missing init function', {
+                    sessionId: sessionId,
+                    moduleId: mod.id || 'unknown',
+                    moduleName: mod.name || 'unknown',
+                    timestamp: new Date().toISOString()
+                }, 'modules');
             }
         }
     }
@@ -195,14 +325,24 @@ async function initializeModules(services = {}) {
             timestamp: new Date().toISOString()
         };
         
-        MonitoringService.info('Module initialization completed', completionData, 'module');
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Module initialization completed with details', {
+                sessionId: sessionId || 'unknown',
+                userId: userId ? userId.substring(0, 20) + '...' : 'unknown',
+                ...completionData
+            }, 'modules');
+        }
         
-        // Track performance metric
-        MonitoringService.trackMetric('module_initialization_time', elapsedTime, {
-            totalModules: modules.length,
-            initializedCount: initialized.length,
-            timestamp: new Date().toISOString()
-        });
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('Module initialization completed', completionData, 'modules', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('Module initialization completed with session', {
+                sessionId: sessionId,
+                ...completionData
+            }, 'modules');
+        }
         
         // Emit event for real-time UI updates if logEmitter is available
         try {
@@ -232,19 +372,89 @@ async function initializeModules(services = {}) {
 /**
  * Helper function to redact sensitive information from service keys
  * @param {Object} services - The services object to redact
+ * @param {string} userId - User ID for logging context
+ * @param {string} sessionId - Session ID for logging context
  * @returns {Array<string>} Array of service keys with sensitive ones redacted
  */
-function redactSensitiveServiceInfo(services) {
-    return Object.keys(services).map(key => {
-        // Redact any keys that might contain sensitive information
-        if (key.toLowerCase().includes('token') || 
-            key.toLowerCase().includes('secret') || 
-            key.toLowerCase().includes('password') || 
-            key.toLowerCase().includes('auth')) {
-            return `${key}: [REDACTED]`;
+function redactSensitiveServiceInfo(services, userId, sessionId) {
+    const startTime = Date.now();
+    
+    // Pattern 1: Development Debug Logs
+    if (process.env.NODE_ENV === 'development') {
+        MonitoringService.debug('Redacting sensitive service information', {
+            sessionId: sessionId || 'unknown',
+            userId: userId ? userId.substring(0, 20) + '...' : 'unknown',
+            serviceCount: Object.keys(services).length,
+            timestamp: new Date().toISOString()
+        }, 'modules');
+    }
+    
+    try {
+        const redactedKeys = Object.keys(services).map(key => {
+            // Redact any keys that might contain sensitive information
+            if (key.toLowerCase().includes('token') || 
+                key.toLowerCase().includes('secret') || 
+                key.toLowerCase().includes('password') || 
+                key.toLowerCase().includes('auth')) {
+                return `${key}: [REDACTED]`;
+            }
+            return key;
+        });
+        
+        const elapsedTime = Date.now() - startTime;
+        
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('Service information redacted successfully', {
+                serviceCount: Object.keys(services).length,
+                redactedCount: redactedKeys.filter(k => k.includes('[REDACTED]')).length,
+                elapsedTimeMs: elapsedTime,
+                timestamp: new Date().toISOString()
+            }, 'modules', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('Service information redacted with session', {
+                sessionId: sessionId,
+                serviceCount: Object.keys(services).length,
+                redactedCount: redactedKeys.filter(k => k.includes('[REDACTED]')).length,
+                elapsedTimeMs: elapsedTime,
+                timestamp: new Date().toISOString()
+            }, 'modules');
         }
-        return key;
-    });
+        
+        return redactedKeys;
+        
+    } catch (error) {
+        // Pattern 3: Infrastructure Error Logging
+        const mcpError = ErrorService.createError(
+            'modules',
+            `Failed to redact sensitive service information: ${error.message}`,
+            'error',
+            {
+                error: error.message,
+                stack: error.stack,
+                serviceCount: Object.keys(services).length,
+                timestamp: new Date().toISOString()
+            }
+        );
+        MonitoringService.logError(mcpError);
+        
+        // Pattern 4: User Error Tracking
+        if (userId) {
+            MonitoringService.error('Service information redaction failed', {
+                error: error.message,
+                timestamp: new Date().toISOString()
+            }, 'modules', null, userId);
+        } else if (sessionId) {
+            MonitoringService.error('Service information redaction failed', {
+                sessionId: sessionId,
+                error: error.message,
+                timestamp: new Date().toISOString()
+            }, 'modules');
+        }
+        
+        // Return empty array as fallback
+        return [];
+    }
 }
 
 module.exports = { 

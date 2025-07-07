@@ -124,69 +124,120 @@ const CalendarModule = {
      * exposure of sensitive data and ensure consistent data formatting in production.
      * Only available when NODE_ENV !== 'production'.
      * @param {object} options - Query options for fetching events
+     * @param {object} req - Express request object containing user context
+     * @param {string} userId - User ID
+     * @param {string} sessionId - Session ID
      * @returns {Promise<object[]>} - Raw event objects from Graph API
      * @throws {Error} When called in production environment
      */
-    async getEventsRaw(options = {}, req) {
+    async getEventsRaw(options = {}, req, userId, sessionId) {
+        const startTime = Date.now();
+        
+        // Extract user context
+        const resolvedUserId = userId || req?.user?.userId;
+        const resolvedSessionId = sessionId || req?.session?.id;
+        
         // Get services with fallbacks
         const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
         
-        // Log the request attempt
-        monitoringService?.debug('Attempting to get raw calendar events', { 
-            options,
-            timestamp: new Date().toISOString()
-        }, 'calendar');
-        
-        // Restrict to debug mode only (dev or development environments)
-        const isDebugMode = ['dev', 'development'].includes(process.env.NODE_ENV) || process.env.DEBUG === 'true';
-        if (!isDebugMode) {
-            const error = errorService?.createError(
-                'calendar',
-                'getEventsRaw is only available in debug mode (dev, development, or DEBUG=true)',
-                'error',
-                { environment: process.env.NODE_ENV, timestamp: new Date().toISOString() }
-            ) || {
-                category: 'calendar',
-                message: 'getEventsRaw is only available in debug mode (dev, development, or DEBUG=true)',
-                severity: 'error',
-                context: { environment: process.env.NODE_ENV }
-            };
-            
-            monitoringService?.logError(error);
-                
-            throw error;
-        }
-
-        if (!graphService || typeof graphService.getEventsRaw !== 'function') {
-            const error = errorService?.createError(
-                'calendar',
-                'GraphService.getEventsRaw not implemented',
-                'error',
-                { timestamp: new Date().toISOString() }
-            ) || {
-                category: 'calendar',
-                message: 'GraphService.getEventsRaw not implemented',
-                severity: 'error',
-                context: {}
-            };
-            
-            monitoringService?.logError(error);
-                
-            throw error;
-        }
-        
         try {
-            const startTime = Date.now();
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                monitoringService?.debug('Getting raw calendar events', {
+                    sessionId: resolvedSessionId,
+                    userAgent: req?.get('User-Agent'),
+                    optionsCount: Object.keys(options).length,
+                    timestamp: new Date().toISOString()
+                }, 'calendar');
+            }
+            
+            // Restrict to debug mode only (dev or development environments)
+            const isDebugMode = ['dev', 'development'].includes(process.env.NODE_ENV) || process.env.DEBUG === 'true';
+            if (!isDebugMode) {
+                const error = errorService?.createError(
+                    'calendar',
+                    'getEventsRaw is only available in debug mode (dev, development, or DEBUG=true)',
+                    'error',
+                    { environment: process.env.NODE_ENV, timestamp: new Date().toISOString() }
+                ) || {
+                    category: 'calendar',
+                    message: 'getEventsRaw is only available in debug mode (dev, development, or DEBUG=true)',
+                    severity: 'error',
+                    context: { environment: process.env.NODE_ENV }
+                };
+                
+                monitoringService?.logError(error);
+                
+                // Pattern 4: User Error Tracking
+                if (resolvedUserId) {
+                    monitoringService?.error('Raw calendar events access denied', {
+                        error: 'Debug mode only',
+                        environment: process.env.NODE_ENV,
+                        timestamp: new Date().toISOString()
+                    }, 'calendar', null, resolvedUserId);
+                } else if (resolvedSessionId) {
+                    monitoringService?.error('Raw calendar events access denied', {
+                        sessionId: resolvedSessionId,
+                        error: 'Debug mode only',
+                        environment: process.env.NODE_ENV,
+                        timestamp: new Date().toISOString()
+                    }, 'calendar');
+                }
+                    
+                throw error;
+            }
+
+            if (!graphService || typeof graphService.getEventsRaw !== 'function') {
+                const error = errorService?.createError(
+                    'calendar',
+                    'GraphService.getEventsRaw not implemented',
+                    'error',
+                    { timestamp: new Date().toISOString() }
+                ) || {
+                    category: 'calendar',
+                    message: 'GraphService.getEventsRaw not implemented',
+                    severity: 'error',
+                    context: {}
+                };
+                
+                monitoringService?.logError(error);
+                
+                // Pattern 4: User Error Tracking
+                if (resolvedUserId) {
+                    monitoringService?.error('Raw calendar events service unavailable', {
+                        error: 'Service not implemented',
+                        timestamp: new Date().toISOString()
+                    }, 'calendar', null, resolvedUserId);
+                } else if (resolvedSessionId) {
+                    monitoringService?.error('Raw calendar events service unavailable', {
+                        sessionId: resolvedSessionId,
+                        error: 'Service not implemented',
+                        timestamp: new Date().toISOString()
+                    }, 'calendar');
+                }
+                    
+                throw error;
+            }
+            
             // Include req in options for getEventsRaw
-            const events = await graphService.getEventsRaw({ ...options, req });
+            const events = await graphService.getEventsRaw({ ...options, req }, resolvedUserId, resolvedSessionId);
             const elapsedTime = Date.now() - startTime;
             
-            // Log success and track performance
-            monitoringService?.info('Successfully retrieved raw calendar events', { 
-                count: events?.length || 0,
-                elapsedTime,
-                timestamp: new Date().toISOString()
-            }, 'calendar');
+            // Pattern 2: User Activity Logs
+            if (resolvedUserId) {
+                monitoringService?.info('Raw calendar events retrieved successfully', {
+                    count: events?.length || 0,
+                    elapsedTime,
+                    timestamp: new Date().toISOString()
+                }, 'calendar', null, resolvedUserId);
+            } else if (resolvedSessionId) {
+                monitoringService?.info('Raw calendar events retrieved with session', {
+                    sessionId: resolvedSessionId,
+                    count: events?.length || 0,
+                    elapsedTime,
+                    timestamp: new Date().toISOString()
+                }, 'calendar');
+            }
             
             monitoringService?.trackMetric('calendar_event_raw_get_duration', elapsedTime, {
                 count: events?.length || 0,
@@ -195,6 +246,9 @@ const CalendarModule = {
             
             return events;
         } catch (error) {
+            const elapsedTime = Date.now() - startTime;
+            
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = errorService?.createError(
                 'calendar',
                 `Failed to fetch raw calendar events: ${error.message}`,
@@ -204,16 +258,33 @@ const CalendarModule = {
                     options,
                     graphStatusCode: error.statusCode,
                     graphCode: error.code,
+                    elapsedTime,
                     timestamp: new Date().toISOString()
                 }
             ) || {
                 category: 'calendar',
                 message: `Failed to fetch raw calendar events: ${error.message}`,
                 severity: 'error',
-                context: { options }
+                context: { options, elapsedTime }
             };
             
             monitoringService?.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (resolvedUserId) {
+                monitoringService?.error('Raw calendar events retrieval failed', {
+                    error: error.message,
+                    elapsedTime,
+                    timestamp: new Date().toISOString()
+                }, 'calendar', null, resolvedUserId);
+            } else if (resolvedSessionId) {
+                monitoringService?.error('Raw calendar events retrieval failed', {
+                    sessionId: resolvedSessionId,
+                    error: error.message,
+                    elapsedTime,
+                    timestamp: new Date().toISOString()
+                }, 'calendar');
+            }
                 
             throw mcpError;
         }

@@ -9,8 +9,17 @@ const ErrorService = require('../core/error-service.cjs');
 
 class ModuleRegistry {
     // TODO: [constructor] Accept logger via DI; track registration timestamps. (LOW) - Implemented
-    constructor(options = {}) {
-        // No longer using this.logger property - direct MonitoringService calls with fallbacks
+    constructor(options = {}, userId, sessionId) {
+        const startTime = Date.now();
+        
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('ModuleRegistry constructor called', {
+                sessionId: sessionId ? sessionId.substring(0, 8) + '...' : 'none',
+                userId: userId ? userId.substring(0, 20) + '...' : 'none',
+                timestamp: new Date().toISOString()
+            }, 'module');
+        }
         
         /** @type {Map<string, object>} */
         this.modules = new Map();
@@ -19,23 +28,46 @@ class ModuleRegistry {
         /** @type {Map<string, Date>} */
         this.registrationTimestamps = new Map(); // module.id -> registration time
         
-        // Log initialization with proper optional chaining
-        MonitoringService?.info('ModuleRegistry initialized', { 
-            timestamp: new Date().toISOString() 
-        }, 'module');
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('ModuleRegistry initialized successfully', {
+                executionTime: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'module', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('ModuleRegistry initialized with session', {
+                sessionId: sessionId.substring(0, 8) + '...',
+                executionTime: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'module');
+        }
     }
 
     /**
      * Registers a module with the registry and its capabilities.
      * @param {object} module - Must have id, name, capabilities, init, handleIntent
+     * @param {string} userId - User ID for logging context
+     * @param {string} sessionId - Session ID for logging context
      */
     // TODO: [registerModule] Validate module interface contract (MEDIUM) - Implemented (basic validation)
-    registerModule(module) {
+    registerModule(module, userId, sessionId) {
         const startTime = Date.now();
+        
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Module registration started', {
+                moduleId: module?.id || 'unknown',
+                moduleName: module?.name || 'unknown',
+                sessionId: sessionId ? sessionId.substring(0, 8) + '...' : 'none',
+                userId: userId ? userId.substring(0, 20) + '...' : 'none',
+                timestamp: new Date().toISOString()
+            }, 'module');
+        }
         
         // Validate module object
         if (!module || typeof module !== 'object' || !module.id) {
-            const error = ErrorService?.createError(
+            // Pattern 3: Infrastructure Error Logging
+            const error = ErrorService.createError(
                 'module',
                 'Invalid module object or missing ID',
                 'error',
@@ -44,21 +76,33 @@ class ModuleRegistry {
                     moduleType: typeof module,
                     timestamp: new Date().toISOString()
                 }
-            ) || {
-                category: 'module',
-                message: 'Invalid module object or missing ID',
-                severity: 'error',
-                context: { moduleType: typeof module }
-            };
+            );
             
             MonitoringService.logError(error);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Module registration failed - invalid module', {
+                    moduleId: module?.id || 'unknown',
+                    error: 'Invalid module object or missing ID',
+                    timestamp: new Date().toISOString()
+                }, 'module', null, userId);
+            } else if (sessionId) {
+                MonitoringService.error('Module registration failed - invalid module', {
+                    sessionId: sessionId.substring(0, 8) + '...',
+                    moduleId: module?.id || 'unknown',
+                    error: 'Invalid module object or missing ID',
+                    timestamp: new Date().toISOString()
+                }, 'module');
+            }
             
             throw error;
         }
         
         // Check for duplicate module ID
         if (this.modules.has(module.id)) {
-            const error = ErrorService?.createError(
+            // Pattern 3: Infrastructure Error Logging
+            const error = ErrorService.createError(
                 'module',
                 `Module with ID '${module.id}' already registered`,
                 'error',
@@ -67,14 +111,25 @@ class ModuleRegistry {
                     moduleName: module.name,
                     timestamp: new Date().toISOString()
                 }
-            ) || {
-                category: 'module',
-                message: `Module with ID '${module.id}' already registered`,
-                severity: 'error',
-                context: { moduleId: module.id }
-            };
+            );
             
             MonitoringService.logError(error);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Module registration failed - duplicate ID', {
+                    moduleId: module.id,
+                    error: 'Module already registered',
+                    timestamp: new Date().toISOString()
+                }, 'module', null, userId);
+            } else if (sessionId) {
+                MonitoringService.error('Module registration failed - duplicate ID', {
+                    sessionId: sessionId.substring(0, 8) + '...',
+                    moduleId: module.id,
+                    error: 'Module already registered',
+                    timestamp: new Date().toISOString()
+                }, 'module');
+            }
             
             throw error;
         }
@@ -152,13 +207,25 @@ class ModuleRegistry {
             }
         }
         
-        // Log successful registration
-        MonitoringService.info(`Module '${module.id}' registered successfully`, { 
-            moduleId: module.id,
-            moduleName: module.name,
-            capabilities: Array.isArray(module.capabilities) ? module.capabilities.length : 0,
-            timestamp: new Date().toISOString()
-        }, 'module');
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('Module registered successfully', {
+                moduleId: module.id,
+                moduleName: module.name,
+                capabilities: Array.isArray(module.capabilities) ? module.capabilities.length : 0,
+                executionTime: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'module', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('Module registered with session', {
+                sessionId: sessionId.substring(0, 8) + '...',
+                moduleId: module.id,
+                moduleName: module.name,
+                capabilities: Array.isArray(module.capabilities) ? module.capabilities.length : 0,
+                executionTime: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'module');
+        }
         
         // Track performance metric
         const elapsedTime = Date.now() - startTime;
@@ -191,24 +258,30 @@ class ModuleRegistry {
      * @param {string} id
      * @param {object} [options] - Optional settings.
      * @param {boolean} [options.strict=false] - Throw an error if the module is not found.
+     * @param {string} userId - User ID for logging context
+     * @param {string} sessionId - Session ID for logging context
      * @returns {object|undefined}
      */
     // TODO: [getModule] Throw if not found when strict flag true (LOW) - Implemented
-    getModule(id, options = {}) {
+    getModule(id, options = {}, userId, sessionId) {
         const startTime = Date.now();
         const { strict = false } = options;
         
-        // Log the request
-        MonitoringService.debug('Getting module by ID', { 
-            moduleId: id, 
-            strict,
-            timestamp: new Date().toISOString()
-        }, 'module');
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Getting module by ID', {
+                moduleId: id ? id.substring(0, 20) + '...' : 'none',
+                strict,
+                sessionId: sessionId ? sessionId.substring(0, 8) + '...' : 'none',
+                userId: userId ? userId.substring(0, 20) + '...' : 'none',
+                timestamp: new Date().toISOString()
+            }, 'module');
+        }
         
         const module = this.modules.get(id);
 
         if (!module && strict) {
-            // Create standardized error for module not found
+            // Pattern 3: Infrastructure Error Logging
             const error = ErrorService.createError(
                 'module',
                 `Module with ID '${id}' not found (strict mode enabled)`,
@@ -222,22 +295,43 @@ class ModuleRegistry {
             
             MonitoringService.logError(error);
             
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Module lookup failed - not found', {
+                    moduleId: id,
+                    error: 'Module not found in strict mode',
+                    timestamp: new Date().toISOString()
+                }, 'module', null, userId);
+            } else if (sessionId) {
+                MonitoringService.error('Module lookup failed - not found', {
+                    sessionId: sessionId.substring(0, 8) + '...',
+                    moduleId: id,
+                    error: 'Module not found in strict mode',
+                    timestamp: new Date().toISOString()
+                }, 'module');
+            }
+            
             throw error;
         }
         
-        // Log the result
+        // Pattern 2: User Activity Logs for successful operations
         if (module) {
-            MonitoringService.debug('Module found', { 
-                moduleId: id, 
-                moduleName: module.name,
-                timestamp: new Date().toISOString()
-            }, 'module');
-        } else {
-            MonitoringService.debug('Module not found', { 
-                moduleId: id, 
-                strict: false, // If we got here, strict must be false
-                timestamp: new Date().toISOString()
-            }, 'module');
+            if (userId) {
+                MonitoringService.info('Module retrieved successfully', {
+                    moduleId: id,
+                    moduleName: module.name,
+                    executionTime: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'module', null, userId);
+            } else if (sessionId) {
+                MonitoringService.info('Module retrieved with session', {
+                    sessionId: sessionId.substring(0, 8) + '...',
+                    moduleId: id,
+                    moduleName: module.name,
+                    executionTime: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'module');
+            }
         }
         
         // Track performance metric
@@ -253,17 +347,41 @@ class ModuleRegistry {
 
     /**
      * Returns all registered modules.
+     * @param {string} userId - User ID for logging context
+     * @param {string} sessionId - Session ID for logging context
      * @returns {Array<object>}
      */
-    getAllModules() {
+    getAllModules(userId, sessionId) {
+        const startTime = Date.now();
+        
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Getting all modules', {
+                sessionId: sessionId ? sessionId.substring(0, 8) + '...' : 'none',
+                userId: userId ? userId.substring(0, 20) + '...' : 'none',
+                timestamp: new Date().toISOString()
+            }, 'module');
+        }
+        
         const modules = Array.from(this.modules.values());
         
-        // Log the request and result
-        MonitoringService.debug('Getting all modules', { 
-            count: modules.length,
-            moduleIds: modules.map(m => m.id),
-            timestamp: new Date().toISOString()
-        }, 'module');
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('All modules retrieved successfully', {
+                count: modules.length,
+                moduleIds: modules.map(m => m.id),
+                executionTime: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'module', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('All modules retrieved with session', {
+                sessionId: sessionId.substring(0, 8) + '...',
+                count: modules.length,
+                moduleIds: modules.map(m => m.id),
+                executionTime: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'module');
+        }
         
         return modules;
     }
@@ -271,34 +389,41 @@ class ModuleRegistry {
     /**
      * Finds all modules that support a given capability/intent.
      * @param {string} capability
+     * @param {string} userId - User ID for logging context
+     * @param {string} sessionId - Session ID for logging context
      * @returns {Array<object>} Modules supporting the capability
      */
     // TODO: [findModulesForIntent] Return by priority when multiple modules share capability (LOW) - Implemented
-    findModulesForIntent(capability) {
+    findModulesForIntent(capability, userId, sessionId) {
         const startTime = Date.now();
         
-        // Log the request
-        MonitoringService.debug('Finding modules for intent', { 
-            intent: capability,
-            timestamp: new Date().toISOString()
-        }, 'module');
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Finding modules for intent', {
+                intent: capability ? capability.substring(0, 50) + '...' : 'none',
+                sessionId: sessionId ? sessionId.substring(0, 8) + '...' : 'none',
+                userId: userId ? userId.substring(0, 20) + '...' : 'none',
+                timestamp: new Date().toISOString()
+            }, 'module');
+        }
         
         const ids = this.capabilityMap.get(capability);
         if (!ids || ids.size === 0) {
-            // Log no modules found
-            MonitoringService.info('No modules found for intent', { 
-                intent: capability,
-                timestamp: new Date().toISOString()
-            }, 'module');
-            
-            // Track performance metric
-            const elapsedTime = Date.now() - startTime;
-            MonitoringService.trackMetric('intent_lookup_time', elapsedTime, {
-                intent: capability,
-                found: false,
-                count: 0,
-                timestamp: new Date().toISOString()
-            });
+            // Pattern 2: User Activity Logs for no results
+            if (userId) {
+                MonitoringService.info('No modules found for intent', {
+                    intent: capability,
+                    executionTime: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'module', null, userId);
+            } else if (sessionId) {
+                MonitoringService.info('No modules found for intent with session', {
+                    sessionId: sessionId.substring(0, 8) + '...',
+                    intent: capability,
+                    executionTime: Date.now() - startTime,
+                    timestamp: new Date().toISOString()
+                }, 'module');
+            }
             
             return [];
         }
@@ -311,13 +436,25 @@ class ModuleRegistry {
         // Sort by priority (descending). Modules without priority have default 0.
         modules.sort((a, b) => (b.priority || 0) - (a.priority || 0));
 
-        // Log the result
-        MonitoringService.info('Found modules for intent', { 
-            intent: capability,
-            count: modules.length,
-            moduleIds: modules.map(m => m.id),
-            timestamp: new Date().toISOString()
-        }, 'module');
+        // Pattern 2: User Activity Logs for successful results
+        if (userId) {
+            MonitoringService.info('Found modules for intent', {
+                intent: capability,
+                count: modules.length,
+                moduleIds: modules.map(m => m.id),
+                executionTime: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'module', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('Found modules for intent with session', {
+                sessionId: sessionId.substring(0, 8) + '...',
+                intent: capability,
+                count: modules.length,
+                moduleIds: modules.map(m => m.id),
+                executionTime: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'module');
+        }
         
         // Track performance metric
         const elapsedTime = Date.now() - startTime;
@@ -351,19 +488,43 @@ class ModuleRegistry {
 
     /**
      * Returns all capabilities registered in the system.
+     * @param {string} userId - User ID for logging context
+     * @param {string} sessionId - Session ID for logging context
      * @returns {Array<string>}
      */
     // TODO: [listCapabilities] Alphabetically sort output (LOW) - Implemented
-    listCapabilities() {
+    listCapabilities(userId, sessionId) {
+        const startTime = Date.now();
+        
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Listing all capabilities', {
+                sessionId: sessionId ? sessionId.substring(0, 8) + '...' : 'none',
+                userId: userId ? userId.substring(0, 20) + '...' : 'none',
+                timestamp: new Date().toISOString()
+            }, 'module');
+        }
+        
         // Get keys and sort them alphabetically
         const capabilities = Array.from(this.capabilityMap.keys()).sort();
         
-        // Log the request and result
-        MonitoringService.debug('Listing all capabilities', { 
-            count: capabilities.length,
-            capabilities,
-            timestamp: new Date().toISOString()
-        }, 'module');
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('Capabilities listed successfully', {
+                count: capabilities.length,
+                capabilities,
+                executionTime: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'module', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('Capabilities listed with session', {
+                sessionId: sessionId.substring(0, 8) + '...',
+                count: capabilities.length,
+                capabilities,
+                executionTime: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'module');
+        }
         
         return capabilities;
     }
@@ -372,22 +533,40 @@ class ModuleRegistry {
     /**
      * Gets registration information for a specific module.
      * @param {string} moduleId - The ID of the module.
+     * @param {string} userId - User ID for logging context
+     * @param {string} sessionId - Session ID for logging context
      * @returns {object|null} An object containing registration info (like timestamp) or null if not found.
      */
-    getRegistrationInfo(moduleId) {
-        // Log the request
-        MonitoringService.debug('Getting module registration info', { 
-            moduleId,
-            timestamp: new Date().toISOString()
-        }, 'module');
+    getRegistrationInfo(moduleId, userId, sessionId) {
+        const startTime = Date.now();
+        
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Getting module registration info', {
+                moduleId: moduleId ? moduleId.substring(0, 20) + '...' : 'none',
+                sessionId: sessionId ? sessionId.substring(0, 8) + '...' : 'none',
+                userId: userId ? userId.substring(0, 20) + '...' : 'none',
+                timestamp: new Date().toISOString()
+            }, 'module');
+        }
         
         const registrationTime = this.registrationTimestamps.get(moduleId);
         if (!registrationTime) {
-            // Log warning for module not found
-            MonitoringService.warn('No registration timestamp found', { 
-                moduleId,
-                timestamp: new Date().toISOString()
-            }, 'module');
+            // Pattern 4: User Error Tracking for not found
+            if (userId) {
+                MonitoringService.error('Module registration info not found', {
+                    moduleId,
+                    error: 'No registration timestamp found',
+                    timestamp: new Date().toISOString()
+                }, 'module', null, userId);
+            } else if (sessionId) {
+                MonitoringService.error('Module registration info not found', {
+                    sessionId: sessionId.substring(0, 8) + '...',
+                    moduleId,
+                    error: 'No registration timestamp found',
+                    timestamp: new Date().toISOString()
+                }, 'module');
+            }
             
             return null;
         }
@@ -397,12 +576,23 @@ class ModuleRegistry {
             // Add other info like state here in the future
         };
         
-        // Log the result
-        MonitoringService.debug('Retrieved module registration timestamp', { 
-            moduleId,
-            registeredAt: registrationTime,
-            timestamp: new Date().toISOString()
-        }, 'module');
+        // Pattern 2: User Activity Logs for successful retrieval
+        if (userId) {
+            MonitoringService.info('Module registration info retrieved successfully', {
+                moduleId,
+                registeredAt: registrationTime,
+                executionTime: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'module', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('Module registration info retrieved with session', {
+                sessionId: sessionId.substring(0, 8) + '...',
+                moduleId,
+                registeredAt: registrationTime,
+                executionTime: Date.now() - startTime,
+                timestamp: new Date().toISOString()
+            }, 'module');
+        }
         
         return registrationInfo;
     }

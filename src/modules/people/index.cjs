@@ -76,90 +76,122 @@ const PeopleModule = {
      * Gets relevant people from Microsoft Graph
      * @param {object} options - Query options
      * @param {object} req - Express request object (optional)
+     * @param {string} userId - User ID for context
+     * @param {string} sessionId - Session ID for context
      * @returns {Promise<Array<object>>} List of people
      */
-    async getRelevantPeople(options = {}, req) {
+    async getRelevantPeople(options = {}, req, userId, sessionId) {
+        const startTime = Date.now();
         const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
+        
+        // Extract user context from req if not provided
+        const contextUserId = userId || req?.user?.userId;
+        const contextSessionId = sessionId || req?.session?.id;
         
         // Redact potentially sensitive data for logging
         const redactedOptions = this.redactSensitiveData(options);
         
-        // Log the request attempt
-        monitoringService?.debug('Attempting to get relevant people', { 
-            options: redactedOptions,
-            timestamp: new Date().toISOString()
-        }, 'people');
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Getting relevant people from Microsoft Graph', {
+                sessionId: contextSessionId,
+                userAgent: req?.get?.('User-Agent'),
+                options: redactedOptions,
+                timestamp: new Date().toISOString()
+            }, 'people');
+        }
         
         if (!graphService || typeof graphService.getRelevantPeople !== 'function') {
-            const error = errorService?.createError(
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService.createError(
                 'people',
                 'GraphService.getRelevantPeople not implemented',
                 'error',
-                { timestamp: new Date().toISOString() }
-            ) || {
-                category: 'people',
-                message: 'GraphService.getRelevantPeople not implemented',
-                severity: 'error',
-                context: {}
-            };
+                { 
+                    service: 'people-module',
+                    function: 'getRelevantPeople',
+                    timestamp: new Date().toISOString()
+                }
+            );
+            MonitoringService.logError(mcpError);
             
-            monitoringService?.logError(error);
-                
-            throw error;
+            // Pattern 4: User Error Tracking
+            if (contextUserId) {
+                MonitoringService.error('Failed to get relevant people - service not available', {
+                    error: 'GraphService.getRelevantPeople not implemented',
+                    timestamp: new Date().toISOString()
+                }, 'people', null, contextUserId);
+            } else if (contextSessionId) {
+                MonitoringService.error('Failed to get relevant people - service not available', {
+                    sessionId: contextSessionId,
+                    error: 'GraphService.getRelevantPeople not implemented',
+                    timestamp: new Date().toISOString()
+                }, 'people');
+            }
+            
+            throw mcpError;
         }
         
         try {
-            // Track performance
-            const startTime = Date.now();
+            // Call the Graph API with user context
+            const results = await graphService.getRelevantPeople(options, req, contextUserId, contextSessionId);
             
-            // Call the Graph API
-            const results = await graphService.getRelevantPeople(options, req);
-            
-            // Calculate elapsed time and track metric
+            // Calculate elapsed time
             const elapsedTime = Date.now() - startTime;
-            monitoringService?.trackMetric('people_relevant_get_duration', elapsedTime, {
-                count: results?.length || 0,
-                timestamp: new Date().toISOString()
-            });
             
-            monitoringService?.info('Successfully retrieved relevant people', {
-                count: results?.length || 0,
-                elapsedTime,
-                timestamp: new Date().toISOString()
-            }, 'people');
-                
+            // Pattern 2: User Activity Logs
+            if (contextUserId) {
+                MonitoringService.info('Successfully retrieved relevant people', {
+                    count: results?.length || 0,
+                    elapsedTime,
+                    timestamp: new Date().toISOString()
+                }, 'people', null, contextUserId);
+            } else if (contextSessionId) {
+                MonitoringService.info('Successfully retrieved relevant people with session', {
+                    sessionId: contextSessionId,
+                    count: results?.length || 0,
+                    elapsedTime,
+                    timestamp: new Date().toISOString()
+                }, 'people');
+            }
+            
             return results;
         } catch (error) {
-            // Extract Graph API details if available
-            const graphDetails = {
-                statusCode: error.statusCode,
-                code: error.code,
-                graphRequestId: error.requestId,
-                originalMessage: error.message
-            };
+            const elapsedTime = Date.now() - startTime;
             
-            // Create a standardized error object
-            const mcpError = errorService?.createError(
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService.createError(
                 'people',
                 `Failed to get relevant people: ${error.code || error.message}`,
                 error.statusCode && error.statusCode >= 500 ? 'error' : 'warn',
                 { 
-                    graphDetails, 
+                    statusCode: error.statusCode,
+                    code: error.code,
+                    graphRequestId: error.requestId,
                     originalError: error.stack,
                     requestParams: { options: redactedOptions },
+                    elapsedTime,
                     timestamp: new Date().toISOString()
                 }
-            ) || {
-                category: 'people',
-                message: `Failed to get relevant people: ${error.message}`,
-                severity: 'error',
-                context: { graphDetails }
-            };
+            );
+            MonitoringService.logError(mcpError);
             
-            // Log the error
-            monitoringService?.logError(mcpError);
-                
-            // Throw the structured error
+            // Pattern 4: User Error Tracking
+            if (contextUserId) {
+                MonitoringService.error('Failed to get relevant people', {
+                    error: error.message,
+                    elapsedTime,
+                    timestamp: new Date().toISOString()
+                }, 'people', null, contextUserId);
+            } else if (contextSessionId) {
+                MonitoringService.error('Failed to get relevant people', {
+                    sessionId: contextSessionId,
+                    error: error.message,
+                    elapsedTime,
+                    timestamp: new Date().toISOString()
+                }, 'people');
+            }
+            
             throw mcpError;
         }
     },
@@ -169,108 +201,152 @@ const PeopleModule = {
      * Get a specific person by ID
      * @param {string} personId - Person ID
      * @param {object} req - Express request object (optional)
+     * @param {string} userId - User ID for context
+     * @param {string} sessionId - Session ID for context
      * @returns {Promise<object>} Person details
      */
-    async getPersonById(personId, req) {
+    async getPersonById(personId, req, userId, sessionId) {
+        const startTime = Date.now();
         const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
         
-        // Redact potentially sensitive data for logging
-        const redactedPersonId = 'REDACTED_PERSON_ID';
+        // Extract user context from req if not provided
+        const contextUserId = userId || req?.user?.userId;
+        const contextSessionId = sessionId || req?.session?.id;
         
-        // Log the request attempt
-        monitoringService?.debug('Attempting to get person by ID', { 
-            timestamp: new Date().toISOString()
-        }, 'people');
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Getting person by ID from Microsoft Graph', {
+                sessionId: contextSessionId,
+                userAgent: req?.get?.('User-Agent'),
+                personId: personId ? personId.substring(0, 20) + '...' : 'undefined',
+                timestamp: new Date().toISOString()
+            }, 'people');
+        }
         
         if (!personId) {
-            const error = errorService?.createError(
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService.createError(
                 'people',
                 'Person ID is required to get person details',
                 'warn',
-                { timestamp: new Date().toISOString() }
-            ) || {
-                category: 'people',
-                message: 'Person ID is required to get person details',
-                severity: 'warn',
-                context: {}
-            };
+                { 
+                    service: 'people-module',
+                    function: 'getPersonById',
+                    timestamp: new Date().toISOString()
+                }
+            );
+            MonitoringService.logError(mcpError);
             
-            monitoringService?.logError(error);
-                
-            throw error;
+            // Pattern 4: User Error Tracking
+            if (contextUserId) {
+                MonitoringService.error('Failed to get person - missing person ID', {
+                    error: 'Person ID is required',
+                    timestamp: new Date().toISOString()
+                }, 'people', null, contextUserId);
+            } else if (contextSessionId) {
+                MonitoringService.error('Failed to get person - missing person ID', {
+                    sessionId: contextSessionId,
+                    error: 'Person ID is required',
+                    timestamp: new Date().toISOString()
+                }, 'people');
+            }
+            
+            throw mcpError;
         }
         
         if (!graphService || typeof graphService.getPersonById !== 'function') {
-            const error = errorService?.createError(
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService.createError(
                 'people',
                 'GraphService.getPersonById not implemented',
                 'error',
-                { timestamp: new Date().toISOString() }
-            ) || {
-                category: 'people',
-                message: 'GraphService.getPersonById not implemented',
-                severity: 'error',
-                context: {}
-            };
+                { 
+                    service: 'people-module',
+                    function: 'getPersonById',
+                    timestamp: new Date().toISOString()
+                }
+            );
+            MonitoringService.logError(mcpError);
             
-            monitoringService?.logError(error);
-                
-            throw error;
+            // Pattern 4: User Error Tracking
+            if (contextUserId) {
+                MonitoringService.error('Failed to get person - service not available', {
+                    error: 'GraphService.getPersonById not implemented',
+                    timestamp: new Date().toISOString()
+                }, 'people', null, contextUserId);
+            } else if (contextSessionId) {
+                MonitoringService.error('Failed to get person - service not available', {
+                    sessionId: contextSessionId,
+                    error: 'GraphService.getPersonById not implemented',
+                    timestamp: new Date().toISOString()
+                }, 'people');
+            }
+            
+            throw mcpError;
         }
         
         try {
-            // Track performance
-            const startTime = Date.now();
+            // Call the Graph API with user context
+            const rawPerson = await graphService.getPersonById(personId, req, contextUserId, contextSessionId);
             
-            // Call the Graph API - now returns raw Graph API response
-            const rawPerson = await graphService.getPersonById(personId, req);
-            
-            // Calculate elapsed time and track metric
+            // Calculate elapsed time
             const elapsedTime = Date.now() - startTime;
-            monitoringService?.trackMetric('people_get_by_id_duration', elapsedTime, {
-                found: !!rawPerson,
-                timestamp: new Date().toISOString()
-            });
             
-            monitoringService?.info('Successfully retrieved person by ID (raw format)', {
-                found: !!rawPerson,
-                elapsedTime,
-                hasData: rawPerson && Object.keys(rawPerson).length > 0,
-                timestamp: new Date().toISOString()
-            }, 'people');
-                
-            // Return the raw person data from Graph API
+            // Pattern 2: User Activity Logs
+            if (contextUserId) {
+                MonitoringService.info('Successfully retrieved person by ID', {
+                    found: !!rawPerson,
+                    elapsedTime,
+                    hasData: rawPerson && Object.keys(rawPerson).length > 0,
+                    timestamp: new Date().toISOString()
+                }, 'people', null, contextUserId);
+            } else if (contextSessionId) {
+                MonitoringService.info('Successfully retrieved person by ID with session', {
+                    sessionId: contextSessionId,
+                    found: !!rawPerson,
+                    elapsedTime,
+                    hasData: rawPerson && Object.keys(rawPerson).length > 0,
+                    timestamp: new Date().toISOString()
+                }, 'people');
+            }
+            
             return rawPerson;
         } catch (error) {
-            // Extract Graph API details if available
-            const graphDetails = {
-                statusCode: error.statusCode,
-                code: error.code,
-                graphRequestId: error.requestId,
-                originalMessage: error.message
-            };
+            const elapsedTime = Date.now() - startTime;
             
-            // Create a standardized error object
-            const mcpError = errorService?.createError(
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService.createError(
                 'people',
                 `Failed to get person by ID: ${error.code || error.message}`,
                 error.statusCode && error.statusCode >= 500 ? 'error' : 'warn',
                 { 
-                    graphDetails, 
+                    statusCode: error.statusCode,
+                    code: error.code,
+                    graphRequestId: error.requestId,
                     originalError: error.stack,
+                    personId: personId ? personId.substring(0, 20) + '...' : 'undefined',
+                    elapsedTime,
                     timestamp: new Date().toISOString()
                 }
-            ) || {
-                category: 'people',
-                message: `Failed to get person by ID: ${error.message}`,
-                severity: 'error',
-                context: { graphDetails }
-            };
+            );
+            MonitoringService.logError(mcpError);
             
-            // Log the error
-            monitoringService?.logError(mcpError);
-                
-            // Throw the structured error
+            // Pattern 4: User Error Tracking
+            if (contextUserId) {
+                MonitoringService.error('Failed to get person by ID', {
+                    error: error.message,
+                    elapsedTime,
+                    timestamp: new Date().toISOString()
+                }, 'people', null, contextUserId);
+            } else if (contextSessionId) {
+                MonitoringService.error('Failed to get person by ID', {
+                    sessionId: contextSessionId,
+                    error: error.message,
+                    elapsedTime,
+                    timestamp: new Date().toISOString()
+                }, 'people');
+            }
+            
             throw mcpError;
         }
     },
@@ -279,51 +355,75 @@ const PeopleModule = {
      * Find people based on criteria (name, role, etc.)
      * @param {object} criteria - Search criteria
      * @param {object} req - Express request object (optional)
+     * @param {string} userId - User ID for context
+     * @param {string} sessionId - Session ID for context
      * @returns {Promise<Array<object>>} List of matching people
      */
-    async findPeople(criteria = {}, req) {
+    async findPeople(criteria = {}, req, userId, sessionId) {
+        const startTime = Date.now();
         const { graphService, cacheService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
+        
+        // Extract user context from req if not provided
+        const contextUserId = userId || req?.user?.userId;
+        const contextSessionId = sessionId || req?.session?.id;
         
         // Redact potentially sensitive data for logging
         const redactedCriteria = this.redactSensitiveData(criteria);
         
-        // Log the request attempt
-        monitoringService?.debug('Attempting to find people', { 
-            criteria: redactedCriteria,
-            timestamp: new Date().toISOString()
-        }, 'people');
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Finding people based on criteria', {
+                sessionId: contextSessionId,
+                userAgent: req?.get?.('User-Agent'),
+                criteria: redactedCriteria,
+                timestamp: new Date().toISOString()
+            }, 'people');
+        }
         
         if (!graphService || typeof graphService.searchPeople !== 'function') {
-            const error = errorService?.createError(
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService.createError(
                 'people',
                 'GraphService.searchPeople not implemented',
                 'error',
-                { timestamp: new Date().toISOString() }
-            ) || {
-                category: 'people',
-                message: 'GraphService.searchPeople not implemented',
-                severity: 'error',
-                context: {}
-            };
+                { 
+                    service: 'people-module',
+                    function: 'findPeople',
+                    timestamp: new Date().toISOString()
+                }
+            );
+            MonitoringService.logError(mcpError);
             
-            monitoringService?.logError(error);
-                
-            throw error;
+            // Pattern 4: User Error Tracking
+            if (contextUserId) {
+                MonitoringService.error('Failed to find people - service not available', {
+                    error: 'GraphService.searchPeople not implemented',
+                    timestamp: new Date().toISOString()
+                }, 'people', null, contextUserId);
+            } else if (contextSessionId) {
+                MonitoringService.error('Failed to find people - service not available', {
+                    sessionId: contextSessionId,
+                    error: 'GraphService.searchPeople not implemented',
+                    timestamp: new Date().toISOString()
+                }, 'people');
+            }
+            
+            throw mcpError;
         }
         
         try {
-            // Track performance
-            const startTime = Date.now();
-            
             // Extract search query from criteria
             const query = criteria.query || criteria.name || '';
             if (!query) {
-                monitoringService?.debug('No query provided, returning relevant people', { 
-                    limit: criteria.limit || 10,
-                    timestamp: new Date().toISOString()
-                }, 'people');
+                if (process.env.NODE_ENV === 'development') {
+                    MonitoringService.debug('No query provided, returning relevant people', { 
+                        sessionId: contextSessionId,
+                        limit: criteria.limit || 10,
+                        timestamp: new Date().toISOString()
+                    }, 'people');
+                }
                     
-                return await this.getRelevantPeople({ top: criteria.limit || 10 }, req);
+                return await this.getRelevantPeople({ top: criteria.limit || 10 }, req, contextUserId, contextSessionId);
             }
             
             // Try cache first
@@ -336,44 +436,19 @@ const PeopleModule = {
                     results = await cacheService.get(cacheKey);
                     cacheHit = !!results;
                     
-                    if (cacheHit) {
-                        monitoringService?.debug('Found people in cache', { 
+                    if (cacheHit && process.env.NODE_ENV === 'development') {
+                        MonitoringService.debug('Found people in cache', { 
+                            sessionId: contextSessionId,
                             count: results.length,
-                            query: 'REDACTED_QUERY',
+                            query: query.substring(0, 50) + '...',
                             timestamp: new Date().toISOString()
                         }, 'people');
                     }
                 } catch (cacheError) {
                     // Log cache error but continue with API call
-                    monitoringService?.warn('Cache error when finding people', { 
-                        error: cacheError.message,
-                        timestamp: new Date().toISOString()
-                    }, 'people');
-                }
-            }
-            
-            if (!results) {
-                monitoringService?.debug('Cache miss, calling graph service', { 
-                    query: 'REDACTED_QUERY',
-                    limit: criteria.limit || 10,
-                    timestamp: new Date().toISOString()
-                }, 'people');
-                    
-                results = await graphService.searchPeople(query, { top: criteria.limit || 10 }, req);
-                
-                monitoringService?.debug('Found people from graph service', { 
-                    count: results.length,
-                    query: 'REDACTED_QUERY',
-                    timestamp: new Date().toISOString()
-                }, 'people');
-                    
-                // Cache the results
-                if (cacheService) {
-                    try {
-                        await cacheService.set(cacheKey, results, 60); // Cache for 1 minute
-                    } catch (cacheError) {
-                        // Log cache error but continue
-                        monitoringService?.warn('Failed to cache people search results', { 
+                    if (process.env.NODE_ENV === 'development') {
+                        MonitoringService.debug('Cache error when finding people', { 
+                            sessionId: contextSessionId,
                             error: cacheError.message,
                             timestamp: new Date().toISOString()
                         }, 'people');
@@ -381,55 +456,104 @@ const PeopleModule = {
                 }
             }
             
-            // Calculate elapsed time and track metric
-            const elapsedTime = Date.now() - startTime;
-            monitoringService?.trackMetric('people_find_duration', elapsedTime, {
-                count: results?.length || 0,
-                cacheHit,
-                hasQuery: !!query,
-                timestamp: new Date().toISOString()
-            });
+            if (!results) {
+                if (process.env.NODE_ENV === 'development') {
+                    MonitoringService.debug('Cache miss, calling graph service', { 
+                        sessionId: contextSessionId,
+                        query: query.substring(0, 50) + '...',
+                        limit: criteria.limit || 10,
+                        timestamp: new Date().toISOString()
+                    }, 'people');
+                }
+                    
+                results = await graphService.searchPeople(query, { top: criteria.limit || 10 }, req, contextUserId, contextSessionId);
+                
+                if (process.env.NODE_ENV === 'development') {
+                    MonitoringService.debug('Found people from graph service', { 
+                        sessionId: contextSessionId,
+                        count: results.length,
+                        query: query.substring(0, 50) + '...',
+                        timestamp: new Date().toISOString()
+                    }, 'people');
+                }
+                    
+                // Cache the results
+                if (cacheService) {
+                    try {
+                        await cacheService.set(cacheKey, results, 60); // Cache for 1 minute
+                    } catch (cacheError) {
+                        // Log cache error but continue
+                        if (process.env.NODE_ENV === 'development') {
+                            MonitoringService.debug('Failed to cache people search results', { 
+                                sessionId: contextSessionId,
+                                error: cacheError.message,
+                                timestamp: new Date().toISOString()
+                            }, 'people');
+                        }
+                    }
+                }
+            }
             
-            monitoringService?.info('Successfully found people', {
-                count: results?.length || 0,
-                cacheHit,
-                hasQuery: !!query,
-                elapsedTime,
-                timestamp: new Date().toISOString()
-            }, 'people');
+            // Calculate elapsed time
+            const elapsedTime = Date.now() - startTime;
+            
+            // Pattern 2: User Activity Logs
+            if (contextUserId) {
+                MonitoringService.info('Successfully found people', {
+                    count: results?.length || 0,
+                    cacheHit,
+                    hasQuery: !!query,
+                    elapsedTime,
+                    timestamp: new Date().toISOString()
+                }, 'people', null, contextUserId);
+            } else if (contextSessionId) {
+                MonitoringService.info('Successfully found people with session', {
+                    sessionId: contextSessionId,
+                    count: results?.length || 0,
+                    cacheHit,
+                    hasQuery: !!query,
+                    elapsedTime,
+                    timestamp: new Date().toISOString()
+                }, 'people');
+            }
             
             return results;
         } catch (error) {
-            // Extract Graph API details if available
-            const graphDetails = {
-                statusCode: error.statusCode,
-                code: error.code,
-                graphRequestId: error.requestId,
-                originalMessage: error.message
-            };
+            const elapsedTime = Date.now() - startTime;
             
-            // Create a standardized error object
-            const mcpError = errorService?.createError(
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService.createError(
                 'people',
                 `Failed to find people: ${error.code || error.message}`,
                 error.statusCode && error.statusCode >= 500 ? 'error' : 'warn',
                 { 
-                    graphDetails, 
+                    statusCode: error.statusCode,
+                    code: error.code,
+                    graphRequestId: error.requestId,
                     originalError: error.stack,
                     requestParams: { criteria: redactedCriteria },
+                    elapsedTime,
                     timestamp: new Date().toISOString()
                 }
-            ) || {
-                category: 'people',
-                message: `Failed to find people: ${error.message}`,
-                severity: 'error',
-                context: { graphDetails }
-            };
+            );
+            MonitoringService.logError(mcpError);
             
-            // Log the error
-            monitoringService?.logError(mcpError);
-                
-            // Throw the structured error
+            // Pattern 4: User Error Tracking
+            if (contextUserId) {
+                MonitoringService.error('Failed to find people', {
+                    error: error.message,
+                    elapsedTime,
+                    timestamp: new Date().toISOString()
+                }, 'people', null, contextUserId);
+            } else if (contextSessionId) {
+                MonitoringService.error('Failed to find people', {
+                    sessionId: contextSessionId,
+                    error: error.message,
+                    elapsedTime,
+                    timestamp: new Date().toISOString()
+                }, 'people');
+            }
+            
             throw mcpError;
         }
     },
@@ -437,29 +561,78 @@ const PeopleModule = {
     /**
      * Initializes the people module with dependencies.
      * @param {object} services - { graphService, cacheService, errorService, monitoringService }
+     * @param {string} userId - User ID for context
+     * @param {string} sessionId - Session ID for context
      * @returns {object} Initialized module
      */
-    init(services = {}) {
+    init(services = {}, userId, sessionId) {
+        const startTime = Date.now();
+        
         // Destructure provided services and apply defaults
         const { graphService, cacheService, errorService = ErrorService, monitoringService = MonitoringService } = services;
 
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Initializing People Module', {
+                sessionId: sessionId,
+                hasGraphService: !!graphService,
+                hasCacheService: !!cacheService,
+                timestamp: new Date().toISOString()
+            }, 'people');
+        }
+
         // Require graphService
         if (!graphService) {
-            const err = errorService.createError(
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService.createError(
                 'people',
                 "PeopleModule init failed: Required service 'graphService' is missing",
                 'error',
-                { missingService: 'graphService', timestamp: new Date().toISOString() }
+                { 
+                    missingService: 'graphService',
+                    service: 'people-module',
+                    function: 'init',
+                    timestamp: new Date().toISOString()
+                }
             );
-            monitoringService?.logError(err);
-            throw err;
+            MonitoringService.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                MonitoringService.error('Failed to initialize People Module - missing service', {
+                    error: 'GraphService is required',
+                    timestamp: new Date().toISOString()
+                }, 'people', null, userId);
+            } else if (sessionId) {
+                MonitoringService.error('Failed to initialize People Module - missing service', {
+                    sessionId: sessionId,
+                    error: 'GraphService is required',
+                    timestamp: new Date().toISOString()
+                }, 'people');
+            }
+            
+            throw mcpError;
         }
 
         // Store services for later use
         this.services = { graphService, cacheService, errorService, monitoringService };
 
-        // Log successful init
-        monitoringService?.info('PeopleModule initialized successfully', { timestamp: new Date().toISOString() }, 'people');
+        const elapsedTime = Date.now() - startTime;
+        
+        // Pattern 2: User Activity Logs
+        if (userId) {
+            MonitoringService.info('PeopleModule initialized successfully', {
+                elapsedTime,
+                timestamp: new Date().toISOString()
+            }, 'people', null, userId);
+        } else if (sessionId) {
+            MonitoringService.info('PeopleModule initialized successfully with session', {
+                sessionId: sessionId,
+                elapsedTime,
+                timestamp: new Date().toISOString()
+            }, 'people');
+        }
+        
         return this;
     },
     
@@ -468,24 +641,31 @@ const PeopleModule = {
      * @param {string} intent
      * @param {object} entities
      * @param {object} context
+     * @param {string} userId - User ID for context
+     * @param {string} sessionId - Session ID for context
      * @returns {Promise<object>>} Normalized response
      */
-    async handleIntent(intent, entities = {}, context = {}) {
+    async handleIntent(intent, entities = {}, context = {}, userId, sessionId) {
+        const startTime = Date.now();
         const { graphService, cacheService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
+        
+        // Extract user context from context if not provided
+        const contextUserId = userId || context?.req?.user?.userId;
+        const contextSessionId = sessionId || context?.req?.session?.id;
         
         // Redact potentially sensitive data for logging
         const redactedEntities = this.redactSensitiveData(entities);
         const redactedContext = this.redactSensitiveData(context);
         
-        // Log the intent handling attempt
-        monitoringService?.debug('Handling people intent', { 
-            intent,
-            entities: redactedEntities,
-            timestamp: new Date().toISOString()
-        }, 'people');
-        
-        // Track performance
-        const startTime = Date.now();
+        // Pattern 1: Development Debug Logs
+        if (process.env.NODE_ENV === 'development') {
+            MonitoringService.debug('Handling people intent', {
+                sessionId: contextSessionId,
+                intent,
+                entities: redactedEntities,
+                timestamp: new Date().toISOString()
+            }, 'people');
+        }
         
         try {
             let result;
@@ -493,7 +673,7 @@ const PeopleModule = {
             switch (intent) {
                 case 'findPeople': {
                     const criteria = entities.criteria || {};
-                    const results = await this.findPeople(criteria, context.req);
+                    const results = await this.findPeople(criteria, context.req, contextUserId, contextSessionId);
                     result = { type: 'peopleList', items: results };
                     break;
                 }
@@ -503,24 +683,37 @@ const PeopleModule = {
                     const personId = entities.personId;
                     
                     if (!personId) {
-                        const error = errorService?.createError(
+                        // Pattern 3: Infrastructure Error Logging
+                        const mcpError = ErrorService.createError(
                             'people',
                             'Person ID is required for getPersonById intent',
                             'warn',
                             { 
                                 intent,
+                                service: 'people-module',
+                                function: 'handleIntent',
                                 timestamp: new Date().toISOString() 
                             }
-                        ) || {
-                            category: 'people',
-                            message: 'Person ID is required for getPersonById intent',
-                            severity: 'warn',
-                            context: { intent }
-                        };
+                        );
+                        MonitoringService.logError(mcpError);
                         
-                        monitoringService?.logError(error);
+                        // Pattern 4: User Error Tracking
+                        if (contextUserId) {
+                            MonitoringService.error('Failed to get person - missing person ID', {
+                                intent,
+                                error: 'Person ID is required',
+                                timestamp: new Date().toISOString()
+                            }, 'people', null, contextUserId);
+                        } else if (contextSessionId) {
+                            MonitoringService.error('Failed to get person - missing person ID', {
+                                sessionId: contextSessionId,
+                                intent,
+                                error: 'Person ID is required',
+                                timestamp: new Date().toISOString()
+                            }, 'people');
+                        }
                             
-                        throw error;
+                        throw mcpError;
                     }
                     
                     // Try cache first if available
@@ -533,22 +726,27 @@ const PeopleModule = {
                             person = await cacheService.get(cacheKey);
                             cacheHit = !!person;
                             
-                            if (cacheHit) {
-                                monitoringService?.debug('Found person in cache', { 
+                            if (cacheHit && process.env.NODE_ENV === 'development') {
+                                MonitoringService.debug('Found person in cache', { 
+                                    sessionId: contextSessionId,
+                                    personId: personId.substring(0, 20) + '...',
                                     timestamp: new Date().toISOString()
                                 }, 'people');
                             }
                         } catch (cacheError) {
                             // Log cache error but continue with API call
-                            monitoringService?.warn('Cache error in getPersonById intent', { 
-                                error: cacheError.message,
-                                timestamp: new Date().toISOString()
-                            }, 'people');
+                            if (process.env.NODE_ENV === 'development') {
+                                MonitoringService.debug('Cache error in getPersonById intent', { 
+                                    sessionId: contextSessionId,
+                                    error: cacheError.message,
+                                    timestamp: new Date().toISOString()
+                                }, 'people');
+                            }
                         }
                     }
                     
                     if (!person) {
-                        person = await graphService.getPersonById(personId, context.req);
+                        person = await graphService.getPersonById(personId, context.req, contextUserId, contextSessionId);
                         
                         // Cache the person if possible
                         if (cacheService) {
@@ -557,10 +755,13 @@ const PeopleModule = {
                                 await cacheService.set(cacheKey, person, 300); // Cache for 5 minutes
                             } catch (cacheError) {
                                 // Log cache error but continue
-                                monitoringService?.warn('Failed to cache person', { 
-                                    error: cacheError.message,
-                                    timestamp: new Date().toISOString()
-                                }, 'people');
+                                if (process.env.NODE_ENV === 'development') {
+                                    MonitoringService.debug('Failed to cache person', { 
+                                        sessionId: contextSessionId,
+                                        error: cacheError.message,
+                                        timestamp: new Date().toISOString()
+                                    }, 'people');
+                                }
                             }
                         }
                     }
@@ -582,23 +783,27 @@ const PeopleModule = {
                             people = await cacheService.get(cacheKey);
                             cacheHit = !!people;
                             
-                            if (cacheHit) {
-                                monitoringService?.debug('Found relevant people in cache', { 
+                            if (cacheHit && process.env.NODE_ENV === 'development') {
+                                MonitoringService.debug('Found relevant people in cache', { 
+                                    sessionId: contextSessionId,
                                     count: people.length,
                                     timestamp: new Date().toISOString()
                                 }, 'people');
                             }
                         } catch (cacheError) {
                             // Log cache error but continue with API call
-                            monitoringService?.warn('Cache error in getRelevantPeople intent', { 
-                                error: cacheError.message,
-                                timestamp: new Date().toISOString()
-                            }, 'people');
+                            if (process.env.NODE_ENV === 'development') {
+                                MonitoringService.debug('Cache error in getRelevantPeople intent', { 
+                                    sessionId: contextSessionId,
+                                    error: cacheError.message,
+                                    timestamp: new Date().toISOString()
+                                }, 'people');
+                            }
                         }
                     }
                     
                     if (!people) {
-                        people = await graphService.getRelevantPeople(options, context.req);
+                        people = await graphService.getRelevantPeople(options, context.req, contextUserId, contextSessionId);
                         
                         // Cache the results if possible
                         if (cacheService) {
@@ -607,10 +812,13 @@ const PeopleModule = {
                                 await cacheService.set(cacheKey, people, 300); // Cache for 5 minutes
                             } catch (cacheError) {
                                 // Log cache error but continue
-                                monitoringService?.warn('Failed to cache relevant people', { 
-                                    error: cacheError.message,
-                                    timestamp: new Date().toISOString()
-                                }, 'people');
+                                if (process.env.NODE_ENV === 'development') {
+                                    MonitoringService.debug('Failed to cache relevant people', { 
+                                        sessionId: contextSessionId,
+                                        error: cacheError.message,
+                                        timestamp: new Date().toISOString()
+                                    }, 'people');
+                                }
                             }
                         }
                     }
@@ -620,46 +828,59 @@ const PeopleModule = {
                 }
                 
                 default: {
-                    const unsupportedError = errorService?.createError(
+                    // Pattern 3: Infrastructure Error Logging
+                    const mcpError = ErrorService.createError(
                         'people',
                         `PeopleModule cannot handle intent: ${intent}`,
                         'warn',
                         { 
                             intent, 
                             moduleId: this.id,
+                            service: 'people-module',
+                            function: 'handleIntent',
                             timestamp: new Date().toISOString()
                         }
-                    ) || {
-                        category: 'people',
-                        message: `The people module does not support the intent: ${intent}`,
-                        severity: 'warn',
-                        context: { intent, moduleId: this.id }
-                    };
+                    );
+                    MonitoringService.logError(mcpError);
                     
-                    monitoringService?.logError(unsupportedError);
-                        
-                    // Track metric for unsupported intent
-                    monitoringService?.trackMetric('people_unsupported_intent', 1, {
-                        intent,
-                        timestamp: new Date().toISOString()
-                    });
+                    // Pattern 4: User Error Tracking
+                    if (contextUserId) {
+                        MonitoringService.error('Unsupported intent in People Module', {
+                            intent,
+                            error: `Intent '${intent}' not supported`,
+                            timestamp: new Date().toISOString()
+                        }, 'people', null, contextUserId);
+                    } else if (contextSessionId) {
+                        MonitoringService.error('Unsupported intent in People Module', {
+                            sessionId: contextSessionId,
+                            intent,
+                            error: `Intent '${intent}' not supported`,
+                            timestamp: new Date().toISOString()
+                        }, 'people');
+                    }
                     
-                    throw unsupportedError; // Throw error to signal unsupported operation
+                    throw mcpError;
                 }
             }
             
-            // Calculate elapsed time and track metric
+            // Calculate elapsed time
             const elapsedTime = Date.now() - startTime;
-            monitoringService?.trackMetric('people_intent_handling_duration', elapsedTime, {
-                intent,
-                timestamp: new Date().toISOString()
-            });
             
-            monitoringService?.info('Successfully handled people intent', {
-                intent,
-                elapsedTime,
-                timestamp: new Date().toISOString()
-            }, 'people');
+            // Pattern 2: User Activity Logs
+            if (contextUserId) {
+                MonitoringService.info('Successfully handled people intent', {
+                    intent,
+                    elapsedTime,
+                    timestamp: new Date().toISOString()
+                }, 'people', null, contextUserId);
+            } else if (contextSessionId) {
+                MonitoringService.info('Successfully handled people intent with session', {
+                    sessionId: contextSessionId,
+                    intent,
+                    elapsedTime,
+                    timestamp: new Date().toISOString()
+                }, 'people');
+            }
                 
             return result;
         } catch (error) {
@@ -668,18 +889,11 @@ const PeopleModule = {
             
             // If this is already a structured MCP error, just re-throw it
             if (error.category && error.severity && error.context) {
-                // Log additional timing information
-                monitoringService?.trackMetric('people_intent_handling_error', elapsedTime, {
-                    intent,
-                    errorCategory: error.category,
-                    timestamp: new Date().toISOString()
-                });
-                
                 throw error;
             }
             
-            // Otherwise, create a standardized error object
-            const mcpError = errorService?.createError(
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = ErrorService.createError(
                 'people',
                 `Error handling people intent '${intent}': ${error.message}`,
                 'error',
@@ -690,23 +904,27 @@ const PeopleModule = {
                     elapsedTime,
                     timestamp: new Date().toISOString()
                 }
-            ) || {
-                category: 'people',
-                message: `Error handling people intent '${intent}': ${error.message}`,
-                severity: 'error',
-                context: { intent, entities: redactedEntities }
-            };
+            );
+            MonitoringService.logError(mcpError);
             
-            // Log the error
-            monitoringService?.logError(mcpError);
-                
-            // Track metric for error
-            monitoringService?.trackMetric('people_intent_handling_error', elapsedTime, {
-                intent,
-                timestamp: new Date().toISOString()
-            });
+            // Pattern 4: User Error Tracking
+            if (contextUserId) {
+                MonitoringService.error('Failed to handle people intent', {
+                    intent,
+                    error: error.message,
+                    elapsedTime,
+                    timestamp: new Date().toISOString()
+                }, 'people', null, contextUserId);
+            } else if (contextSessionId) {
+                MonitoringService.error('Failed to handle people intent', {
+                    sessionId: contextSessionId,
+                    intent,
+                    error: error.message,
+                    elapsedTime,
+                    timestamp: new Date().toISOString()
+                }, 'people');
+            }
             
-            // Throw the structured error
             throw mcpError;
         }
     },

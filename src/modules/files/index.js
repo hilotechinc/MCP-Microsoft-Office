@@ -90,9 +90,13 @@ const FilesModule = {
     /**
      * Initializes the files module with dependencies.
      * @param {object} services - { graphService, errorService, monitoringService }
+     * @param {string} userId - User ID for context
+     * @param {string} sessionId - Session ID for context
      * @returns {object} Initialized module
      */
-    init(services) {
+    init(services, userId, sessionId) {
+        const startTime = Date.now();
+        
         // Validate that required services are provided
         const requiredServices = ['graphService', 'errorService', 'monitoringService']; 
         
@@ -100,86 +104,174 @@ const FilesModule = {
         const errorService = services?.errorService || ErrorService;
         const monitoringService = services?.monitoringService || MonitoringService;
 
-        // Log initialization attempt
-        monitoringService?.debug('Initializing Files Module', { 
-            timestamp: new Date().toISOString() 
-        }, 'files');
+        try {
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                monitoringService?.debug('Initializing Files Module', {
+                    userId: userId ? userId.substring(0, 20) + '...' : 'system',
+                    sessionId: sessionId ? sessionId.substring(0, 8) + '...' : 'none',
+                    requiredServices: requiredServices.length,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
 
-        if (!services) {
-            const error = errorService?.createError(
-                'files',
-                'FilesModule init requires a services object',
-                'error',
-                { timestamp: new Date().toISOString() }
-            ) || {
-                category: 'files',
-                message: 'FilesModule init requires a services object',
-                severity: 'error',
-                context: {}
-            };
-            
-            monitoringService?.logError(error) || 
-                console.error('[MCP FILES] FilesModule init requires a services object');
-                
-            throw error;
-        }
-
-        // Validate required services
-        for (const serviceName of requiredServices) {
-            if (!services[serviceName]) {
+            if (!services) {
                 const error = errorService?.createError(
                     'files',
-                    `FilesModule init failed: Required service '${serviceName}' is missing`,
+                    'FilesModule init requires a services object',
                     'error',
                     { 
-                        missingService: serviceName,
+                        userId: userId ? userId.substring(0, 20) + '...' : 'system',
+                        sessionId: sessionId ? sessionId.substring(0, 8) + '...' : 'none',
                         timestamp: new Date().toISOString() 
                     }
-                ) || {
-                    category: 'files',
-                    message: `FilesModule init failed: Required service '${serviceName}' is missing`,
-                    severity: 'error',
-                    context: { missingService: serviceName }
-                };
+                );
                 
-                monitoringService?.logError(error) || 
-                    console.error(`[MCP FILES] FilesModule init failed: Required service '${serviceName}' is missing`);
+                // Pattern 3: Infrastructure Error Logging
+                monitoringService?.logError(error);
+                
+                // Pattern 4: User Error Tracking
+                if (userId) {
+                    monitoringService?.error('Files module initialization failed', {
+                        error: 'Missing services object',
+                        timestamp: new Date().toISOString()
+                    }, 'files', null, userId);
+                } else if (sessionId) {
+                    monitoringService?.error('Files module initialization failed', {
+                        sessionId: sessionId.substring(0, 8) + '...',
+                        error: 'Missing services object',
+                        timestamp: new Date().toISOString()
+                    }, 'files');
+                }
                     
                 throw error;
             }
-        }
 
-        this.services = services;
-        
-        // Log successful initialization
-        monitoringService?.info('FilesModule initialized successfully', { 
-            timestamp: new Date().toISOString() 
-        }, 'files') || 
-            console.info('[MCP FILES] FilesModule initialized successfully with required services');
+            // Validate required services
+            for (const serviceName of requiredServices) {
+                if (!services[serviceName]) {
+                    const error = errorService?.createError(
+                        'files',
+                        `FilesModule init failed: Required service '${serviceName}' is missing`,
+                        'error',
+                        { 
+                            missingService: serviceName,
+                            userId: userId ? userId.substring(0, 20) + '...' : 'system',
+                            sessionId: sessionId ? sessionId.substring(0, 8) + '...' : 'none',
+                            timestamp: new Date().toISOString() 
+                        }
+                    );
+                    
+                    // Pattern 3: Infrastructure Error Logging
+                    monitoringService?.logError(error);
+                    
+                    // Pattern 4: User Error Tracking
+                    if (userId) {
+                        monitoringService?.error('Files module initialization failed', {
+                            error: `Missing required service: ${serviceName}`,
+                            timestamp: new Date().toISOString()
+                        }, 'files', null, userId);
+                    } else if (sessionId) {
+                        monitoringService?.error('Files module initialization failed', {
+                            sessionId: sessionId.substring(0, 8) + '...',
+                            error: `Missing required service: ${serviceName}`,
+                            timestamp: new Date().toISOString()
+                        }, 'files');
+                    }
+                        
+                    throw error;
+                }
+            }
+
+            this.services = services;
             
-        return this; // Return the module instance, now containing validated services
+            const executionTime = Date.now() - startTime;
+            
+            // Pattern 2: User Activity Logs
+            if (userId) {
+                monitoringService?.info('Files module initialized successfully', {
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files', null, userId);
+            } else if (sessionId) {
+                monitoringService?.info('Files module initialized successfully', {
+                    sessionId: sessionId.substring(0, 8) + '...',
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
+                
+            return this; // Return the module instance, now containing validated services
+        } catch (error) {
+            const executionTime = Date.now() - startTime;
+            
+            // Pattern 3: Infrastructure Error Logging
+            const mcpError = error.id ? error : errorService.createError(
+                'files',
+                `Files module initialization failed: ${error.message}`,
+                'error',
+                {
+                    userId: userId ? userId.substring(0, 20) + '...' : 'system',
+                    sessionId: sessionId ? sessionId.substring(0, 8) + '...' : 'none',
+                    executionTimeMs: executionTime,
+                    error: error.toString(),
+                    stack: error.stack,
+                    timestamp: new Date().toISOString()
+                }
+            );
+            
+            monitoringService?.logError(mcpError);
+            
+            // Pattern 4: User Error Tracking
+            if (userId) {
+                monitoringService?.error('Files module initialization failed', {
+                    error: error.message,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files', null, userId);
+            } else if (sessionId) {
+                monitoringService?.error('Files module initialization failed', {
+                    sessionId: sessionId.substring(0, 8) + '...',
+                    error: error.message,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
+            
+            throw mcpError;
+        }
     },
     /**
      * Lists files and folders in a directory (defaults to root)
      * @param {string} [parentId] - Parent folder ID (null for root)
      * @param {object} req - Express request object (optional)
+     * @param {string} userId - User ID for context
+     * @param {string} sessionId - Session ID for context
      * @returns {Promise<Array<object>>} List of files and folders
      */
-    async listFiles(parentId, req) {
+    async listFiles(parentId, req, userId, sessionId) {
         // Get services with fallbacks
         const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
+        
+        // Extract user context from req if not provided
+        const contextUserId = userId || req?.user?.userId;
+        const contextSessionId = sessionId || req?.session?.id;
         
         // Start tracking execution time
         const startTime = Date.now();
         
-        // Log the request with detailed parameters
-        monitoringService?.debug('Files listing requested', { 
-            parentId: parentId || 'root',
-            timestamp: new Date().toISOString(),
-            source: 'files.listFiles'
-        }, 'files');
-        
         try {
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                monitoringService?.debug('Files listing requested', {
+                    parentId: parentId || 'root',
+                    userId: contextUserId ? contextUserId.substring(0, 20) + '...' : 'anonymous',
+                    sessionId: contextSessionId ? contextSessionId.substring(0, 8) + '...' : 'none',
+                    userAgent: req?.get('User-Agent'),
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
+            
             // Validate that GraphService is available
             if (!graphService || typeof graphService.listFiles !== 'function') {
                 const err = errorService.createError(
@@ -188,64 +280,100 @@ const FilesModule = {
                     'error',
                     { 
                         parentId: parentId || 'root',
+                        userId: contextUserId ? contextUserId.substring(0, 20) + '...' : 'anonymous',
+                        sessionId: contextSessionId ? contextSessionId.substring(0, 8) + '...' : 'none',
                         timestamp: new Date().toISOString(),
                         serviceError: 'missing_graph_service'
                     }
                 );
+                
+                // Pattern 3: Infrastructure Error Logging
                 monitoringService?.logError(err);
+                
+                // Pattern 4: User Error Tracking
+                if (contextUserId) {
+                    monitoringService?.error('Files listing failed', {
+                        error: 'GraphService.listFiles not implemented',
+                        parentId: parentId || 'root',
+                        timestamp: new Date().toISOString()
+                    }, 'files', null, contextUserId);
+                } else if (contextSessionId) {
+                    monitoringService?.error('Files listing failed', {
+                        sessionId: contextSessionId.substring(0, 8) + '...',
+                        error: 'GraphService.listFiles not implemented',
+                        parentId: parentId || 'root',
+                        timestamp: new Date().toISOString()
+                    }, 'files');
+                }
+                
                 throw err;
             }
             
-            // Call the Graph service
-            const result = await graphService.listFiles(parentId, req);
+            // Call the Graph service with user context
+            const result = await graphService.listFiles(parentId, req, contextUserId, contextSessionId);
             
             // Calculate execution time
             const executionTime = Date.now() - startTime;
             
-            // Log success metrics
-            monitoringService?.trackMetric('files_list_success', executionTime, {
-                fileCount: Array.isArray(result) ? result.length : 0,
-                parentId: parentId || 'root',
-                timestamp: new Date().toISOString()
-            });
-            
-            // Log success with result summary
-            monitoringService?.info('Files listing completed successfully', {
-                fileCount: Array.isArray(result) ? result.length : 0,
-                parentId: parentId || 'root',
-                executionTimeMs: executionTime,
-                timestamp: new Date().toISOString()
-            }, 'files');
+            // Pattern 2: User Activity Logs
+            if (contextUserId) {
+                monitoringService?.info('Files listing completed successfully', {
+                    fileCount: Array.isArray(result) ? result.length : 0,
+                    parentId: parentId || 'root',
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files', null, contextUserId);
+            } else if (contextSessionId) {
+                monitoringService?.info('Files listing completed successfully', {
+                    sessionId: contextSessionId.substring(0, 8) + '...',
+                    fileCount: Array.isArray(result) ? result.length : 0,
+                    parentId: parentId || 'root',
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
             
             return result;
         } catch (error) {
             // Calculate execution time even for failures
             const executionTime = Date.now() - startTime;
             
-            // Track failure metrics
-            monitoringService?.trackMetric('files_list_failure', executionTime, {
-                errorType: error.code || 'unknown',
-                parentId: parentId || 'root',
-                timestamp: new Date().toISOString()
-            });
-            
-            // Create standardized error if not already one
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = error.id ? error : errorService.createError(
                 'files',
                 `Failed to list files: ${error.message}`,
                 'error',
                 { 
                     parentId: parentId || 'root',
+                    userId: contextUserId ? contextUserId.substring(0, 20) + '...' : 'anonymous',
+                    sessionId: contextSessionId ? contextSessionId.substring(0, 8) + '...' : 'none',
+                    executionTimeMs: executionTime,
                     error: error.toString(),
                     stack: error.stack,
                     timestamp: new Date().toISOString()
                 }
             );
             
-            // Log the error
             monitoringService?.logError(mcpError);
             
-            // Rethrow the error for the caller to handle
+            // Pattern 4: User Error Tracking
+            if (contextUserId) {
+                monitoringService?.error('Files listing failed', {
+                    error: error.message,
+                    parentId: parentId || 'root',
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files', null, contextUserId);
+            } else if (contextSessionId) {
+                monitoringService?.error('Files listing failed', {
+                    sessionId: contextSessionId.substring(0, 8) + '...',
+                    error: error.message,
+                    parentId: parentId || 'root',
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
+            
             throw mcpError;
         }
     },
@@ -254,42 +382,67 @@ const FilesModule = {
      * Searches files by name
      * @param {string} query - Search query
      * @param {object} req - Express request object (optional)
+     * @param {string} userId - User ID for context
+     * @param {string} sessionId - Session ID for context
      * @returns {Promise<Array<object>>} List of matching files
      */
-    async searchFiles(query, req) {
+    async searchFiles(query, req, userId, sessionId) {
         // Get services with fallbacks
         const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
+        
+        // Extract user context from req if not provided
+        const contextUserId = userId || req?.user?.userId;
+        const contextSessionId = sessionId || req?.session?.id;
         
         // Start tracking execution time
         const startTime = Date.now();
         
-        // Validate input
-        if (!query) {
-            const err = errorService.createError(
-                'files',
-                'Search query is required for searchFiles',
-                'error',
-                { 
-                    timestamp: new Date().toISOString(),
-                    validationError: 'missing_query'
-                }
-            );
-            monitoringService?.logError(err);
-            monitoringService?.error('Files search validation failed: missing query', {
-                validationError: 'missing_query',
-                timestamp: new Date().toISOString()
-            }, 'files');
-            throw err;
-        }
-        
-        // Log the request with detailed parameters
-        monitoringService?.debug('Files search requested', { 
-            query: this.redactSensitiveData(query),
-            timestamp: new Date().toISOString(),
-            source: 'files.searchFiles'
-        }, 'files');
-        
         try {
+            // Validate input
+            if (!query) {
+                const err = errorService.createError(
+                    'files',
+                    'Search query is required for searchFiles',
+                    'error',
+                    { 
+                        userId: contextUserId ? contextUserId.substring(0, 20) + '...' : 'anonymous',
+                        sessionId: contextSessionId ? contextSessionId.substring(0, 8) + '...' : 'none',
+                        timestamp: new Date().toISOString(),
+                        validationError: 'missing_query'
+                    }
+                );
+                
+                // Pattern 3: Infrastructure Error Logging
+                monitoringService?.logError(err);
+                
+                // Pattern 4: User Error Tracking
+                if (contextUserId) {
+                    monitoringService?.error('Files search validation failed', {
+                        error: 'Search query is required',
+                        timestamp: new Date().toISOString()
+                    }, 'files', null, contextUserId);
+                } else if (contextSessionId) {
+                    monitoringService?.error('Files search validation failed', {
+                        sessionId: contextSessionId.substring(0, 8) + '...',
+                        error: 'Search query is required',
+                        timestamp: new Date().toISOString()
+                    }, 'files');
+                }
+                
+                throw err;
+            }
+            
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                monitoringService?.debug('Files search requested', {
+                    query: query.substring(0, 50) + '...',
+                    userId: contextUserId ? contextUserId.substring(0, 20) + '...' : 'anonymous',
+                    sessionId: contextSessionId ? contextSessionId.substring(0, 8) + '...' : 'none',
+                    userAgent: req?.get('User-Agent'),
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
+            
             // Validate that GraphService is available
             if (!graphService) {
                 const err = errorService.createError(
@@ -297,11 +450,30 @@ const FilesModule = {
                     'GraphService not available',
                     'error',
                     { 
+                        userId: contextUserId ? contextUserId.substring(0, 20) + '...' : 'anonymous',
+                        sessionId: contextSessionId ? contextSessionId.substring(0, 8) + '...' : 'none',
                         timestamp: new Date().toISOString(),
                         serviceError: 'missing_graph_service'
                     }
                 );
+                
+                // Pattern 3: Infrastructure Error Logging
                 monitoringService?.logError(err);
+                
+                // Pattern 4: User Error Tracking
+                if (contextUserId) {
+                    monitoringService?.error('Files search failed', {
+                        error: 'GraphService not available',
+                        timestamp: new Date().toISOString()
+                    }, 'files', null, contextUserId);
+                } else if (contextSessionId) {
+                    monitoringService?.error('Files search failed', {
+                        sessionId: contextSessionId.substring(0, 8) + '...',
+                        error: 'GraphService not available',
+                        timestamp: new Date().toISOString()
+                    }, 'files');
+                }
+                
                 throw err;
             }
             
@@ -311,64 +483,98 @@ const FilesModule = {
                     'GraphService.searchFiles not implemented',
                     'error',
                     { 
+                        userId: contextUserId ? contextUserId.substring(0, 20) + '...' : 'anonymous',
+                        sessionId: contextSessionId ? contextSessionId.substring(0, 8) + '...' : 'none',
                         timestamp: new Date().toISOString(),
                         serviceError: 'missing_method'
                     }
                 );
+                
+                // Pattern 3: Infrastructure Error Logging
                 monitoringService?.logError(err);
+                
+                // Pattern 4: User Error Tracking
+                if (contextUserId) {
+                    monitoringService?.error('Files search failed', {
+                        error: 'GraphService.searchFiles not implemented',
+                        timestamp: new Date().toISOString()
+                    }, 'files', null, contextUserId);
+                } else if (contextSessionId) {
+                    monitoringService?.error('Files search failed', {
+                        sessionId: contextSessionId.substring(0, 8) + '...',
+                        error: 'GraphService.searchFiles not implemented',
+                        timestamp: new Date().toISOString()
+                    }, 'files');
+                }
+                
                 throw err;
             }
             
-            // Call the Graph service
-            const results = await graphService.searchFiles(query, req);
+            // Call the Graph service with user context
+            const results = await graphService.searchFiles(query, req, contextUserId, contextSessionId);
             
             // Calculate execution time
             const executionTime = Date.now() - startTime;
             
-            // Log success metrics
-            monitoringService?.trackMetric('files_search_success', executionTime, {
-                resultCount: Array.isArray(results) ? results.length : 0,
-                queryLength: query.length,
-                timestamp: new Date().toISOString()
-            });
-            
-            // Log success with result summary
-            monitoringService?.info('Files search completed successfully', {
-                resultCount: Array.isArray(results) ? results.length : 0,
-                queryLength: query.length,
-                executionTimeMs: executionTime,
-                timestamp: new Date().toISOString()
-            }, 'files');
+            // Pattern 2: User Activity Logs
+            if (contextUserId) {
+                monitoringService?.info('Files search completed successfully', {
+                    resultCount: Array.isArray(results) ? results.length : 0,
+                    queryLength: query.length,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files', null, contextUserId);
+            } else if (contextSessionId) {
+                monitoringService?.info('Files search completed successfully', {
+                    sessionId: contextSessionId.substring(0, 8) + '...',
+                    resultCount: Array.isArray(results) ? results.length : 0,
+                    queryLength: query.length,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
             
             return results;
         } catch (error) {
             // Calculate execution time even for failures
             const executionTime = Date.now() - startTime;
             
-            // Track failure metrics
-            monitoringService?.trackMetric('files_search_failure', executionTime, {
-                errorType: error.code || 'unknown',
-                queryLength: query ? query.length : 0,
-                timestamp: new Date().toISOString()
-            });
-            
-            // Create standardized error if not already one
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = error.id ? error : errorService.createError(
                 'files',
                 `Failed to search files: ${error.message}`,
                 'error',
                 { 
-                    query: this.redactSensitiveData(query),
+                    query: query ? query.substring(0, 50) + '...' : 'none',
+                    userId: contextUserId ? contextUserId.substring(0, 20) + '...' : 'anonymous',
+                    sessionId: contextSessionId ? contextSessionId.substring(0, 8) + '...' : 'none',
+                    executionTimeMs: executionTime,
                     error: error.toString(),
                     stack: error.stack,
                     timestamp: new Date().toISOString()
                 }
             );
             
-            // Log the error
             monitoringService?.logError(mcpError);
             
-            // Rethrow the error for the caller to handle
+            // Pattern 4: User Error Tracking
+            if (contextUserId) {
+                monitoringService?.error('Files search failed', {
+                    error: error.message,
+                    queryLength: query ? query.length : 0,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files', null, contextUserId);
+            } else if (contextSessionId) {
+                monitoringService?.error('Files search failed', {
+                    sessionId: contextSessionId.substring(0, 8) + '...',
+                    error: error.message,
+                    queryLength: query ? query.length : 0,
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
+            
             throw mcpError;
         }
     },
@@ -379,42 +585,72 @@ const FilesModule = {
      * @param {object} [options={}] - Options for the download
      * @param {boolean} [options.metadataOnly=false] - If true, returns only file metadata without content
      * @param {object} req - Express request object (optional)
+     * @param {string} userId - User ID for context
+     * @param {string} sessionId - Session ID for context
      * @returns {Promise<Buffer|object>} File content as Buffer or file metadata object if metadataOnly is true
      */
-    async downloadFile(id, options = {}, req) {
+    async downloadFile(id, options = {}, req, userId, sessionId) {
         // Handle case where req is passed as second parameter (backward compatibility)
         if (req === undefined && options && !options.metadataOnly && typeof options === 'object') {
             req = options;
             options = {};
         }
+        
         // Get services with fallbacks
         const { graphService, errorService = ErrorService, monitoringService = MonitoringService } = this.services || {};
         
+        // Extract user context from req if not provided
+        const contextUserId = userId || req?.user?.userId;
+        const contextSessionId = sessionId || req?.session?.id;
+        
         // Start tracking execution time
         const startTime = Date.now();
-        
-        // Log the request with detailed parameters
-        monitoringService?.debug('File download requested', { 
-            fileId: id,
-            metadataOnly: options.metadataOnly || false,
-            timestamp: new Date().toISOString(),
-            source: 'files.downloadFile'
-        }, 'files');
         
         try {
             // Validate input
             if (!id) {
                 const err = errorService.createError(
-                    ErrorService.CATEGORIES.VALIDATION,
+                    'files',
                     'File ID is required for downloadFile',
-                    ErrorService.SEVERITIES.ERROR,
+                    'error',
                     { 
+                        userId: contextUserId ? contextUserId.substring(0, 20) + '...' : 'anonymous',
+                        sessionId: contextSessionId ? contextSessionId.substring(0, 8) + '...' : 'none',
                         timestamp: new Date().toISOString(),
                         validationError: 'missing_file_id'
                     }
                 );
+                
+                // Pattern 3: Infrastructure Error Logging
                 monitoringService?.logError(err);
+                
+                // Pattern 4: User Error Tracking
+                if (contextUserId) {
+                    monitoringService?.error('File download validation failed', {
+                        error: 'File ID is required',
+                        timestamp: new Date().toISOString()
+                    }, 'files', null, contextUserId);
+                } else if (contextSessionId) {
+                    monitoringService?.error('File download validation failed', {
+                        sessionId: contextSessionId.substring(0, 8) + '...',
+                        error: 'File ID is required',
+                        timestamp: new Date().toISOString()
+                    }, 'files');
+                }
+                
                 throw err;
+            }
+            
+            // Pattern 1: Development Debug Logs
+            if (process.env.NODE_ENV === 'development') {
+                monitoringService?.debug('File download requested', {
+                    fileId: id.substring(0, 20) + '...',
+                    metadataOnly: options.metadataOnly || false,
+                    userId: contextUserId ? contextUserId.substring(0, 20) + '...' : 'anonymous',
+                    sessionId: contextSessionId ? contextSessionId.substring(0, 8) + '...' : 'none',
+                    userAgent: req?.get('User-Agent'),
+                    timestamp: new Date().toISOString()
+                }, 'files');
             }
             
             let result;
@@ -425,60 +661,123 @@ const FilesModule = {
                 // Validate that GraphService.getFileMetadata is available
                 if (!graphService || typeof graphService.getFileMetadata !== 'function') {
                     const err = errorService.createError(
-                        ErrorService.CATEGORIES.SYSTEM,
+                        'files',
                         'GraphService.getFileMetadata not implemented',
-                        ErrorService.SEVERITIES.ERROR,
+                        'error',
                         { 
-                            fileId: id,
+                            fileId: id.substring(0, 20) + '...',
+                            userId: contextUserId ? contextUserId.substring(0, 20) + '...' : 'anonymous',
+                            sessionId: contextSessionId ? contextSessionId.substring(0, 8) + '...' : 'none',
                             timestamp: new Date().toISOString(),
                             serviceError: 'missing_graph_service'
                         }
                     );
+                    
+                    // Pattern 3: Infrastructure Error Logging
                     monitoringService?.logError(err);
+                    
+                    // Pattern 4: User Error Tracking
+                    if (contextUserId) {
+                        monitoringService?.error('File metadata retrieval failed', {
+                            error: 'GraphService.getFileMetadata not implemented',
+                            fileId: id.substring(0, 20) + '...',
+                            timestamp: new Date().toISOString()
+                        }, 'files', null, contextUserId);
+                    } else if (contextSessionId) {
+                        monitoringService?.error('File metadata retrieval failed', {
+                            sessionId: contextSessionId.substring(0, 8) + '...',
+                            error: 'GraphService.getFileMetadata not implemented',
+                            fileId: id.substring(0, 20) + '...',
+                            timestamp: new Date().toISOString()
+                        }, 'files');
+                    }
+                    
                     throw err;
                 }
                 
-                // Call the Graph service to get metadata
-                result = await graphService.getFileMetadata(id, req);
+                // Call the Graph service to get metadata with user context
+                result = await graphService.getFileMetadata(id, req, contextUserId, contextSessionId);
                 
                 // Calculate execution time
                 const executionTime = Date.now() - startTime;
                 
-                // Log success metrics
-                monitoringService?.trackMetric('files_metadata_success', executionTime, {
-                    fileId: id,
-                    timestamp: new Date().toISOString()
-                });
+                // Pattern 2: User Activity Logs
+                if (contextUserId) {
+                    monitoringService?.info('File metadata retrieved successfully', {
+                        fileId: id.substring(0, 20) + '...',
+                        executionTimeMs: executionTime,
+                        timestamp: new Date().toISOString()
+                    }, 'files', null, contextUserId);
+                } else if (contextSessionId) {
+                    monitoringService?.info('File metadata retrieved successfully', {
+                        sessionId: contextSessionId.substring(0, 8) + '...',
+                        fileId: id.substring(0, 20) + '...',
+                        executionTimeMs: executionTime,
+                        timestamp: new Date().toISOString()
+                    }, 'files');
+                }
             } else {
                 // Get file content (default behavior)
                 // Validate that GraphService.downloadFile is available
                 if (!graphService || typeof graphService.downloadFile !== 'function') {
                     const err = errorService.createError(
-                        ErrorService.CATEGORIES.SYSTEM,
+                        'files',
                         'GraphService.downloadFile not implemented',
-                        ErrorService.SEVERITIES.ERROR,
+                        'error',
                         { 
-                            fileId: id,
+                            fileId: id.substring(0, 20) + '...',
+                            userId: contextUserId ? contextUserId.substring(0, 20) + '...' : 'anonymous',
+                            sessionId: contextSessionId ? contextSessionId.substring(0, 8) + '...' : 'none',
                             timestamp: new Date().toISOString(),
                             serviceError: 'missing_graph_service'
                         }
                     );
+                    
+                    // Pattern 3: Infrastructure Error Logging
                     monitoringService?.logError(err);
+                    
+                    // Pattern 4: User Error Tracking
+                    if (contextUserId) {
+                        monitoringService?.error('File download failed', {
+                            error: 'GraphService.downloadFile not implemented',
+                            fileId: id.substring(0, 20) + '...',
+                            timestamp: new Date().toISOString()
+                        }, 'files', null, contextUserId);
+                    } else if (contextSessionId) {
+                        monitoringService?.error('File download failed', {
+                            sessionId: contextSessionId.substring(0, 8) + '...',
+                            error: 'GraphService.downloadFile not implemented',
+                            fileId: id.substring(0, 20) + '...',
+                            timestamp: new Date().toISOString()
+                        }, 'files');
+                    }
+                    
                     throw err;
                 }
                 
-                // Call the Graph service to download file content
-                result = await graphService.downloadFile(id, req);
+                // Call the Graph service to download file content with user context
+                result = await graphService.downloadFile(id, req, contextUserId, contextSessionId);
                 
                 // Calculate execution time
                 const executionTime = Date.now() - startTime;
                 
-                // Log success metrics
-                monitoringService?.trackMetric('files_download_success', executionTime, {
-                    fileId: id,
-                    contentSize: result?.length || 0,
-                    timestamp: new Date().toISOString()
-                });
+                // Pattern 2: User Activity Logs
+                if (contextUserId) {
+                    monitoringService?.info('File downloaded successfully', {
+                        fileId: id.substring(0, 20) + '...',
+                        contentSize: result?.length || 0,
+                        executionTimeMs: executionTime,
+                        timestamp: new Date().toISOString()
+                    }, 'files', null, contextUserId);
+                } else if (contextSessionId) {
+                    monitoringService?.info('File downloaded successfully', {
+                        sessionId: contextSessionId.substring(0, 8) + '...',
+                        fileId: id.substring(0, 20) + '...',
+                        contentSize: result?.length || 0,
+                        executionTimeMs: executionTime,
+                        timestamp: new Date().toISOString()
+                    }, 'files');
+                }
             }
             
             return result;
@@ -486,32 +785,43 @@ const FilesModule = {
             // Calculate execution time even for failures
             const executionTime = Date.now() - startTime;
             
-            // Track failure metrics
-            monitoringService?.trackMetric('files_download_failure', executionTime, {
-                errorType: error.code || 'unknown',
-                fileId: id,
-                metadataOnly: options.metadataOnly || false,
-                timestamp: new Date().toISOString()
-            });
-            
-            // Create standardized error if not already one
+            // Pattern 3: Infrastructure Error Logging
             const mcpError = error.id ? error : errorService.createError(
-                ErrorService.CATEGORIES.SYSTEM,
+                'files',
                 `Failed to ${options.metadataOnly ? 'get file metadata' : 'download file'}: ${error.message}`,
-                ErrorService.SEVERITIES.ERROR,
+                'error',
                 { 
-                    fileId: id,
+                    fileId: id.substring(0, 20) + '...',
                     metadataOnly: options.metadataOnly || false,
+                    userId: contextUserId ? contextUserId.substring(0, 20) + '...' : 'anonymous',
+                    sessionId: contextSessionId ? contextSessionId.substring(0, 8) + '...' : 'none',
+                    executionTimeMs: executionTime,
                     error: error.toString(),
                     stack: error.stack,
                     timestamp: new Date().toISOString()
                 }
             );
             
-            // Log the error
             monitoringService?.logError(mcpError);
             
-            // Rethrow the error for the caller to handle
+            // Pattern 4: User Error Tracking
+            if (contextUserId) {
+                monitoringService?.error(`File ${options.metadataOnly ? 'metadata retrieval' : 'download'} failed`, {
+                    error: error.message,
+                    fileId: id.substring(0, 20) + '...',
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files', null, contextUserId);
+            } else if (contextSessionId) {
+                monitoringService?.error(`File ${options.metadataOnly ? 'metadata retrieval' : 'download'} failed`, {
+                    sessionId: contextSessionId.substring(0, 8) + '...',
+                    error: error.message,
+                    fileId: id.substring(0, 20) + '...',
+                    executionTimeMs: executionTime,
+                    timestamp: new Date().toISOString()
+                }, 'files');
+            }
+            
             throw mcpError;
         }
     },
