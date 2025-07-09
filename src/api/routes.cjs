@@ -437,6 +437,23 @@ function registerRoutes(router) {
     adapterRouter.get('/setup/:deviceId', adapterController.downloadSetupInstructions); // /adapter/setup/:deviceId
     router.use('/adapter', adapterRouter);
 
+    // Serve MCP adapter directly at /mcp-adapter.cjs for easy distribution
+    const path = require('path');
+    const fs = require('fs');
+    router.get('/mcp-adapter.cjs', (req, res) => {
+        try {
+            const adapterPath = path.join(__dirname, '../../mcp-adapter.cjs');
+            res.setHeader('Content-Type', 'application/javascript');
+            res.setHeader('Content-Disposition', 'attachment; filename="mcp-adapter.cjs"');
+            res.sendFile(adapterPath);
+        } catch (error) {
+            res.status(500).json({ 
+                error: 'ADAPTER_DOWNLOAD_FAILED', 
+                error_description: 'Failed to serve MCP adapter' 
+            });
+        }
+    });
+
     // Debug routes (development only)
     if (process.env.NODE_ENV === 'development') {
         router.get('/api/v1/debug/graph-token', requireAuth, async (req, res) => {

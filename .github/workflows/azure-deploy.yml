@@ -20,11 +20,15 @@ jobs:
         cache: 'npm'
     
     - name: Install dependencies
-      run: npm ci
+      run: |
+        # Clean install to ensure fresh dependencies
+        rm -rf node_modules
+        npm ci
     
     - name: Create production build
       run: |
-        # Install production dependencies
+        # Clean install production dependencies
+        rm -rf node_modules
         npm ci --only=production
         
         # Copy production environment file
