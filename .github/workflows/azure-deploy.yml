@@ -24,24 +24,17 @@ jobs:
     
     - name: Create production build
       run: |
-        # Create a production-ready package
-        mkdir -p dist
-        cp -r src dist/
-        cp -r static dist/ || true
-        cp -r data dist/ || true
-        cp -r scripts dist/ || true
-        cp package*.json dist/
-        cp .env.production dist/.env || true
-        
-        # Install production dependencies in dist folder
-        cd dist
+        # Install production dependencies
         npm ci --only=production
+        
+        # Copy production environment file
+        cp .env.production .env || true
     
     - name: Upload artifact for deployment job
       uses: actions/upload-artifact@v3
       with:
         name: node-app
-        path: dist
+        path: .
 
   deploy:
     runs-on: ubuntu-latest
