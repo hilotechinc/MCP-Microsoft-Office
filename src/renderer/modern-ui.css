@@ -1473,6 +1473,16 @@ body {
     overflow-y: auto;
 }
 
+.config-buttons {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.config-buttons .btn {
+    flex: 1;
+}
+
 .btn-sm {
     padding: 4px 8px;
     font-size: 0.75rem;

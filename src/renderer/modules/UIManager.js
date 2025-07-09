@@ -496,6 +496,12 @@ export class UIManager {
         if (copyConfigButton) {
             copyConfigButton.onclick = () => this.copyToClipboard('config-example', 'Config copied to clipboard!');
         }
+
+        // Download adapter button
+        const downloadAdapterButton = document.getElementById('download-adapter-button');
+        if (downloadAdapterButton) {
+            downloadAdapterButton.onclick = () => this.downloadMcpAdapter();
+        }
     }
 
     /**
@@ -560,13 +566,20 @@ export class UIManager {
         }
 
         if (configExample) {
+            const serverUrl = window.location.origin;
+            const hostname = window.location.hostname;
+            const port = window.location.protocol === 'https:' ? '443' : '80';
+            
             const configJson = {
                 mcpServers: {
                     microsoft365: {
                         command: "node",
-                        args: ["path/to/simple-mcp-adapter.js"],
+                        args: ["~/mcp-adapters/mcp-adapter.cjs"],
                         env: {
-                            MCP_SERVER_URL: tokenData.usage_instructions?.claude_desktop_config?.mcpServers?.microsoft365?.env?.MCP_SERVER_URL || window.location.origin,
+                            MCP_SERVER_URL: serverUrl,
+                            API_HOST: hostname,
+                            API_PORT: port,
+                            API_BASE_PATH: "/api",
                             MCP_BEARER_TOKEN: tokenData.access_token
                         }
                     }
@@ -577,6 +590,32 @@ export class UIManager {
 
         if (resultDiv) {
             resultDiv.classList.remove('hidden');
+        }
+    }
+
+    /**
+     * Download MCP adapter file
+     */
+    async downloadMcpAdapter() {
+        try {
+            UINotification.show('Downloading MCP adapter...', 'info');
+            
+            // Create a link element to trigger download
+            const link = document.createElement('a');
+            link.href = '/api/mcp-adapter.cjs';
+            link.download = 'mcp-adapter.cjs';
+            link.style.display = 'none';
+            
+            // Add to DOM, click, and remove
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            
+            UINotification.show('MCP adapter downloaded successfully!', 'success');
+            
+        } catch (error) {
+            console.error('Error downloading MCP adapter:', error);
+            UINotification.show(`Failed to download adapter: ${error.message}`, 'error');
         }
     }
 
