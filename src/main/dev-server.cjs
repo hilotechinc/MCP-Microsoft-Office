@@ -156,6 +156,10 @@ async function startDevServer(userId, sessionId) {
   // Create a single Express app for both frontend and API
   const app = express();
   
+  // Configure trust proxy for Azure App Service and other cloud deployments
+  // This fixes X-Forwarded-For header issues with express-rate-limit
+  app.set('trust proxy', true);
+  
   // Configure HTTP request logging (Morgan) based on environment
   // Using the environment variables defined at the start of the function
   
