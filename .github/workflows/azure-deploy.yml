@@ -27,10 +27,11 @@ jobs:
         # Create a production-ready package
         mkdir -p dist
         cp -r src dist/
+        cp -r static dist/ || true
+        cp -r data dist/ || true
+        cp -r scripts dist/ || true
         cp package*.json dist/
-        cp web.config dist/
-        cp .deployment dist/
-        cp deploy.cmd dist/
+        cp .env.production dist/.env || true
         
         # Install production dependencies in dist folder
         cd dist
