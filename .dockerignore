@@ -1,0 +1,31 @@
+# Ignorer le dossier node_modules local (on reconstruit dans le conteneur)
+node_modules
+
+# Ignorer fichiers temporaires et logs
+npm-debug.log
+yarn-error.log
+logs
+*.log
+
+# Ignorer dépôts Git et config locales
+.git
+.gitignore
+
+# Ignorer fichiers locaux / IDE
+.DS_Store
+.idea
+.vscode
+
+# Ignorer données utilisateur (au cas où)
+data
+tmp
+
+# Tests / dev uniquement
+test
+__tests__
+*.spec.js
+
+# Env files locaux
+.env
+.env.local
+.env.*.local

@@ -185,9 +185,17 @@ class DatabaseFactory {
    */
   async init(config, userId, sessionId) {
     const startTime = Date.now();
-    
+
     try {
-      // Pattern 1: Development Debug Logs
+      if (global.__db_init_done__) {
+        MonitoringService.info('Database migrations already executed, skipping re-run', {
+          dbType: config.DB_TYPE,
+          timestamp: new Date().toISOString()
+        }, 'database');
+        this.initialized = true;
+        return;
+      }
+
       if (process.env.NODE_ENV === 'development') {
         MonitoringService.debug('Initializing database factory', {
           dbType: config.DB_TYPE,
@@ -196,7 +204,7 @@ class DatabaseFactory {
           timestamp: new Date().toISOString()
         }, 'database');
       }
-      
+
       this.config = config;
 
       switch (config.DB_TYPE) {
@@ -213,6 +221,7 @@ class DatabaseFactory {
           throw new Error(`Unsupported database type: ${config.DB_TYPE}`);
       }
 
+      global.__db_init_done__ = true; // ✅ migrations OK, flag process-wide
       this.initialized = true;
       
       // Pattern 2: User Activity Logs

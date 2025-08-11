@@ -10,6 +10,11 @@ const ErrorService = require('../core/error-service.cjs');
 class ModuleRegistry {
     // TODO: [constructor] Accept logger via DI; track registration timestamps. (LOW) - Implemented
     constructor(options = {}, userId, sessionId) {
+        if (global.__modules_init_done__) {
+            MonitoringService.info("ModuleRegistry already initialized - skipping re-initialization", {}, 'module');
+            return;
+        }
+        global.__modules_init_done__ = true;
         const startTime = Date.now();
         
         // Pattern 1: Development Debug Logs
@@ -101,37 +106,12 @@ class ModuleRegistry {
         
         // Check for duplicate module ID
         if (this.modules.has(module.id)) {
-            // Pattern 3: Infrastructure Error Logging
-            const error = ErrorService.createError(
-                'module',
-                `Module with ID '${module.id}' already registered`,
-                'error',
-                { 
-                    moduleId: module.id,
-                    moduleName: module.name,
-                    timestamp: new Date().toISOString()
-                }
-            );
-            
-            MonitoringService.logError(error);
-            
-            // Pattern 4: User Error Tracking
-            if (userId) {
-                MonitoringService.error('Module registration failed - duplicate ID', {
-                    moduleId: module.id,
-                    error: 'Module already registered',
-                    timestamp: new Date().toISOString()
-                }, 'module', null, userId);
-            } else if (sessionId) {
-                MonitoringService.error('Module registration failed - duplicate ID', {
-                    sessionId: sessionId.substring(0, 8) + '...',
-                    moduleId: module.id,
-                    error: 'Module already registered',
-                    timestamp: new Date().toISOString()
-                }, 'module');
-            }
-            
-            throw error;
+            MonitoringService.warn(`Skipping duplicate module '${module.id}'`, {
+                moduleId: module.id,
+                moduleName: module.name,
+                timestamp: new Date().toISOString()
+            }, 'module');
+            return;
         }
 
         // Validate interface contract
